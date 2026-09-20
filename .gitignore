@@ -1,0 +1,188 @@
+OLD_main_7000.py
+
+# macOS
+.DS_Store
+
+# Personal planning docs
+new_plan.md
+HANDOFF_*.md
+docs/*.jsonl
+docs/*.min.js
+docs/*.min.css
+
+# ===========================
+# Python / Backend
+# ===========================
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+*.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+
+# Backend runtime data (browser profiles, caches, uploads, DB)
+backend/data/
+backend/chroma_mem0_db/
+
+# Debug / one-off scripts
+backend/debug_print.*
+backend/test_pdf.py
+backend/create_field.py
+
+# ===========================
+# Node / Frontend
+# ===========================
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# ===========================
+# IDE & System
+# ===========================
+.idea/
+.vscode/
+.zcode/
+*.swp
+*.swo
+*~
+Thumbs.db
+
+# ===========================
+# Submodules (if not needed)
+# ===========================
+Resume-Matcher
+
+# ===========================
+# Environment & Secrets
+# ===========================
+.env
+.env.local
+.env.*.local
+data/
+# 系统底层配置页面保存的密钥（明文 JSON，严禁提交）
+backend/common/data/settings.json
+backend/data/settings.json
+# 平台登录态 Cookie（本地保留供系统运行，严禁入库）
+backend/**/*cookies*.json
+# 简历编辑器运行数据目录：字段映射缓存/回写报告/测试快照均为程序运行时读写，
+# 且含个人隐私档案，整体本地保留（历史版本可随时找回）
+backend/resume_editor/data/*
+# 平台公共字典属产品必需资产，随仓发布（个人快照/进度类仍排除）。
+# 注意：根规则 `data/` 会排除目录本身（git 不再下探，文件级反选全部失效），
+# 必须先反选目录，再反选白名单文件。
+!backend/resume_editor/data/
+!backend/resume_editor/data/51job_dd_funtype.json
+!backend/resume_editor/data/51job_dicts.json
+!backend/resume_editor/data/51job_it_skills.json
+!backend/resume_editor/data/51job_skills.json
+!backend/resume_editor/data/liepin_cert_dict.json
+!backend/resume_editor/data/liepin_cities.json
+!backend/resume_editor/data/liepin_industry_categories.json
+!backend/resume_editor/data/liepin_job_categories.json
+!backend/resume_editor/data/liepin_lang_dict.json
+.aider*
+
+# ===========================
+# AI Tools & Scanners
+# ===========================
+.scannerwork/
+.sonarlint/
+.understand-anything/
+.claude/
+.qoder/
+.antigravity/
+
+# 个人隐私材料（本地保留，严禁入库：真实简历/求职产物）
+multi_agent_cv.md
+llm_intern_skill_run/
+
+# 技能选择器实验沙盒（完整项目副本，独有成果已归档至 docs/experimental-skill-selector/）
+experimental/
+
+# 运行时临时简历目录
+temp_resumes/
+
+# ===========================
+# Database & Trash
+# ===========================
+*.db
+*.sqlite
+*.db-shm
+*.db-wal
+_trash/
+chroma_mem0_db/
+
+# ===========================
+# Temp & Generated files
+# ===========================
+backend/temp_print_data/
+*.pdf
+*.docx
+*.png
+
+# runtime logs
+nohup_*.log
+*.log
+
+# LangGraph 运行时检查点数据库（历史误提交，属运行时产物）
+backend/langgraph_checkpoints.db*
+backend/checkpoints.sqlite
+backend/autopilot.db
+backend/job_hunter.db
+backend/jobhunter.db
+backend/jobs.db
+
+# 临时执行计划/测试报告（按日期归档的一次性文档）
+EXECUTION_PLAN_*.md
+backend/mass_apply_test_report_*.md
+
+# 回写运行报告（本地产物，含个人投递运营数据，不入库）
+backend/boss_writeback_report_*.html
+
+# 飞书数据备份（含个人求职数据，仅本地留存）
+backend/backups/
+
+# ===========================
+# 开源卫生（个人数据/内部文档：本地保留，永不入库）
+# ===========================
+# 个人开发日志（含求职全过程记录）
+开发过程.md
+# 内部工作文档（交接/计划/运营报告/草稿）
+.scratch/
+docs/handoffs/
+docs/plans/
+docs/reports/
+# 个人仓库流量数据与去重标定数据
+scripts/traffic_data/
+scripts/dedup_calibration_pairs.csv
+# 飞书表字段快照（示例值含真实简历内容）
+backend/feishu_fields_list.*
+# 真实投递/回写运营报告与内部计划
+backend/*_mass_apply_report_*.md
+backend/plan.md
+backend/polaris4_result.md
+# 真实投递测试脚本与样本数据（含真实公司/城市/JD）
+backend/test_scripts/sampled_eval_jobs.json
+backend/test_scripts/live_mass_apply_verifier.py
+backend/test_scripts/mass_apply_test_run.py
+backend/test_scripts/*_mass_apply_test.py
+backend/test_scripts/filter_mass_apply_candidates.py
+backend/test_scripts/evaluate_4platforms_leads.py
+# LangGraph 检查点运行时产物（shm/wal）
+backend/checkpoints.sqlite*
+
+# 架构图渲染产物（README 首屏展示，需入库；其余 png 仍一律忽略）
+!docs/architecture-overview.png
+
+# Video agent artifacts
+.video_agent/
+.coverage
+TODO.md
+docs/完整对话全景存档_*.md
+docs/完整对话全景存档_*.html
+docs/transcript_full.jsonl

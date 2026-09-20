@@ -1,0 +1,184 @@
+{
+  "_meta": {
+    "description": "Truth Boundary 降级词表 — 改写输出后处理安全阀",
+    "source": "方法论参考 LLMInternSkill (MIT, github.com/wanyichen06/LLMInternSkill)",
+    "usage": "改写完成后扫描输出文本，命中高危词且无证据支撑时自动降级为安全措辞"
+  },
+  "downgrade_rules": [
+    {
+      "pattern": "精通",
+      "safe": "熟练掌握",
+      "reason": "精通暗示专家级深度，面试必被追问底层原理",
+      "severity": "high"
+    },
+    {
+      "pattern": "主导(?!.*模块)",
+      "safe": "负责",
+      "reason": "主导暗示 ownership 和决策权，需要设计文档/会议记录佐证",
+      "severity": "medium"
+    },
+    {
+      "pattern": "100%",
+      "safe": "99%+",
+      "reason": "绝对化表述面试必被追问反例",
+      "severity": "high"
+    },
+    {
+      "pattern": "彻底(消除|解决|实现)",
+      "safe": "显著改善",
+      "reason": "绝对化，工程问题很少被彻底解决",
+      "severity": "medium"
+    },
+    {
+      "pattern": "上线生产",
+      "safe": "部署上线",
+      "reason": "生产环境暗示有运维/监控/SLA，需release记录佐证",
+      "severity": "medium"
+    },
+    {
+      "pattern": "企业级",
+      "safe": "业务级",
+      "reason": "企业级暗示高可用/多租户/权限体系，需架构文档佐证",
+      "severity": "medium"
+    },
+    {
+      "pattern": "极大",
+      "safe": "显著",
+      "reason": "空洞程度副词，无量化支撑",
+      "severity": "low"
+    },
+    {
+      "pattern": "全面(进化|蜕变|升级)",
+      "safe": "系统性提升",
+      "reason": "AI味重且空洞",
+      "severity": "low"
+    },
+    {
+      "pattern": "颠覆",
+      "safe": "重构",
+      "reason": "过度营销化",
+      "severity": "low"
+    },
+    {
+      "pattern": "行业领先",
+      "safe": "具备实战经验",
+      "reason": "无对标数据支撑",
+      "severity": "high"
+    },
+    {
+      "pattern": "丰富(的)?经验",
+      "safe": "实战经验",
+      "reason": "空洞，不如具体年限/项目数",
+      "severity": "low"
+    },
+    {
+      "pattern": "深入(理解|掌握|研究)",
+      "safe": "熟悉",
+      "reason": "深入理解面试必被追问源码级细节",
+      "severity": "medium"
+    },
+    {
+      "pattern": "统筹(管理|规划|协调)?",
+      "safe": "负责协调",
+      "reason": "统筹暗示全局决策权和资源调配权，需组织架构/汇报线佐证",
+      "severity": "medium",
+      "scope": "universal"
+    },
+    {
+      "pattern": "从0到1(搭建|构建|打造|创建)",
+      "safe": "参与搭建",
+      "reason": "从0到1暗示独立发起并全程主导，需立项文档/首版代码提交记录佐证",
+      "severity": "medium",
+      "scope": "universal"
+    },
+    {
+      "pattern": "孵化(并|了|出)?",
+      "safe": "参与设计",
+      "reason": "孵化暗示从概念到落地的全程ownership，需商业计划书/立项记录佐证",
+      "severity": "medium",
+      "scope": "universal"
+    },
+    {
+      "pattern": "攻克(了)?",
+      "safe": "解决了",
+      "reason": "攻克暗示高难度技术突破，需技术方案对比/失败记录佐证",
+      "severity": "low",
+      "scope": "universal"
+    },
+    {
+      "pattern": "(首创|独创|业内首创)",
+      "safe": "设计",
+      "reason": "首创暗示行业唯一性，需查新报告或竞品分析佐证",
+      "severity": "high",
+      "scope": "universal"
+    },
+    {
+      "pattern": "海量",
+      "safe": "大量",
+      "reason": "海量无量化标准，面试必被追问具体数量级",
+      "severity": "low",
+      "scope": "universal"
+    },
+    {
+      "pattern": "(亿级|百万级|千万级)",
+      "safe": "大规模",
+      "reason": "具体量级需数据截图/日志佐证，否则面试被追问数据来源",
+      "severity": "medium",
+      "scope": "universal"
+    },
+    {
+      "pattern": "零(资损|事故|投诉|差错|异常)",
+      "safe": "极低",
+      "reason": "零是绝对化表述，需完整时间范围内的审计记录佐证",
+      "severity": "high",
+      "scope": "universal"
+    },
+    {
+      "pattern": "(指数级|数量级)(的)?(提升|增长|降低)",
+      "safe": "大幅",
+      "reason": "指数级/数量级需前后对比数据佐证，否则属于空洞夸大",
+      "severity": "medium",
+      "scope": "universal"
+    },
+    {
+      "pattern": "赋能",
+      "safe": "支持",
+      "reason": "AI味黑话且空洞，无具体动作客体",
+      "severity": "low",
+      "scope": "universal"
+    },
+    {
+      "pattern": "深度参与",
+      "safe": "参与",
+      "reason": "深度无法量化，面试必被追问具体负责哪部分",
+      "severity": "low",
+      "scope": "universal"
+    },
+    {
+      "pattern": "(稳固|稳居|稳定在)",
+      "safe": "保持在",
+      "reason": "稳固暗示长期不变，需时间序列数据佐证",
+      "severity": "low",
+      "scope": "universal"
+    },
+    {
+      "pattern": "(飙升|骤降|暴涨|暴跌)",
+      "safe": "明显变化",
+      "reason": "戏剧化用词，需前后数据对比佐证",
+      "severity": "low",
+      "scope": "universal"
+    }
+  ],
+  "absolute_claim_patterns": [
+    {
+      "pattern": "提升.*?\\d+%",
+      "check": "是否有基线定义和评估方法",
+      "safe_template": "基于{method}观察到{metric}改善"
+    },
+    {
+      "pattern": "从.*?缩短至",
+      "check": "是否有计时工具/日志佐证",
+      "safe_template": "将{task}耗时从人工模式大幅缩短"
+    }
+  ]
+}

@@ -1,0 +1,1132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JobHunter · AI 全链路求职自动化平台 — 项目总览</title>
+<meta name="description" content="JobHunter（Auto-JobHunter v2）：从岗位抓取 → 数据清洗 → AI 评估 → 简历改写 → 人工审批 → 自动投递的端到端求职自动化系统，支持飞书 ChatOps 指挥与多维表格数据同步。">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============ 苹果风格毛玻璃导航 ============ -->
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="#top">
+      <span class="mark">
+        <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+      </span>
+      JobHunter <span class="ver">v2.0</span>
+    </a>
+    <nav class="topnav">
+      <a href="#pipeline">流水线</a>
+      <a href="#modules">功能模块</a>
+      <a href="#poster">全景海报</a>
+      <a href="#architecture">技术架构</a>
+      <a href="#highlights">设计亮点</a>
+      <a href="#quickstart">快速开始</a>
+      <a class="gh-link" href="https://github.com/jolie-z/jobhunter-ai" target="_blank" rel="noopener noreferrer">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+        GitHub ↗
+      </a>
+    </nav>
+  </div>
+</header>
+
+<!-- ============ HERO 主舞台 ============ -->
+<section class="hero wrap" id="top">
+  <div class="hero-headlines">
+    <div class="hero-title-main grad-text">AI 全自动全链路求职</div>
+    <div class="hero-title-sub">一个指令 · 即可跑通求职全流程</div>
+  </div>
+  
+  <!-- 全链路彩色流动胶囊链 -->
+  <div class="hero-chain">
+    <div class="chain-flow">
+      <span class="chain-pill pill-blue">岗位抓取</span>
+      <span class="chain-arrow">→</span>
+      <span class="chain-pill pill-cyan">双层清洗</span>
+      <span class="chain-arrow">→</span>
+      <span class="chain-pill pill-teal">飞书同步</span>
+      <span class="chain-arrow">→</span>
+      <span class="chain-pill pill-purple">八维初评</span>
+      <span class="chain-arrow">→</span>
+      <span class="chain-pill pill-indigo">深度体检</span>
+      <span class="chain-arrow">→</span>
+      <span class="chain-pill pill-pink">简历改写</span>
+      <span class="chain-arrow">→</span>
+      <span class="chain-pill pill-amber">打招呼语</span>
+      <span class="chain-arrow">→</span>
+      <span class="chain-pill pill-orange">人工审批</span>
+      <span class="chain-arrow">→</span>
+      <span class="chain-pill pill-green">自动投递</span>
+    </div>
+  </div>
+
+  <!-- 3 大核心亮点卡片 -->
+  <div class="hero-feat-grid">
+    <div class="hero-feat-card">
+      <div class="feat-card-header">
+        <span class="feat-icon">📱</span>
+        <span class="feat-title">飞书生态协同</span>
+      </div>
+      <div class="feat-desc">
+        <div class="feat-line-item"><b>飞书聊天框</b> <span class="sep">—</span> 移动指挥台</div>
+        <div class="feat-line-item"><b>飞书多维表格</b> <span class="sep">—</span> 云端实时数据库</div>
+      </div>
+    </div>
+
+    <div class="hero-feat-card">
+      <div class="feat-card-header">
+        <span class="feat-icon">🔒</span>
+        <span class="feat-title">数据安全</span>
+      </div>
+      <div class="feat-desc">
+        私密凭证与核心数据永远留在本机，100% 不上传任何第三方
+      </div>
+    </div>
+
+    <div class="hero-feat-card">
+      <div class="feat-card-header">
+        <span class="feat-icon">🖥️</span>
+        <span class="feat-title">独创四分屏作战室</span>
+      </div>
+      <div class="feat-desc">
+        <div class="feat-desc-lead">一个屏幕内即可同时掌控</div>
+        <div class="feat-desc-accent">JD 详情 + 在线简历编辑 + AI 简历深度诊断</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="hero-actions">
+    <a class="btn-primary" href="#quickstart">
+      快速开始
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+    </a>
+    <a class="btn-secondary" href="https://github.com/jolie-z/jobhunter-ai" target="_blank" rel="noopener noreferrer">
+      GitHub 仓库 ↗
+    </a>
+  </div>
+
+  <!-- 6 维 Bento 交互卡片条 -->
+  <div class="stats-strip">
+    <div class="stat-item" data-key="modules" title="点击查看 10 大功能模块清单">
+      <div class="num">10</div>
+      <div class="label">功能模块</div>
+      <span class="stat-hint">点击展开 ▾</span>
+    </div>
+    <div class="stat-item" data-key="platforms" title="点击查看支持的主流平台">
+      <div class="num">4<small>+</small></div>
+      <div class="label">主流招聘平台</div>
+      <span class="stat-hint">点击展开 ▾</span>
+    </div>
+    <div class="stat-item" data-key="pipeline" title="点击查看 9 阶段执行导轨">
+      <div class="num">9</div>
+      <div class="label">闭环流水线阶段</div>
+      <span class="stat-hint">点击展开 ▾</span>
+    </div>
+    <div class="stat-item" data-key="eval8" title="点击查看 8 维初评模型">
+      <div class="num">8<small> 维</small></div>
+      <div class="label">AI 初筛多维评估</div>
+      <span class="stat-hint">点击展开 ▾</span>
+    </div>
+    <div class="stat-item" data-key="eval6" title="点击查看 6 维深度体检">
+      <div class="num">6<small> 维</small></div>
+      <div class="label">AI 深度体检审计</div>
+      <span class="stat-hint">点击展开 ▾</span>
+    </div>
+    <div class="stat-item" data-key="skills" title="点击查看自定义 Skill 改写">
+      <div class="num"><small>Skill</small></div>
+      <div class="label">自定义简历改写</div>
+      <span class="stat-hint">点击展开 ▾</span>
+    </div>
+  </div>
+
+  <!-- 交互详情展开抽屉 -->
+  <div class="stats-drawer" id="statsDrawer" style="display:none">
+    <div class="drawer-header">
+      <div class="drawer-title" id="drawerTitle"></div>
+      <button class="drawer-close" id="drawerCloseBtn" aria-label="关闭">✕</button>
+    </div>
+    <div class="drawer-body" id="drawerBody"></div>
+  </div>
+</section>
+
+<!-- ============ 核心理念 ============ -->
+<section class="sec alt" id="thesis" style="padding: 24px 0 24px;">
+  <div class="wrap">
+    <div class="thesis-card">
+      <div class="thesis-q">「人始终在闭环中，只做两件事：<span class="grad-text">下指令 · 点审批</span>。」</div>
+      <div class="thesis-a">翻列表、筛岗位、改简历、发招呼、点投递——所有机械重复的劳动全部交给机器与大模型；而「要不要投这家」这类决定职业走向的关键决策，永远由你签字。流水线在审批处主动挂起等你。</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 壹 · 9 阶段执行导轨 ============ -->
+<section class="sec" id="pipeline">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">全自动流水线</span>
+      <h2 class="pipeline-main-title">闭环导轨，从海量寻岗到真机送达</h2>
+      <p class="sec-sub">9 个阶段无缝衔接：<b style="color:var(--auto);font-weight:600">机器自动</b> 3 段、<b style="color:var(--ai);font-weight:600">AI 负责</b> 5 段、<b style="color:var(--human);font-weight:600">人工把关</b> 1 段</p>
+    </div>
+
+    <div class="pipeline-board">
+      <div class="pipeline-header">
+        <div class="pipeline-title">
+          <span class="pulse-dot"></span>
+          全链路执行导轨
+        </div>
+        <div class="pipeline-legend">
+          <span><i style="background:var(--auto)"></i>机器自动</span>
+          <span><i style="background:var(--ai)"></i>AI 负责</span>
+          <span><i style="background:var(--human)"></i>人工把关</span>
+        </div>
+      </div>
+      <div class="pipeline-track" id="track"><!-- JS 渲染 9 节点 --></div>
+      <div class="stage-detail" id="detail"><!-- JS 渲染详情 --></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 贰 · 十大模块 Bento Grid ============ -->
+<section class="sec alt" id="modules">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">功能全景</span>
+      <h2>十大模块，覆盖求职全链路</h2>
+      <p class="sec-sub">每一个模块既可以作为独立单点工具快速执行，也可以在全链路指挥中心一键自动化串联串跑。</p>
+    </div>
+    <div class="modules-grid">
+
+      <!-- 模块 01 -->
+      <div class="module-card">
+        <div class="module-card-top">
+          <div class="module-icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><line x1="12" y1="3" x2="12" y2="12"/><line x1="12" y1="12" x2="18.36" y2="18.36"/></svg>
+          </div>
+          <span class="module-idx">STAGE 01</span>
+        </div>
+        <div class="module-title-row">
+          <span class="module-title">岗位爬取与清洗控制台</span>
+        </div>
+        <div class="module-one-liner">一站式抓取、清洗、推送，每条数据的流向全过程白盒可视。</div>
+        <ul class="module-features">
+          <li>蜘蛛引擎：主流平台登录态感知，一键唤醒真机浏览器扫码</li>
+          <li>4 Stage 流转池分步微控，SSE 实时日志流 + 毫秒级任务急刹车</li>
+          <li>清洗拦截回收站：全量死因留痕与人工放行一键救回</li>
+        </ul>
+      </div>
+
+      <!-- 模块 02 -->
+      <div class="module-card">
+        <div class="module-card-top">
+          <div class="module-icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><line x1="9" y1="4" x2="9" y2="20"/><line x1="15" y1="4" x2="15" y2="20"/><path d="M5 8h2M11 8h2M17 8h2"/></svg>
+          </div>
+          <span class="module-idx">STAGE 02</span>
+        </div>
+        <div class="module-title-row">
+          <span class="module-title">沉浸工作台 · 岗位看板</span>
+        </div>
+        <div class="module-one-liner">求职线索大本营：支持全渠道录入与批量智能化编排。</div>
+        <ul class="module-features">
+          <li>JD 纯文本粘贴 / 多截图 OCR 秒级录入，三要素查重入母本池</li>
+          <li>关键词 · 状态 · AI 评级 · 招聘平台 · 薪资多维即时筛选</li>
+          <li>批量操作浮栏：初评 / 深评 / 定制改写 / 批量投递一气呵成</li>
+        </ul>
+      </div>
+
+      <!-- 模块 03 -->
+      <div class="module-card">
+        <div class="module-card-top">
+          <div class="module-icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><line x1="12" y1="3" x2="12" y2="21"/><line x1="3" y1="12" x2="21" y2="12"/></svg>
+          </div>
+          <span class="module-idx">MODULE 03</span>
+        </div>
+        <div class="module-title-row">
+          <span class="module-title">岗位详情四分屏作战室</span>
+        </div>
+        <div class="module-one-liner">一个岗位四块大屏，从公司深度情报到面试押题一次备齐。</div>
+        <ul class="module-features">
+          <li>岗位档案与全网公司背景情报 + 岗位 JD 标签矩阵</li>
+          <li>V2ResumeEditor 智能简历定制引擎 + 高保真 PDF / 高清长图产物库</li>
+          <li>八维匹配雷达图、专属高转化招呼语一键生成回写飞书</li>
+          <li>面试辅导押题（STAR 框架）+ 语音副驾对练</li>
+        </ul>
+      </div>
+
+      <!-- 模块 04 -->
+      <div class="module-card">
+        <div class="module-card-top">
+          <div class="module-icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+          </div>
+          <span class="module-idx">MODULE 04</span>
+        </div>
+        <div class="module-title-row">
+          <span class="module-title">策略实验室</span>
+        </div>
+        <div class="module-one-liner">求职偏好、规则引擎与大模型提示词的中枢控制台。</div>
+        <ul class="module-features">
+          <li>LLM 通道与飞书凭证热更新，18+ ChatOps 话术与规则速查</li>
+          <li>底本简历库多版本管理 + AI 局部分段润色</li>
+          <li>技能 / 经验 / 薪资 / 行业四维权重滑块 + AI 初筛规则池</li>
+        </ul>
+      </div>
+
+      <!-- 模块 05 -->
+      <div class="module-card">
+        <div class="module-card-top">
+          <div class="module-icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          </div>
+          <span class="module-idx">MODULE 05</span>
+        </div>
+        <div class="module-title-row">
+          <span class="module-title">在线简历多平台同步</span>
+        </div>
+        <div class="module-one-liner">告别在四个求职 App 网页中枯燥繁琐地反复复制粘贴简历。</div>
+        <ul class="module-features">
+          <li>平台浏览器端口探测 + 登录态校验 + 一键拉起 CDP 调试</li>
+          <li>BOSS / 猎聘 / 51job / 智联 + 全量底本五 Tab 双向联动</li>
+          <li>线上简历采集 → Schema 差分比对 → Agent 自动回写真机官网</li>
+        </ul>
+      </div>
+
+      <!-- 模块 06 -->
+      <div class="module-card">
+        <div class="module-card-top">
+          <div class="module-icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/></svg>
+          </div>
+          <span class="module-idx">MODULE 06</span>
+        </div>
+        <div class="module-title-row">
+          <span class="module-title">全自动全链路指挥中心</span>
+        </div>
+        <div class="module-one-liner">一键点火启动 9 阶段自动化求职流水线。</div>
+        <ul class="module-features">
+          <li>模块就绪环境检查 + 一键启动执行 + 毫秒级物理急刹车</li>
+          <li>9 阶段动态导轨 + 漏斗转化率实时计算 + 泳道岗位看板</li>
+          <li>白盒终端实时日志：全链路提示词与后端 Traceback 毫秒回传</li>
+        </ul>
+      </div>
+
+      <!-- 模块 07 -->
+      <div class="module-card">
+        <div class="module-card-top">
+          <div class="module-icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="3" y1="20" x2="21" y2="20"/></svg>
+          </div>
+          <span class="module-idx">MODULE 07</span>
+        </div>
+        <div class="module-title-row">
+          <span class="module-title">数据大盘与飞书战报中心</span>
+        </div>
+        <div class="module-one-liner">用数据量化每一次求职努力，告别焦虑与信息黑盒。</div>
+        <ul class="module-features">
+          <li>宏观指标卡 + 求职目标追踪器（每日目标配额实时跟踪）</li>
+          <li>转化漏斗 / 四平台效能对比 / 投递趋势可视化折线</li>
+          <li>Token 消耗与成本审计：按模型计价、KV Cache 命中率透明化</li>
+          <li>日报 / 周报 / 战报由调度器定时推送到飞书群</li>
+        </ul>
+      </div>
+
+      <!-- 模块 08 -->
+      <div class="module-card">
+        <div class="module-card-top">
+          <div class="module-icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          </div>
+          <span class="module-idx">MODULE 08</span>
+        </div>
+        <div class="module-title-row">
+          <span class="module-title">面试训练营</span>
+          <span class="module-route upgrade">体验升级中</span>
+        </div>
+        <div class="module-one-liner">从拿到面试到最终 Offer 的实战 AI 备考副驾驶。</div>
+        <ul class="module-features">
+          <li>AI 模拟面试：HR / 资深技术 / 业务高管多角色 + 实时语音对练</li>
+          <li>目标公司深度背调、历史复盘评分多维雷达图</li>
+          <li>真实面试速记与录音 AI 复盘 + 行业面经专属押题</li>
+        </ul>
+      </div>
+
+      <!-- 模块 09 -->
+      <div class="module-card">
+        <div class="module-card-top">
+          <div class="module-icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8.01" y2="16"/><line x1="16" y1="16" x2="16.01" y2="16"/></svg>
+          </div>
+          <span class="module-idx">MODULE 09</span>
+        </div>
+        <div class="module-title-row">
+          <span class="module-title">飞书协同与 ChatOps 机器人</span>
+        </div>
+        <div class="module-one-liner">装在手机里的随身求职官，随时随地掌握全局。</div>
+        <ul class="module-features">
+          <li>多维表格双向实时同步：线索 / 简历 / 偏好 / 状态即时联动</li>
+          <li>WebSocket 长连接机器人，免公网 IP、免配置内网穿透</li>
+          <li>自然语言指令 + 对话式助理（底线原则：绝不盲目自动批量投递）</li>
+        </ul>
+      </div>
+
+      <!-- 模块 10 -->
+      <div class="module-card">
+        <div class="module-card-top">
+          <div class="module-icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+          </div>
+          <span class="module-idx">MODULE 10</span>
+        </div>
+        <div class="module-title-row">
+          <span class="module-title">系统守护与运维闭环</span>
+        </div>
+        <div class="module-one-liner">真正可无人值守的工程高可靠性支撑体系。</div>
+        <ul class="module-features">
+          <li>PM2 进程守护：崩溃 1 秒自愈、每日定时重启、内存熔断保护</li>
+          <li>macOS LaunchAgent 开机自启服务</li>
+          <li>自动化依赖安全性检查与敏感信息泄露实时防护</li>
+        </ul>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ 叁 · 产品全景海报 ============ -->
+<section class="sec" id="poster">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">全景总览</span>
+      <h2>一图看懂业务全链路</h2>
+      <p class="sec-sub">岗位获取 → 清洗 → 评估 → 深度体检 → 简历改写 → 招呼语 → 自动投递，双行环形全链路闭环；下方三大底座是飞书随身求职官、四平台在线简历中枢与全链路数据大盘。</p>
+    </div>
+    <div class="showcase-frame figure" title="点击查看大图">
+      <img src="../architecture/product_poster.png" alt="JobHunter 产品全景海报：环形全链路闭环" loading="eager">
+      <div class="showcase-caption">Auto-JobHunter v2.0 · 平台全景总览（点击放大预览）</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 肆 · 技术分层架构 (Apple Stack) ============ -->
+<section class="sec alt" id="architecture">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">技术架构</span>
+      <h2>四层分层架构：真实浏览器、<br>本地私密数据底座</h2>
+      <p class="sec-sub">不追求容器化「纸面上」的干净，而是让爬虫与投递扎实运行在真实浏览器中、让求职隐私数据 100% 留在本机。</p>
+    </div>
+
+    <!-- Apple Layer Architecture Stack -->
+    <div class="arch-stack">
+      <div class="arch-layer">
+        <div class="arch-layer-icon-col">
+          <div class="arch-icon-wrap layer-blue">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </div>
+          <div class="arch-layer-meta">
+            <span class="arch-layer-no" style="color:var(--blue)">LAYER 01</span>
+            <span class="arch-layer-name">指挥交互控制层</span>
+          </div>
+        </div>
+        <div class="arch-layer-content">
+          <div class="arch-layer-desc">
+            <strong>飞书生态指挥中枢</strong>（WebSocket 免公网长连接机器人 + 16 个 ChatOps 原子指令集 + 交互卡片审批）× <strong>Next.js 全链路控制台</strong>（线索看板 / 指挥中心 / 策略实验室 / 数据大盘）。
+          </div>
+          <div class="arch-layer-pills">
+            <span class="layer-pill">飞书 ChatOps</span>
+            <span class="layer-pill">Next.js 16</span>
+            <span class="layer-pill">人机闭环把关</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="arch-layer">
+        <div class="arch-layer-icon-col">
+          <div class="arch-icon-wrap layer-purple">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          </div>
+          <div class="arch-layer-meta">
+            <span class="arch-layer-no" style="color:var(--ai)">LAYER 02</span>
+            <span class="arch-layer-name">调度编排状态机</span>
+          </div>
+        </div>
+        <div class="arch-layer-content">
+          <div class="arch-layer-desc">
+            <strong>FastAPI + LangGraph 状态机</strong>驱动 STAGE 01–09 闭环流水线：简历与打招呼语智能生成（精投定制 / 海投通用）、安检卡口挂起等待、APScheduler 定时任务调度、SSE 全链路白盒日志实时回传。
+          </div>
+          <div class="arch-layer-pills">
+            <span class="layer-pill">FastAPI</span>
+            <span class="layer-pill">LangGraph 状态机</span>
+            <span class="layer-pill">SSE 实时流</span>
+            <span class="layer-pill">简历与招呼语生成</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="arch-layer">
+        <div class="arch-layer-icon-col">
+          <div class="arch-icon-wrap layer-amber">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </div>
+          <div class="arch-layer-meta">
+            <span class="arch-layer-no" style="color:var(--human)">LAYER 03</span>
+            <span class="arch-layer-name">平台自动化执行引擎</span>
+          </div>
+        </div>
+        <div class="arch-layer-content">
+          <div class="arch-layer-desc">
+            <strong>安全风控网关</strong>（全局投递串行锁 / 单日配额止损 / 拟人拟真延时与鼠标平滑轨迹）+ <strong>真实浏览器引擎</strong>（DrissionPage + Playwright CDP 接管宿主机 Chrome/Edge）执行四大平台自动投递与在线简历回写。
+          </div>
+          <div class="arch-layer-pills">
+            <span class="layer-pill">DrissionPage</span>
+            <span class="layer-pill">Playwright CDP</span>
+            <span class="layer-pill">拟人防风控网关</span>
+            <span class="layer-pill">持久化 Profile</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="arch-layer">
+        <div class="arch-layer-icon-col">
+          <div class="arch-icon-wrap layer-green">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          </div>
+          <div class="arch-layer-meta">
+            <span class="arch-layer-no" style="color:var(--green)">LAYER 04</span>
+            <span class="arch-layer-name">本地私密数据底座</span>
+          </div>
+        </div>
+        <div class="arch-layer-content">
+          <div class="arch-layer-desc">
+            <strong>本地 SQLite 集群</strong>（主业务库 + 原始爬取母本池 + Token 审计流水）· 凭证双层热更新加载 · 多通道 LLM 计价审计矩阵 · 外部 SaaS 开放接口（全网企业背景调查 / 语音 ASR / 高德地图）。
+          </div>
+          <div class="arch-layer-pills">
+            <span class="layer-pill">本地 SQLite</span>
+            <span class="layer-pill">数据不出本机</span>
+            <span class="layer-pill">双层配置热更</span>
+            <span class="layer-pill">多通道 LLM</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="arch-flow-strip">
+      岗位状态机闭环：<b>新线索录入</b> → 粗筛排雷 → 深度改写 / 海投装配 → <b>人工审批把关</b> → 待投递队列 → <b>真机已投递</b>（失败带自愈重试）
+    </div>
+
+    <!-- Tech Chips Group -->
+    <div class="tech-chips-group">
+      <div class="tech-chips-row">
+        <span class="tech-chips-label">后端核心编排</span>
+        <span class="tech-chip">FastAPI</span>
+        <span class="tech-chip">LangGraph 状态机</span>
+        <span class="tech-chip">APScheduler</span>
+        <span class="tech-chip">SSE 实时流</span>
+        <span class="tech-chip">Python 3.10+ · uv</span>
+      </div>
+      <div class="tech-chips-row">
+        <span class="tech-chips-label">浏览器自动化</span>
+        <span class="tech-chip">DrissionPage</span>
+        <span class="tech-chip">Playwright（CDP 接管真实 Chrome/Edge）</span>
+        <span class="tech-chip">持久化登录态 Profile</span>
+      </div>
+      <div class="tech-chips-row">
+        <span class="tech-chips-label">前端现代化</span>
+        <span class="tech-chip">Next.js 16 (App Router)</span>
+        <span class="tech-chip">React 19</span>
+        <span class="tech-chip">Tailwind CSS v4</span>
+        <span class="tech-chip">shadcn/ui</span>
+        <span class="tech-chip">Zustand</span>
+        <span class="tech-chip">Recharts</span>
+      </div>
+      <div class="tech-chips-row">
+        <span class="tech-chips-label">大模型通道</span>
+        <span class="tech-chip highlight">OpenAI 兼容多通道（主 / 清洗 / 视觉）</span>
+        <span class="tech-chip">MiMo 定价内置 · 自定义计价</span>
+        <span class="tech-chip highlight">KV Cache 命中节省 ~70% Token</span>
+      </div>
+      <div class="tech-chips-row">
+        <span class="tech-chips-label">开放生态集成</span>
+        <span class="tech-chip">飞书开放平台（多维表格 + 长连接机器人）</span>
+        <span class="tech-chip">Serper / Tavily 企业情报</span>
+        <span class="tech-chip">火山引擎 ASR / TTS</span>
+        <span class="tech-chip">高德地图</span>
+      </div>
+      <div class="tech-chips-row">
+        <span class="tech-chips-label">数据与基础设施</span>
+        <span class="tech-chip">本地 SQLite（私密不上传）</span>
+        <span class="tech-chip">PM2 守护自愈</span>
+        <span class="tech-chip">Sentry 链路追踪</span>
+        <span class="tech-chip">双层配置热加载</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 伍 · 设计亮点（苹果深空暗黑） ============ -->
+<section class="sec dark" id="highlights">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">设计亮点</span>
+      <h2>几个值得深思的<br>核心架构决策</h2>
+      <p class="sec-sub">这些并不是冷冰冰的功能参数，而是这个自动化系统「为什么好用、为什么敢放心用」的根本基石。</p>
+    </div>
+    <div class="highlights-grid">
+      <div class="highlight-card">
+        <svg class="highlight-icon" viewBox="0 0 28 28" fill="none" stroke="#2997ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3.2" y="4.6" width="21.6" height="15.2" rx="4.6"/>
+          <path d="M9.6 19.8l.2 4.2 5.2-4.2"/>
+        </svg>
+        <h3>手机就是指挥台</h3>
+        <p>在飞书聊天框用自然语言直接下指令：「查进度」「找找算法工程师」「看最新 A 级岗位」——背后由 <b>16 个原子工具</b>实现精准意图解析与 SSE 日志回流。长连接机器人<b>免公网 IP</b>；岗位截图发进群，OCR 识别、八维评估、定制简历一键推送。</p>
+      </div>
+
+      <div class="highlight-card">
+        <svg class="highlight-icon" viewBox="0 0 28 28" fill="none" stroke="#30d158" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="5.8" y="12.4" width="16.4" height="11" rx="3.4"/>
+          <path d="M9.4 12.4V9a4.6 4.6 0 0 1 9.2 0v3.4"/>
+          <circle cx="14" cy="17.9" r="1.4" fill="#30d158" stroke="none"/>
+        </svg>
+        <h3>数据绝不出本机</h3>
+        <p>浏览器登录态 Profile、SQLite 数据库母本、各平台 API 密钥<b>全部只加密保存在本地</b>，不收集、不上传任何个人数据。GPL-3.0 协议全开源，每一行代码都经得起独立审计。求职与简历这种最隐私的数据，必须完全掌控在自己手里。</p>
+      </div>
+
+      <div class="highlight-card">
+        <svg class="highlight-icon" viewBox="0 0 28 28" fill="none" stroke="#bf5af2" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="14" cy="14" r="10.6"/>
+          <path d="M10.2 10.4l3.8 4.4 3.8-4.4M14 14.8v5.4M11.2 16.4h5.6M11.2 18.8h5.6"/>
+        </svg>
+        <h3>Token 永远花在刀刃上</h3>
+        <p>岗位清洗先走 <b>0 Token 硬规则</b>（城市 / 学历 / 资历 / 薪资毫秒级初筛），只有评为 A / B 级的优质岗位才触发模型深度体检；主 / 清洗 / 视觉<b>三通道模型矩阵</b>各司其职；KV Cache 命中机制使 Token 成本<b>直降约 70%</b>，大盘中每次调用均可审计计价。</p>
+      </div>
+
+      <div class="highlight-card">
+        <svg class="highlight-icon" viewBox="0 0 28 28" fill="none" stroke="#ff9f0a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="14" cy="14" r="10.6"/>
+          <path d="M9.4 14.6l3.1 3.1 6.1-6.9"/>
+        </svg>
+        <h3>工程质量三道严格门禁</h3>
+        <p><b>1000+ 后端自动化测试</b>（覆盖 143 个测试文件）+ 前端测试矩阵全绿；每次关键代码变更均经过<b>独立 Reviewer 双轴严格审查</b>才允许合入；模块级 QA 对账报告全部留痕存证。唯有扎实的自动化门禁，才能赋予使用者「放心把手松开」的底气。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 陆 · 平台支持 + 快速开始 ============ -->
+<section class="sec alt" id="quickstart">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">快速部署</span>
+      <h2>半小时极速跑通</h2>
+      <p class="sec-sub">本地三条命令即可拉起前后端服务；初次接入飞书跟着 9 步精简手册即可无痛完成配置。</p>
+    </div>
+
+    <!-- 平台支持表格 -->
+    <div class="table-card">
+      <table class="platform-table">
+        <thead>
+          <tr>
+            <th>招聘平台</th>
+            <th>岗位抓取</th>
+            <th>自动投递</th>
+            <th>简历在线回写</th>
+            <th>运行状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>BOSS 直聘</strong></td>
+            <td><span class="badge-status verified">✓ 支持</span></td>
+            <td><span class="badge-status verified">✓ 支持</span></td>
+            <td><span class="badge-status verified">✓ 支持</span></td>
+            <td>核心主力平台，持续真机高保真验证</td>
+          </tr>
+          <tr>
+            <td><strong>前程无忧 (51job)</strong></td>
+            <td><span class="badge-status verified">✓ 支持</span></td>
+            <td><span class="badge-status verified">✓ 支持</span></td>
+            <td><span class="badge-status verified">✓ 支持</span></td>
+            <td>核心主力平台，持续真机高保真验证</td>
+          </tr>
+          <tr>
+            <td><strong>猎聘 (Liepin)</strong></td>
+            <td><span class="badge-status verified">✓ 支持</span></td>
+            <td><span class="badge-status verified">✓ 支持</span></td>
+            <td><span class="badge-status verified">✓ 支持</span></td>
+            <td>核心主力平台，全流程真机高保真跑通</td>
+          </tr>
+          <tr>
+            <td><strong>智联招聘 (Zhaopin)</strong></td>
+            <td><span class="badge-status verified">✓ 支持</span></td>
+            <td><span class="badge-status verified">✓ 支持</span></td>
+            <td><span class="badge-status verified">✓ 支持</span></td>
+            <td>核心主力平台，全流程真机高保真跑通</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <span class="table-note">※ 招聘平台页面结构变更与风控策略更新可能会影响部分自动化操作，适配补丁随仓库版本持续推送；小红书等社媒渠道可作为精选招聘信息补充源。</span>
+
+    <!-- macOS Terminals -->
+    <div class="quickstart-grid">
+      <div class="terminal-card">
+        <h3>① 启动 Python 后端</h3>
+        <div class="terminal-tip">Python 3.10+，推荐使用 uv 工具管理；初次启动需安装 Playwright 依赖</div>
+        <div class="terminal-window">
+          <div class="terminal-topbar">
+            <span class="traffic-dot red"></span>
+            <span class="traffic-dot yellow"></span>
+            <span class="traffic-dot green"></span>
+          </div>
+          <pre class="terminal-code"><span class="c"># 进入 backend/ 目录</span>
+uv sync
+cp .env.example .env   <span class="c"># 按需配置飞书与 LLM 密钥</span>
+playwright install chromium
+uvicorn app.main:app --reload
+<span class="p"># → http://localhost:8000 (API 就绪)</span></pre>
+        </div>
+      </div>
+
+      <div class="terminal-card">
+        <h3>② 启动 Next.js 前端</h3>
+        <div class="terminal-tip">Node.js 18+；Windows 用户可直接双击根目录下 start_all.bat</div>
+        <div class="terminal-window">
+          <div class="terminal-topbar">
+            <span class="traffic-dot red"></span>
+            <span class="traffic-dot yellow"></span>
+            <span class="traffic-dot green"></span>
+          </div>
+          <pre class="terminal-code"><span class="c"># 进入 frontend/ 目录</span>
+npm install
+npm run dev
+<span class="p"># → http://localhost:3000 (控制台就绪)</span></pre>
+        </div>
+      </div>
+
+      <div class="terminal-card">
+        <h3>③ 接入飞书生态（推荐）</h3>
+        <div class="terminal-tip">9 步手册：创建应用 → 开启长连接 → 绑定多维表格 → 一键校验配置</div>
+        <div class="terminal-window">
+          <div class="terminal-topbar">
+            <span class="traffic-dot red"></span>
+            <span class="traffic-dot yellow"></span>
+            <span class="traffic-dot green"></span>
+          </div>
+          <pre class="terminal-code"><span class="c"># 一键测试所有配置与密钥是否生效</span>
+python scripts/test_config_validation.py all
+
+<span class="c"># ChatOps 自然语言指令批量自测验证</span>
+python backend/test_scripts/test_feishu_chatops.py --batch</pre>
+        </div>
+      </div>
+
+      <div class="terminal-card">
+        <h3>④ 生产环境 PM2 守护</h3>
+        <div class="terminal-tip">爬虫依赖真实浏览器 Profile，推荐宿主机常驻搭配 PM2 自愈</div>
+        <div class="terminal-window">
+          <div class="terminal-topbar">
+            <span class="traffic-dot red"></span>
+            <span class="traffic-dot yellow"></span>
+            <span class="traffic-dot green"></span>
+          </div>
+          <pre class="terminal-code">pm2 start <span class="p">"uvicorn app.main:app --host 0.0.0.0 --port 8000"</span> --name jobhunter-api --cwd backend
+pm2 start <span class="p">"npm start"</span> --name jobhunter-web --cwd frontend</pre>
+        </div>
+      </div>
+    </div>
+    <span class="table-note">飞书完整接入指南：<a href="https://github.com/jolie-z/jobhunter-ai/blob/main/docs/feishu-setup.md" target="_blank" rel="noopener noreferrer">docs/feishu-setup.md</a>（含常见问题 FAQ）· 详细字段配置说明见仓库 README。</span>
+  </div>
+</section>
+
+<!-- ============ 免责声明 ============ -->
+<section class="wrap legal">
+  <h3>合规与使用声明</h3>
+  <p>本项目仅供计算机系统架构学习、技术研究与个人求职效率提升交流使用；各大招聘平台的用户服务协议通常限制或禁止未授权的自动化数据抓取与程序化投递，由此引发的账号风控、限制或封禁等后果由使用者完全自行承担。请合理设置操作请求间隔，尊重平台运营规则与招聘企业，坚决抵制任何恶意刷屏与垃圾信息投递行为。本项目遵循 GPL-3.0 开源协议，不提供任何明示或暗示的担保。</p>
+</section>
+
+<!-- ============ 页脚 ============ -->
+<footer class="wrap">
+  <div>JobHunter · Auto-JobHunter v2.0 — AI 全链路求职自动化平台</div>
+  <div>
+    <a href="https://github.com/jolie-z/jobhunter-ai" target="_blank" rel="noopener noreferrer">GitHub 仓库</a> · GPL-3.0 开源协议 · 用 AI 认真找工作
+  </div>
+</footer>
+
+<!-- ============ 苹果风格大图灯箱 ============ -->
+<div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="图片放大预览">
+  <img id="lightboxImg" src="" alt="放大预览">
+</div>
+
+<!-- ============ 交互脚本 ============ -->
+<script>
+/* ---------- 流水线 9 阶段核心数据 ---------- */
+var STAGES = [
+  {
+    no: "01",
+    name: "岗位抓取",
+    cap: "5 平台真机抓取 + OCR 秒级录入",
+    c: "var(--auto)",
+    cSoft: "var(--auto-soft)",
+    cGlow: "rgba(0, 113, 227, 0.18)",
+    who: "机器自动",
+    d: "BOSS 直聘、前程无忧、猎聘、智联、小红书 5 大平台基于真机浏览器自动化抓取（持久化登录态 Profile，扫码即可常驻，小红书支持多模态图文笔记解析）；同时全面支持剪贴板 JD 文本粘贴或手机截图 OCR 快速录入。全程由 SSE 实时日志驱动，支持毫秒级一键物理急刹车。",
+    tags: ["5 大平台真机抓取", "小红书多模态图文", "登录态感知", "截图 OCR 录入", "SSE 实时日志"]
+  },
+  {
+    no: "02",
+    name: "双层清洗",
+    cap: "0 Token 硬筛 + AI 必须/绝不排雷",
+    c: "var(--ai)",
+    cSoft: "var(--ai-soft)",
+    cGlow: "rgba(175, 82, 222, 0.18)",
+    who: "AI 负责",
+    d: "Tier1 硬规则毫秒级初筛（工作城市 / 学历门槛 / 资历年限 / 薪资下限，0 Token 成本秒级过滤）；Tier2 AI 智能侦察兵深度排雷，全面支持自定义「必须 (must)」与「绝不 (never)」双向条件（如自定义绝不接受单休、电话销售、外包转包或挂羊头卖狗肉）。被过滤岗位统一沉淀至「拦截回收站」，保留白盒化排雷归因日志，留给人工快速 double-check 复核，支持一键放行救回与错误归因纠正。",
+    tags: ["0 Token 毫秒初筛", "AI 侦察兵排雷", "自定义必须/绝不条件", "拦截回收站 double-check", "一键放行救回"]
+  },
+  {
+    no: "03",
+    name: "飞书同步",
+    cap: "三要素查重 → 多维表格",
+    c: "var(--auto)",
+    cSoft: "var(--auto-soft)",
+    cGlow: "rgba(0, 113, 227, 0.18)",
+    who: "机器自动",
+    d: "按「公司 + 岗位名称 + 城市」三要素计算数字指纹精确查重后写入飞书多维表格（Bitable），手机随时随地翻看专属线索库；表格内跟进状态变更后，系统工作台双向实时联动更新。",
+    tags: ["飞书多维表格", "双向同步", "三要素防重", "移动端线索库"]
+  },
+  {
+    no: "04",
+    name: "八维初评",
+    cap: "8 维加权自定义 + 精投/海投路由",
+    c: "var(--ai)",
+    cSoft: "var(--ai-soft)",
+    cGlow: "rgba(175, 82, 222, 0.18)",
+    who: "AI 负责",
+    d: "围绕角色匹配度、技术栈硬度、资历契合度、薪酬待遇、面试难度、企业阶段与赛道（联动 Google Serper + Tavily 全网动态搜集）、个人成长空间八个核心维度逐项评分。系统支持自主调整各维度分数权重，加权汇总为 0-100 总分与 A–F 评级；同时可自定义设置「精投 / 海投流转阈值」，自动将高价值岗位导向精投定制轨，普通岗位导向海投快投轨。",
+    tags: ["8 维自定义权重", "精投/海投阈值分流", "Google/Tavily 情报", "雷达图建模", "初筛分级"]
+  },
+  {
+    no: "05",
+    name: "深度体检",
+    cap: "仅针对【精投】岗位深度拆解",
+    c: "var(--ai)",
+    cSoft: "var(--ai-soft)",
+    cGlow: "rgba(175, 82, 222, 0.18)",
+    who: "AI 负责",
+    d: "分级策略极大节省大模型开销：仅【精投】高价值岗位才触发深度体检——JD 逐行解构拆解、底层简历逐条比对审计、挖掘高杠杆匹配亮点与致命硬伤后果推演，并生成「理想候选人画像」做全方位差距诊断。",
+    tags: ["JD 逐行解构", "简历逐条审计", "高杠杆亮点", "致命硬伤推演", "差距诊断"]
+  },
+  {
+    no: "06",
+    name: "简历改写",
+    cap: "官方/自定义 Skill + 真实边界防造假",
+    c: "var(--ai)",
+    cSoft: "var(--ai-soft)",
+    cGlow: "rgba(175, 82, 222, 0.18)",
+    who: "AI 负责",
+    d: "支持挂载官方精选 Skill 或完全自定义的个性化改写 Skill。改写引擎自动注入 05 阶段的深度体检诊断上下文（强化高杠杆匹配亮点、对齐 ATS 关键词并避开毒点），内置「Truth Boundary 真实边界」安全阀严防大模型虚构履历。同时支持在配置中心自定义「通用海投基准简历」，海投轨一键复用母本快速触达，精投轨生成 1 对 1 专属高保真物料。",
+    tags: ["官方/自定义 Skill", "体检上下文注入", "Truth Boundary 防造假", "海投基准母本", "专属高转化稿"]
+  },
+  {
+    no: "07",
+    name: "打招呼语",
+    cap: "提炼高杠杆亮点 · 直击 HR 痛点",
+    c: "var(--ai)",
+    cSoft: "var(--ai-soft)",
+    cGlow: "rgba(175, 82, 222, 0.18)",
+    who: "AI 负责",
+    d: "支持官方精调模版与自定义 System Prompt。Greeting Agent 自动提炼 05 阶段输出的「针对该岗位的核心高杠杆匹配亮点」，以 150~250 字的高转化开聊格式精准击中 HR 痛点——序号化罗列 2~3 项硬核项目战果与技术栈匹配证据，告别千篇一律的机械套话；控制台保留白盒化思考标签，显著提升回复与邀约率。",
+    tags: ["官方/自定义 Prompt", "高杠杆亮点提炼", "150-250字高转化", "白盒思考日志", "直击HR痛点"]
+  },
+  {
+    no: "08",
+    name: "人工审批",
+    cap: "机器备齐物料，人类签署放行",
+    c: "var(--human)",
+    cSoft: "var(--human-soft)",
+    cGlow: "rgba(255, 149, 0, 0.2)",
+    who: "人工把关",
+    d: "流水线在审批卡口主动挂起暂停。通过飞书交互卡片或 Web 看板一键放行或拒绝——到底要不要投递这家公司，这个关键决定永远牢牢掌握在你自己手中，AI 的职责是将充分的研判理由完整摆在你的眼前。",
+    tags: ["Human-in-the-loop", "飞书卡片一键审批", "卡口防误投", "安全红线"]
+  },
+  {
+    no: "09",
+    name: "自动投递",
+    cap: "4 大平台差异化送达 · 拟人拟真",
+    c: "var(--auto)",
+    cSoft: "var(--auto-soft)",
+    cGlow: "rgba(0, 113, 227, 0.18)",
+    who: "机器自动",
+    d: "真实浏览器接管投递，当前已成熟支持 4 大主流平台，底层严密适配各平台物料差异：BOSS 直聘投递高保真图片简历 (PNG 长图) 搭配即时开聊招呼语；智联招聘、猎聘、前程无忧 (51job) 则动态上传过审 PDF 附件简历（精投专属 PDF 删旧传新 / 海投母本 PDF 批次复用）并填充求职信。辅以全局并发串行锁、15~25 秒拟人随机延迟与轨迹模拟、单日配额止损与 45s 死锁看门狗重试。",
+    tags: ["4 大平台成熟支持", "BOSS长图 vs 智联/猎聘/51job PDF", "拟人随机延迟", "全局串行锁", "单日配额止损"]
+  }
+];
+
+var track = document.getElementById("track");
+var detail = document.getElementById("detail");
+
+// 渲染流水线节点
+STAGES.forEach(function(s, i) {
+  var b = document.createElement("button");
+  b.className = "stage-node";
+  b.style.setProperty("--c", s.c);
+  b.style.setProperty("--c-soft", s.cSoft);
+  b.style.setProperty("--c-glow", s.cGlow);
+  b.setAttribute("aria-pressed", "false");
+  b.innerHTML = 
+    '<span class="stage-num">' + s.no + '</span>' +
+    '<span class="stage-name">' + s.name + '</span>';
+  b.addEventListener("click", function() { selectStage(i); });
+  track.appendChild(b);
+});
+
+// 选择某个阶段
+function selectStage(i) {
+  var s = STAGES[i];
+  var nodes = track.children;
+  for (var k = 0; k < nodes.length; k++) {
+    nodes[k].classList.toggle("on", k === i);
+    nodes[k].setAttribute("aria-pressed", k === i ? "true" : "false");
+  }
+  detail.style.setProperty("--d", s.c);
+  detail.style.setProperty("--d-soft", s.cSoft);
+  detail.innerHTML = 
+    '<div class="stage-detail-header">' +
+      '<div class="stage-detail-title">' +
+        '<span class="no">' + s.no + '</span>' +
+        '<span class="title">' + s.name + '</span>' +
+      '</div>' +
+      '<span class="stage-detail-badge">' + s.who + '</span>' +
+    '</div>' +
+    '<div class="stage-detail-desc">' + s.d + '</div>' +
+    '<div class="stage-detail-tags">' + 
+      s.tags.map(function(t) { return '<span>' + t + '</span>'; }).join('') + 
+    '</div>';
+}
+
+// 初始化选中第一个节点
+selectStage(0);
+
+// 图片灯箱交互
+var lb = document.getElementById("lightbox");
+var lbImg = document.getElementById("lightboxImg");
+document.querySelectorAll(".figure").forEach(function(fig) {
+  fig.addEventListener("click", function() {
+    var img = fig.querySelector("img");
+    if (!img) return;
+    lbImg.src = img.src;
+    lb.classList.add("open");
+  });
+});
+lb.addEventListener("click", function() { lb.classList.remove("open"); });
+document.addEventListener("keydown", function(e) {
+  if (e.key === "Escape") lb.classList.remove("open");
+});
+
+/* ---------- 顶部 6 大统计卡片交互展开抽屉 ---------- */
+var DRAWER_DATA = {
+  modules: {
+    badge: "10 大系统模块",
+    title: "十大功能模块 · 全景矩阵速览",
+    render: function() {
+      var list = [
+        {idx: "01", name: "岗位爬取与清洗", desc: "4平台真机抓取、登录态感知、OCR秒录入、拦截回收站"},
+        {idx: "02", name: "岗位看板大本营", desc: "全渠道录入入库、三要素查重、多维即时筛选、批量操作栏"},
+        {idx: "03", name: "四分屏作战室", desc: "公司情报、JD矩阵、八维雷达、简历定制与STAR押题辅导"},
+        {idx: "04", name: "策略实验室", desc: "凭证热更、底本简历库多版本管理、四维权重与初筛规则"},
+        {idx: "05", name: "在线简历多平台同步", desc: "四平台真机线上采集、差分比对、Agent 自动回写"},
+        {idx: "06", name: "全链路指挥中心", desc: "9阶段导轨、转化漏斗、毫秒急刹车、白盒实时日志"},
+        {idx: "07", name: "数据大盘与战报", desc: "每日目标追踪、平台效能对比、Token成本逐笔审计"},
+        {idx: "08", name: "面试训练营", desc: "HR/技术/业务高管多角色模拟对练、背调评分、面经押题"},
+        {idx: "09", name: "飞书协同与机器人", desc: "多维表格双向联动、WebSocket免公网长连接、ChatOps指令"},
+        {idx: "10", name: "系统守护与运维", desc: "PM2崩溃1秒自愈、LaunchAgent开机自启、内存熔断保护"}
+      ];
+      return '<div class="drawer-grid-modules">' + 
+        list.map(function(m){
+          return '<div class="drawer-module-mini">' +
+            '<div class="drawer-module-idx">MODULE ' + m.idx + '</div>' +
+            '<div class="drawer-module-name">' + m.name + '</div>' +
+            '<div class="drawer-module-desc">' + m.desc + '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>' +
+      '<div class="drawer-action-row">' +
+        '<a class="drawer-jump-btn" href="#modules">前往功能模块专区查看详情 ↓</a>' +
+      '</div>';
+    }
+  },
+  platforms: {
+    badge: "主流招聘平台",
+    title: "4+ 招聘平台 · 自动化能力与真机验证矩阵",
+    render: function() {
+      var plats = [
+        {name: "BOSS 直聘", status: "核心平台 · 持续真机高保真验证", cls: "core", tags: ["真机CDP 19222", "扫码常驻", "自动投递", "简历在线回写"]},
+        {name: "前程无忧 51job", status: "核心平台 · 持续真机高保真验证", cls: "core", tags: ["真机CDP 19227", "槽位自愈", "自动投递", "简历在线回写"]},
+        {name: "猎聘 (Liepin)", status: "核心平台 · 持续真机高保真验证", cls: "core", tags: ["真机CDP 19226", "岗位抓取", "自动投递", "简历回写"]},
+        {name: "智联招聘", status: "核心平台 · 持续真机高保真验证", cls: "core", tags: ["真机CDP 19250", "岗位抓取", "自动投递", "简历回写"]},
+        {name: "小红书 (RED)", status: "精选社媒补充源 · 线索发现", cls: "exp", tags: ["真机CDP 19224", "关键字搜索", "JD线索提取", "OCR录入"]}
+      ];
+      return '<div class="drawer-platforms-grid">' + 
+        plats.map(function(p){
+          return '<div class="drawer-platform-card">' +
+            '<div class="drawer-platform-name">' + p.name + '</div>' +
+            '<div class="drawer-platform-status ' + p.cls + '">' + p.status + '</div>' +
+            '<div class="drawer-platform-tags">' + p.tags.map(function(t){ return '<span>' + t + '</span>'; }).join('') + '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>' +
+      '<div class="drawer-action-row">' +
+        '<a class="drawer-jump-btn" href="#quickstart">前往平台部署手册 ↓</a>' +
+      '</div>';
+    }
+  },
+  pipeline: {
+    badge: "9 阶段导轨",
+    title: "端到端 9 阶段闭环流水线流转导轨",
+    render: function() {
+      var stages = [
+        {no: "01", name: "岗位抓取", who: "机器自动", desc: "5 大平台真机爬虫 (含小红书图文笔记) + 剪贴板 JD 粘贴 + 手机截图 OCR 秒录入"},
+        {no: "02", name: "双层清洗", who: "AI 负责", desc: "0 Token 硬筛 + AI 侦察必须/绝不条件排雷，被过滤岗位沉淀回收站供人工复核放行"},
+        {no: "03", name: "飞书同步", who: "机器自动", desc: "公司+岗位+城市三要素指纹查重后写入多维表格数据库，双向实时联动"},
+        {no: "04", name: "八维初评", who: "AI 负责", desc: "8 维度打分权重自定义 + 精投/海投阈值分流，联动 Google/Tavily 全网动态搜集"},
+        {no: "05", name: "深度体检", who: "AI 负责", desc: "仅【精投】高价值岗位触发：逐行解构 JD、逐条审计简历、高杠杆亮点挖掘与差距诊断"},
+        {no: "06", name: "简历改写", who: "AI 负责", desc: "官方/自定义 Skill + Truth Boundary 防虚构安全阀，支持自定义海投基准母本"},
+        {no: "07", name: "打招呼语", who: "AI 负责", desc: "官方/自定义 Prompt 提炼高杠杆亮点，150-250 字结构化证据直击 HR 痛点"},
+        {no: "08", name: "人工审批", who: "人工把关", desc: "流水线在卡口主动挂起，飞书卡片或 Web 看板一键放行，机器绝不盲投"},
+        {no: "09", name: "自动投递", who: "机器自动", desc: "成熟支持 4 大平台差异化物料 (BOSS长图 / 智联猎聘51job PDF) + 全局串行锁与拟人随机延迟"}
+      ];
+      return '<div class="drawer-pills-list">' + 
+        stages.map(function(s){
+          return '<div class="drawer-pill-item">' +
+            '<span class="icon">⚡️</span>' +
+            '<div>' +
+              '<div class="title">' + s.no + ' · ' + s.name + ' <small style="color:var(--blue);font-weight:normal">(' + s.who + ')</small></div>' +
+              '<div class="desc">' + s.desc + '</div>' +
+            '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>' +
+      '<div class="drawer-action-row">' +
+        '<a class="drawer-jump-btn" href="#pipeline">体验下方可交互执行导轨 ↓</a>' +
+      '</div>';
+    }
+  },
+  eval8: {
+    badge: "8 维初评模型",
+    title: "8 维 AI 初筛评估模型体系 (0-100 分 + A–F 评级)",
+    render: function() {
+      var dims = [
+        {icon: "🎯", title: "角色匹配度", desc: "工作职责与求职意向、核心定位的契合度分析"},
+        {icon: "💻", title: "技术栈硬度", desc: "岗位硬性技术要求、专业工具与熟练度深度重合度"},
+        {icon: "⏳", title: "资历契合度", desc: "工作年限、以往项目规模、行业赛道背书吻合情况"},
+        {icon: "💰", title: "薪酬待遇分析", desc: "薪资范围契合度、五险一金待遇与薪资性价比评估"},
+        {icon: "🧩", title: "面试难度评估", desc: "技术栈门槛、考察范围与候选人通关概率预测"},
+        {icon: "🏢", title: "企业所处阶段", desc: "联动 Google Serper + Tavily 全网并发搜索，核验初创/成长/上市背景、融资历程与近期经营稳定性"},
+        {icon: "📈", title: "行业赛道前景", desc: "借助 Google 全网动态与商业新闻管道，研判行业风口红利期、业务合规度与未来抗周期能力"},
+        {icon: "🚀", title: "个人成长空间", desc: "岗位带来的技术杠杆、业务影响力与个人履历加分程度"}
+      ];
+      return '<div class="drawer-pills-list">' + 
+        dims.map(function(d){
+          return '<div class="drawer-pill-item">' +
+            '<span class="icon">' + d.icon + '</span>' +
+            '<div>' +
+              '<div class="title">' + d.title + '</div>' +
+              '<div class="desc">' + d.desc + '</div>' +
+            '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>';
+    }
+  },
+  eval6: {
+    badge: "6 维深度体检",
+    title: "6 维深度体检与审计模型 (仅针对 A/B 级高价值岗位)",
+    render: function() {
+      var audits = [
+        {icon: "🔍", title: "JD 逐行解构", desc: "剥离 HR 套话与虚张声势要求，穿透部门核心痛点与实际用人需求"},
+        {icon: "📑", title: "简历逐条比对", desc: "以目标岗为基准逐条审计过往项目与经历，量化匹配优势与短板"},
+        {icon: "🌟", title: "高杠杆亮点挖掘", desc: "针对性提炼 3 个最能打动该用人业务线主管的核心胜任杀手锏"},
+        {icon: "🚩", title: "致命硬伤与毒点推演", desc: "资深技术面试官视角，深度推演候选人与目标岗间的核心断层、面试高压深挖击穿风险与改写避坑禁区"},
+        {icon: "👤", title: "理想候选人差距", desc: "生成该岗理想员工画像，比对差距并输出简历定制弥补策略"},
+        {icon: "🎙️", title: "STAR 押题与辅导", desc: "基于真实项目经验提前输出针对该岗的 STAR 面试押题与回答破局点"}
+      ];
+      return '<div class="drawer-pills-list">' + 
+        audits.map(function(a){
+          return '<div class="drawer-pill-item">' +
+            '<span class="icon">' + a.icon + '</span>' +
+            '<div>' +
+              '<div class="title">' + a.title + '</div>' +
+              '<div class="desc">' + a.desc + '</div>' +
+            '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>';
+    }
+  },
+  skills: {
+    badge: "自定义 Skill",
+    title: "简历智能改写引擎 · 官方 Skill 与自定义技能包",
+    render: function() {
+      var features = [
+        {icon: "⚙️", title: "官方默认 Skill", desc: "行业成熟的标准 Prompt 模板，自动提炼 STAR 原则与量化业务指标"},
+        {icon: "🛠️", title: "支持上传自定义 Skill", desc: "支持用户针对特定行业或岗位注入专属 Skill 提示词（如强化出海经验/全栈架构）"},
+        {icon: "📄", title: "高保真双模输出", desc: "改写产物一键编译生成高保真矢量 PDF 与微信端高清长图，自动同步多维表格"},
+        {icon: "🔒", title: "本地私密不外泄", desc: "底本简历和修改版本全部留在本地 SQLite，改写过程支持配置指定本地/私有 LLM"}
+      ];
+      return '<div class="drawer-pills-list">' + 
+        features.map(function(f){
+          return '<div class="drawer-pill-item">' +
+            '<span class="icon">' + f.icon + '</span>' +
+            '<div>' +
+              '<div class="title">' + f.title + '</div>' +
+              '<div class="desc">' + f.desc + '</div>' +
+            '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>';
+    }
+  }
+};
+
+var currentDrawerKey = null;
+var drawer = document.getElementById("statsDrawer");
+var drawerTitle = document.getElementById("drawerTitle");
+var drawerBody = document.getElementById("drawerBody");
+var drawerCloseBtn = document.getElementById("drawerCloseBtn");
+
+document.querySelectorAll(".stats-strip .stat-item").forEach(function(item) {
+  item.addEventListener("click", function() {
+    var key = item.getAttribute("data-key");
+    if (!key || !DRAWER_DATA[key]) return;
+
+    if (currentDrawerKey === key) {
+      // 再次点击收起
+      drawer.style.display = "none";
+      item.classList.remove("active");
+      currentDrawerKey = null;
+    } else {
+      // 切换/展开
+      document.querySelectorAll(".stats-strip .stat-item").forEach(function(el) { el.classList.remove("active"); });
+      item.classList.add("active");
+      currentDrawerKey = key;
+
+      var data = DRAWER_DATA[key];
+      drawerTitle.innerHTML = '<span>' + data.title + '</span><span class="drawer-title-badge">' + data.badge + '</span>';
+      drawerBody.innerHTML = data.render();
+      drawer.style.display = "block";
+    }
+  });
+});
+
+drawerCloseBtn.addEventListener("click", function() {
+  drawer.style.display = "none";
+  document.querySelectorAll(".stats-strip .stat-item").forEach(function(el) { el.classList.remove("active"); });
+  currentDrawerKey = null;
+});
+</script>
+</body>
+</html>

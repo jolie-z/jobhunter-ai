@@ -1,0 +1,531 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 1020" width="1440" height="1020">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;display=swap');
+      text {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      }
+      .title { font-size: 26px; font-weight: 800; fill: #0F172A; letter-spacing: -0.5px; }
+      .subtitle { font-size: 13px; font-weight: 500; fill: #64748B; }
+      .badge-text { font-size: 11px; font-weight: 600; }
+      .layer-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; }
+      .card-title { font-size: 13px; font-weight: 700; }
+      .card-sub { font-size: 11px; font-weight: 500; fill: #64748B; line-height: 1.4; }
+      .mono-tag { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 10px; font-weight: 600; }
+      .flow-label { font-size: 10.5px; font-weight: 600; fill: #64748B; }
+      
+      .shadow-sm { filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.05)); }
+      .shadow-md { filter: drop-shadow(0 4px 6px rgba(15, 23, 42, 0.06)); }
+    </style>
+
+    <!-- Gradients -->
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F8FAFC"/>
+      <stop offset="50%" stop-color="#F1F5F9"/>
+      <stop offset="100%" stop-color="#F8FAFC"/>
+    </linearGradient>
+
+    <linearGradient id="header-accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3B82F6"/>
+      <stop offset="50%" stop-color="#8B5CF6"/>
+      <stop offset="100%" stop-color="#EC4899"/>
+    </linearGradient>
+
+    <!-- Card Background Gradients -->
+    <linearGradient id="user-card-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#F8FAFC"/>
+    </linearGradient>
+
+    <linearGradient id="feishu-card-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#F0F7FF"/>
+    </linearGradient>
+
+    <linearGradient id="web-card-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#F5F3FF"/>
+    </linearGradient>
+
+    <!-- Markers -->
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#94A3B8"/>
+    </marker>
+    <marker id="arr-blue" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#3B82F6"/>
+    </marker>
+    <marker id="arr-purple" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#8B5CF6"/>
+    </marker>
+    <marker id="arr-emerald" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#10B981"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1440" height="1020" fill="url(#bg-grad)"/>
+
+  <!-- Top Accent Bar -->
+  <rect x="0" y="0" width="1440" height="5" fill="url(#header-accent)"/>
+
+  <!-- ==================== HEADER SECTION ==================== -->
+  <g transform="translate(48, 32)">
+    <text class="title" x="0" y="24">JobHunter · AI 全链路求职自动化架构全景</text>
+    <text class="subtitle" x="0" y="48">从全网岗位抓取 → 数据清洗 → AI 评估改写 → 人工审批断点 → 自动精准/批量投递，由 LangGraph 状态机驱动的双端指挥平台</text>
+    
+    <!-- Badges -->
+    <g transform="translate(900, 8)">
+      <rect x="0" y="0" width="84" height="24" rx="12" fill="#DBEAFE" stroke="#93C5FD"/>
+      <text class="badge-text" x="42" y="16" text-anchor="middle" fill="#1E40AF">v2.0 生产态</text>
+
+      <rect x="94" y="0" width="128" height="24" rx="12" fill="#EDE9FE" stroke="#C4B5FD"/>
+      <text class="badge-text" x="158" y="16" text-anchor="middle" fill="#5B21B6">LangGraph 状态机</text>
+
+      <rect x="232" y="0" width="112" height="24" rx="12" fill="#E0E7FF" stroke="#A5B4FC"/>
+      <text class="badge-text" x="288" y="16" text-anchor="middle" fill="#3730A3">飞书 ChatOps</text>
+
+      <rect x="354" y="0" width="90" height="24" rx="12" fill="#DCFCE7" stroke="#86EFAC"/>
+      <text class="badge-text" x="399" y="16" text-anchor="middle" fill="#166534">本地隐私安全</text>
+    </g>
+  </g>
+
+  <!-- ==================== LAYER 1: USER INTERACTION & COMMAND ==================== -->
+  <g transform="translate(48, 95)">
+    <!-- Layer Background -->
+    <rect width="1344" height="135" rx="14" fill="#FFFFFF" stroke="#E2E8F0" class="shadow-sm"/>
+    
+    <g transform="translate(20, 16)">
+      <circle cx="6" cy="6" r="4" fill="#3B82F6"/>
+      <text class="layer-title" x="18" y="10" fill="#1E40AF">Layer 1 · 用户交互与指挥控制层 (Control &amp; Interaction Plane)</text>
+    </g>
+
+    <!-- Sub-block 1: User Persona -->
+    <g transform="translate(20, 36)">
+      <rect width="210" height="82" rx="10" fill="url(#user-card-grad)" stroke="#CBD5E1"/>
+      <text class="card-title" x="14" y="24" fill="#0F172A">👤 求职者 (Operator)</text>
+      <text class="card-sub" x="14" y="44">核心角色：人始终在闭环中</text>
+      <text class="card-sub" x="14" y="62">只做两件事：下指令 · 点审批</text>
+      <rect x="14" y="68" width="180" height="4" rx="2" fill="#3B82F6" opacity="0.3"/>
+    </g>
+
+    <!-- Connection Arrow: User to Feishu/Web -->
+    <path d="M 230 77 L 254 77" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-gray)"/>
+
+    <!-- Sub-block 2: Feishu Ecological Hub -->
+    <g transform="translate(260, 36)">
+      <rect width="520" height="82" rx="10" fill="url(#feishu-card-grad)" stroke="#93C5FD"/>
+      <g transform="translate(14, 14)">
+        <text class="card-title" x="0" y="10" fill="#1E40AF">💬 飞书生态指挥中枢 (Feishu Hub · 移动轻量)</text>
+        <g transform="translate(0, 22)">
+          <!-- Subitem A -->
+          <rect x="0" y="0" width="156" height="38" rx="6" fill="#FFFFFF" stroke="#BFDBFE"/>
+          <text class="badge-text" x="10" y="15" fill="#1D4ED8">ChatOps 自然语言</text>
+          <text class="card-sub" x="10" y="29">抓取/清洗/推送指令</text>
+
+          <!-- Subitem B -->
+          <rect x="166" y="0" width="160" height="38" rx="6" fill="#FFFFFF" stroke="#BFDBFE"/>
+          <text class="badge-text" x="10" y="15" fill="#1D4ED8">多维表格 (4表联动)</text>
+          <text class="card-sub" x="10" y="29">线索/简历/偏好/面试</text>
+
+          <!-- Subitem C -->
+          <rect x="336" y="0" width="156" height="38" rx="6" fill="#FFFFFF" stroke="#BFDBFE"/>
+          <text class="badge-text" x="10" y="15" fill="#1D4ED8">审批交互卡片</text>
+          <text class="card-sub" x="10" y="29">深度体检诊断一键放行</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- Sub-block 3: Web Command Center -->
+    <g transform="translate(798, 36)">
+      <rect width="526" height="82" rx="10" fill="url(#web-card-grad)" stroke="#C4B5FD"/>
+      <g transform="translate(14, 14)">
+        <text class="card-title" x="0" y="10" fill="#5B21B6">🖥️ Next.js 全链路指挥台 (Web Console · 深度控制)</text>
+        <g transform="translate(0, 22)">
+          <!-- Subitem A -->
+          <rect x="0" y="0" width="158" height="38" rx="6" fill="#FFFFFF" stroke="#DDD6FE"/>
+          <text class="badge-text" x="10" y="15" fill="#6D28D9">7 Tab 状态看板</text>
+          <text class="card-sub" x="10" y="29">淘汰/审批/待投/失败</text>
+
+          <!-- Subitem B -->
+          <rect x="168" y="0" width="162" height="38" rx="6" fill="#FFFFFF" stroke="#DDD6FE"/>
+          <text class="badge-text" x="10" y="15" fill="#6D28D9">9 模块执行导轨</text>
+          <text class="card-sub" x="10" y="29">批次漏斗与配置抽屉</text>
+
+          <!-- Subitem C -->
+          <rect x="340" y="0" width="162" height="38" rx="6" fill="#FFFFFF" stroke="#DDD6FE"/>
+          <text class="badge-text" x="10" y="15" fill="#6D28D9">V2 简历编辑器</text>
+          <text class="card-sub" x="10" y="29">四平台简历回写与调优</text>
+        </g>
+      </g>
+    </g>
+  </g>
+
+  <!-- Connectors Layer 1 to Layer 2 -->
+  <g transform="translate(48, 230)">
+    <line x1="520" y1="0" x2="520" y2="28" stroke="#3B82F6" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arr-blue)"/>
+    <rect x="440" y="8" width="160" height="16" rx="4" fill="#EFF6FF" stroke="#BFDBFE"/>
+    <text class="flow-label" x="520" y="20" text-anchor="middle" fill="#1D4ED8">SSE 实时流 / Webhook 长连</text>
+
+    <line x1="1060" y1="0" x2="1060" y2="28" stroke="#8B5CF6" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arr-purple)"/>
+    <rect x="990" y="8" width="140" height="16" rx="4" fill="#F5F3FF" stroke="#DDD6FE"/>
+    <text class="flow-label" x="1060" y="20" text-anchor="middle" fill="#6D28D9">REST API / 状态轮询</text>
+  </g>
+
+  <!-- ==================== LAYER 2: LANGGRAPH & AUTOMATION ENGINE ==================== -->
+  <g transform="translate(48, 260)">
+    <!-- Layer Background -->
+    <rect width="1344" height="340" rx="14" fill="#FFFFFF" stroke="#E2E8F0" class="shadow-sm"/>
+
+    <!-- Header & Trigger Bar -->
+    <g transform="translate(20, 16)">
+      <circle cx="6" cy="6" r="4" fill="#8B5CF6"/>
+      <text class="layer-title" x="18" y="10" fill="#5B21B6">Layer 2 · 核心调度与 LangGraph 状态机编排引擎 (FastAPI + LangGraph)</text>
+
+      <!-- Launch Triggers -->
+      <g transform="translate(710, -6)">
+        <rect x="0" y="0" width="280" height="26" rx="6" fill="#F8FAFC" stroke="#CBD5E1"/>
+        <text class="card-sub" x="10" y="17" fill="#334155">⏰ <tspan font-weight="600">APScheduler 定时双波次</tspan> (10:00 海投 / 14:30 精投)</text>
+
+        <rect x="290" y="0" width="298" height="26" rx="6" fill="#F8FAFC" stroke="#CBD5E1"/>
+        <text class="card-sub" x="10" y="17" fill="#334155">🖱️ <tspan font-weight="600">手动即时触发</tspan> (POST /api/automation/trigger)</text>
+      </g>
+    </g>
+
+    <!-- Pipeline Flow Container -->
+    <g transform="translate(18, 48)">
+      <rect width="1308" height="274" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+
+      <!-- STEP 1: PRE-CHECK -->
+      <g transform="translate(12, 16)">
+        <rect width="112" height="120" rx="8" fill="#FFFFFF" stroke="#E2E8F0"/>
+        <rect x="0" y="0" width="112" height="4" rx="2" fill="#64748B"/>
+        <text class="mono-tag" x="8" y="18" fill="#94A3B8">STAGE 01</text>
+        <text class="card-title" x="8" y="36" fill="#0F172A">登录态预检</text>
+        <text class="card-sub" x="8" y="54">ensure_ready</text>
+        <text class="card-sub" x="8" y="70">4 平台 Profile 探活</text>
+        <text class="card-sub" x="8" y="86">失效平台本轮熔断跳过</text>
+        <rect x="8" y="98" width="60" height="14" rx="3" fill="#F1F5F9"/>
+        <text class="mono-tag" x="12" y="108" fill="#475569">无风控裸跑</text>
+      </g>
+
+      <path d="M 124 76 L 138 76" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-gray)"/>
+
+      <!-- STEP 2: SCRAPER -->
+      <g transform="translate(142, 16)">
+        <rect width="130" height="120" rx="8" fill="#FFFFFF" stroke="#E2E8F0"/>
+        <rect x="0" y="0" width="130" height="4" rx="2" fill="#F59E0B"/>
+        <text class="mono-tag" x="8" y="18" fill="#94A3B8">STAGE 02</text>
+        <text class="card-title" x="8" y="36" fill="#B45309">四平台抓取</text>
+        <text class="card-sub" x="8" y="54">增量差分窗口</text>
+        <text class="card-sub" x="8" y="70">MAX(rowid) 预算制</text>
+        <text class="card-sub" x="8" y="86">BOSS/51/猎聘/智联</text>
+        <rect x="8" y="98" width="76" height="14" rx="3" fill="#FEF3C7"/>
+        <text class="mono-tag" x="12" y="108" fill="#92400E">SQLite raw_jobs</text>
+      </g>
+
+      <path d="M 272 76 L 286 76" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-gray)"/>
+
+      <!-- STEP 3: CLEANING ENGINE -->
+      <g transform="translate(290, 16)">
+        <rect width="138" height="120" rx="8" fill="#FFFFFF" stroke="#E2E8F0"/>
+        <rect x="0" y="0" width="138" height="4" rx="2" fill="#10B981"/>
+        <text class="mono-tag" x="8" y="18" fill="#94A3B8">STAGE 03</text>
+        <text class="card-title" x="8" y="36" fill="#047857">双层清洗排雷</text>
+        <text class="card-sub" x="8" y="54">Tier1 硬规则毫秒筛</text>
+        <text class="card-sub" x="8" y="70">(城市/学历/资历/薪资)</text>
+        <text class="card-sub" x="8" y="86">Tier2 AI侦察小模型</text>
+        <rect x="8" y="98" width="82" height="14" rx="3" fill="#D1FAE5"/>
+        <text class="mono-tag" x="12" y="108" fill="#065F46">识破假招/外包</text>
+      </g>
+
+      <!-- Cleaning Reject Branch -->
+      <path d="M 359 136 L 359 160" stroke="#EF4444" stroke-width="1.5" marker-end="url(#arr-gray)"/>
+      <g transform="translate(305, 164)">
+        <rect width="108" height="34" rx="6" fill="#FEF2F2" stroke="#FCA5A5"/>
+        <text class="badge-text" x="8" y="15" fill="#B91C1C">❌ 淘汰岗位 Tab</text>
+        <text class="mono-tag" x="8" y="27" fill="#EF4444">清洗淘汰 (/unreject)</text>
+      </g>
+
+      <path d="M 428 76 L 442 76" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-gray)"/>
+
+      <!-- STEP 4: FEISHU DEDUP SYNC -->
+      <g transform="translate(446, 16)">
+        <rect width="124" height="120" rx="8" fill="#FFFFFF" stroke="#E2E8F0"/>
+        <rect x="0" y="0" width="124" height="4" rx="2" fill="#0284C7"/>
+        <text class="mono-tag" x="8" y="18" fill="#94A3B8">STAGE 04</text>
+        <text class="card-title" x="8" y="36" fill="#0369A1">多维表格查重</text>
+        <text class="card-sub" x="8" y="54">三要素指纹防重</text>
+        <text class="card-sub" x="8" y="70">公司+岗位+城市</text>
+        <text class="card-sub" x="8" y="86">写入多维表格主库</text>
+        <rect x="8" y="98" width="68" height="14" rx="3" fill="#E0F2FE"/>
+        <text class="mono-tag" x="12" y="108" fill="#0369A1">门牌=新线索</text>
+      </g>
+
+      <path d="M 570 76 L 584 76" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-gray)"/>
+
+      <!-- STEP 5: AI EVALUATE -->
+      <g transform="translate(588, 16)">
+        <rect width="140" height="120" rx="8" fill="#FFFFFF" stroke="#E2E8F0"/>
+        <rect x="0" y="0" width="140" height="4" rx="2" fill="#3B82F6"/>
+        <text class="mono-tag" x="8" y="18" fill="#94A3B8">STAGE 05</text>
+        <text class="card-title" x="8" y="36" fill="#1D4ED8">AI 初评 (evaluate)</text>
+        <text class="card-sub" x="8" y="54">8维加权模型打分</text>
+        <text class="card-sub" x="8" y="70">Tavily 企业全网背调</text>
+        <text class="card-sub" x="8" y="86">产出评级 A/B/C/D/F</text>
+        <rect x="8" y="98" width="86" height="14" rx="3" fill="#DBEAFE"/>
+        <text class="mono-tag" x="12" y="108" fill="#1E40AF">粗筛判垃圾直出F</text>
+      </g>
+
+      <!-- Forking Arrows to Dual Tracks -->
+      <path d="M 728 56 L 752 42" stroke="#8B5CF6" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+      <path d="M 728 96 L 752 110" stroke="#0284C7" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+
+      <!-- STEP 6: DUAL TRACK ASSEMBLY -->
+      <g transform="translate(756, 16)">
+        <rect width="210" height="120" rx="8" fill="#FFFFFF" stroke="#CBD5E1"/>
+        <text class="mono-tag" x="8" y="16" fill="#94A3B8">STAGE 06 · 双轨物料装配</text>
+        
+        <!-- Track A: Precision Rewrite -->
+        <g transform="translate(8, 22)">
+          <rect width="194" height="42" rx="5" fill="#FAF5FF" stroke="#E9D5FF"/>
+          <text class="badge-text" x="6" y="14" fill="#7E22CE">🅰️ 精投轨 (A/B级 · 定制改写)</text>
+          <text class="card-sub" x="6" y="26">7块深度体检 + 定制简历HTML/PDF/长图</text>
+          <text class="mono-tag" x="6" y="37" fill="#9333EA">专属高说服力打招呼语</text>
+        </g>
+
+        <!-- Track B: Mass Apply -->
+        <g transform="translate(8, 68)">
+          <rect width="194" height="44" rx="5" fill="#F0F9FF" stroke="#BAE6FD"/>
+          <text class="badge-text" x="6" y="14" fill="#0369A1">🅱️ 海投轨 (C/D/F级 · 快速装配)</text>
+          <text class="card-sub" x="6" y="26">quick_greeting_node 通用话术</text>
+          <text class="mono-tag" x="6" y="37" fill="#0284C7">挂载基准海投物料 · 门牌预写</text>
+        </g>
+      </g>
+
+      <path d="M 966 76 L 980 76" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-gray)"/>
+
+      <!-- STEP 7: GATE & REVIEW -->
+      <g transform="translate(984, 16)">
+        <rect width="136" height="120" rx="8" fill="#FFFFFF" stroke="#E2E8F0"/>
+        <rect x="0" y="0" width="136" height="4" rx="2" fill="#F97316"/>
+        <text class="mono-tag" x="8" y="18" fill="#94A3B8">STAGE 07 &amp; 08</text>
+        <text class="card-title" x="8" y="36" fill="#C2410C">安检闸门 &amp; 审批</text>
+        <text class="card-sub" x="8" y="54">规模≥1000人强拦截</text>
+        <text class="card-sub" x="8" y="70">免审/平台白名单</text>
+        <text class="card-sub" x="8" y="86">manual_review 挂起</text>
+        <rect x="8" y="98" width="90" height="14" rx="3" fill="#FFEDD5"/>
+        <text class="mono-tag" x="12" y="108" fill="#C2410C">待老板审批 Tab</text>
+      </g>
+
+      <!-- Review Action Arrows -->
+      <g transform="translate(1000, 142)">
+        <path d="M 30 0 L 30 18" stroke="#10B981" stroke-width="1.5" marker-end="url(#arr-emerald)"/>
+        <text class="badge-text" x="40" y="12" fill="#059669">放行 (resume) ➔ 待投递</text>
+        <path d="M 80 0 L 80 18" stroke="#EF4444" stroke-width="1.5" marker-end="url(#arr-gray)"/>
+        <text class="badge-text" x="90" y="12" fill="#DC2626">拒绝 ➔ 已拒绝归档</text>
+      </g>
+
+      <path d="M 1120 76 L 1134 76" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-gray)"/>
+
+      <!-- STEP 8: DELIVERY READY QUEUE -->
+      <g transform="translate(1138, 16)">
+        <rect width="154" height="120" rx="8" fill="#FFFFFF" stroke="#86EFAC"/>
+        <rect x="0" y="0" width="154" height="4" rx="2" fill="#10B981"/>
+        <text class="mono-tag" x="8" y="18" fill="#94A3B8">STAGE 09</text>
+        <text class="card-title" x="8" y="36" fill="#15803D">待投递就绪队列</text>
+        <text class="card-sub" x="8" y="54">双保险防门牌残留</text>
+        <text class="card-sub" x="8" y="70">物料 100% 齐备装配</text>
+        <text class="card-sub" x="8" y="86">门牌=待投递</text>
+        <rect x="8" y="98" width="124" height="14" rx="3" fill="#DCFCE7"/>
+        <text class="mono-tag" x="12" y="108" fill="#166534">定时波次 / 立即投递</text>
+      </g>
+
+      <!-- Bottom Status Summary Banner inside Layer 2 -->
+      <g transform="translate(12, 218)">
+        <rect width="1284" height="42" rx="6" fill="#F1F5F9" stroke="#CBD5E1"/>
+        <text class="badge-text" x="14" y="24" fill="#334155">🎯 岗位状态机流向速查：</text>
+        <text class="card-sub" x="130" y="24">新线索 ➔ 清洗淘汰 / 粗筛淘汰 ➔ 深度改写 / 海投装配 ➔ 简历人工复核 (待审批) ➔ 待投递 ➔ 已投递 / 执行失败 (带自愈修复建议)</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Connectors Layer 2 to Layer 3 -->
+  <g transform="translate(48, 600)">
+    <line x1="720" y1="0" x2="720" y2="25" stroke="#EF4444" stroke-width="1.5" marker-end="url(#arr-gray)"/>
+    <rect x="625" y="6" width="190" height="16" rx="4" fill="#FEF2F2" stroke="#FECACA"/>
+    <text class="flow-label" x="720" y="18" text-anchor="middle" fill="#B91C1C">波次扫描待投递 · 触发发射引擎</text>
+  </g>
+
+  <!-- ==================== LAYER 3: EXECUTION & PLATFORMS ==================== -->
+  <g transform="translate(48, 625)">
+    <!-- Layer Background -->
+    <rect width="1344" height="195" rx="14" fill="#FFFFFF" stroke="#E2E8F0" class="shadow-sm"/>
+
+    <g transform="translate(20, 16)">
+      <circle cx="6" cy="6" r="4" fill="#EF4444"/>
+      <text class="layer-title" x="18" y="10" fill="#991B1B">Layer 3 · 自动化投递与平台执行层 (Execution &amp; Browser Engine)</text>
+    </g>
+
+    <g transform="translate(20, 36)">
+      <!-- Security & Lock Gateway -->
+      <rect width="230" height="135" rx="8" fill="#FFF1F2" stroke="#FECDD3"/>
+      <g transform="translate(14, 14)">
+        <text class="card-title" x="0" y="10" fill="#9F1239">🔒 投递安全与校验网关</text>
+        <text class="card-sub" x="0" y="30">• 全局投递串行锁 (_serial_lock)</text>
+        <text class="card-sub" x="0" y="46">• 单岗看门狗 45s 超时熔断防死锁</text>
+        <text class="card-sub" x="0" y="62">• 投前死链探活 &amp; 已沟通幂等跳过</text>
+        <text class="card-sub" x="0" y="78">• 物料强校验 (BOSS长图/三家PDF)</text>
+        <rect x="0" y="90" width="136" height="16" rx="4" fill="#FFE4E6"/>
+        <text class="mono-tag" x="6" y="102" fill="#BE123C">自愈装配 auto-heal 兜底</text>
+      </g>
+
+      <path d="M 230 102 L 254 102" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-gray)"/>
+
+      <!-- DrissionPage Core -->
+      <g transform="translate(258, 0)">
+        <rect width="168" height="135" rx="8" fill="#F8FAFC" stroke="#CBD5E1"/>
+        <g transform="translate(14, 14)">
+          <text class="card-title" x="0" y="10" fill="#0F172A">🖥️ 真实浏览器核心</text>
+          <text class="card-sub" x="0" y="30">DrissionPage / CDP</text>
+          <text class="card-sub" x="0" y="46">持久化 Profile 保持登录</text>
+          <text class="card-sub" x="0" y="62">拟人随机轨迹与礼貌延时</text>
+          <text class="card-sub" x="0" y="78">宿主机常驻 (非Docker)</text>
+          <rect x="0" y="90" width="124" height="16" rx="4" fill="#E2E8F0"/>
+          <text class="mono-tag" x="6" y="102" fill="#334155">过平台高阶滑动风控</text>
+        </g>
+      </g>
+
+      <path d="M 426 102 L 450 102" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-gray)"/>
+
+      <!-- Platform 1: BOSS -->
+      <g transform="translate(454, 0)">
+        <rect width="200" height="135" rx="8" fill="#FFFFFF" stroke="#E2E8F0"/>
+        <rect x="0" y="0" width="200" height="3" fill="#00BEBD"/>
+        <g transform="translate(12, 12)">
+          <text class="card-title" x="0" y="12" fill="#0F172A">💼 BOSS 直聘</text>
+          <text class="card-sub" x="0" y="32">• 自动打开岗位并发起微聊</text>
+          <text class="card-sub" x="0" y="48">• 发送高清长图简历 + 专属招呼语</text>
+          <text class="card-sub" x="0" y="64">• 单图 30s 未送达自动重发×2</text>
+          <text class="card-sub" x="0" y="80">• 支持在线简历四项深度回写</text>
+          <rect x="0" y="92" width="116" height="16" rx="4" fill="#CCFBF1"/>
+          <text class="mono-tag" x="6" y="104" fill="#0F766E">核心主平台 · 持续真机</text>
+        </g>
+      </g>
+
+      <!-- Platform 2: 51job -->
+      <g transform="translate(668, 0)">
+        <rect width="200" height="135" rx="8" fill="#FFFFFF" stroke="#E2E8F0"/>
+        <rect x="0" y="0" width="200" height="3" fill="#F97316"/>
+        <g transform="translate(12, 12)">
+          <text class="card-title" x="0" y="12" fill="#0F172A">📄 前程无忧 (51job)</text>
+          <text class="card-sub" x="0" y="32">• 附件挂载 cvLogId 映射</text>
+          <text class="card-sub" x="0" y="48">• light-apply 快速投递模式</text>
+          <text class="card-sub" x="0" y="64">• 投递状态幂等防重复消费</text>
+          <text class="card-sub" x="0" y="80">• 在线简历字段对照回写</text>
+          <rect x="0" y="92" width="116" height="16" rx="4" fill="#FFEDD5"/>
+          <text class="mono-tag" x="6" y="104" fill="#C2410C">核心主平台 · 持续真机</text>
+        </g>
+      </g>
+
+      <!-- Platform 3: Zhilian -->
+      <g transform="translate(882, 0)">
+        <rect width="200" height="135" rx="8" fill="#FFFFFF" stroke="#E2E8F0"/>
+        <rect x="0" y="0" width="200" height="3" fill="#2563EB"/>
+        <g transform="translate(12, 12)">
+          <text class="card-title" x="0" y="12" fill="#0F172A">📎 智联招聘</text>
+          <text class="card-sub" x="0" y="32">• 附件简历上传直投</text>
+          <text class="card-sub" x="0" y="48">• 微聊自动打招呼欢迎语</text>
+          <text class="card-sub" x="0" y="64">• searchId 崩溃自动重刷自愈</text>
+          <text class="card-sub" x="0" y="80">• 模块化简历回写与同步</text>
+          <rect x="0" y="92" width="86" height="16" rx="4" fill="#DBEAFE"/>
+          <text class="mono-tag" x="6" y="104" fill="#1E40AF">实验性平台</text>
+        </g>
+      </g>
+
+      <!-- Platform 4: Liepin -->
+      <g transform="translate(1096, 0)">
+        <rect width="194" height="135" rx="8" fill="#FFFFFF" stroke="#E2E8F0"/>
+        <rect x="0" y="0" width="194" height="3" fill="#E11D48"/>
+        <g transform="translate(12, 12)">
+          <text class="card-title" x="0" y="12" fill="#0F172A">🎯 猎聘</text>
+          <text class="card-sub" x="0" y="32">• 专属投递执行引擎</text>
+          <text class="card-sub" x="0" y="48">• 猎聘打招呼语发送</text>
+          <text class="card-sub" x="0" y="64">• 简历附件精准绑定</text>
+          <text class="card-sub" x="0" y="80">• 在线简历回写引擎</text>
+          <rect x="0" y="92" width="86" height="16" rx="4" fill="#FFE4E6"/>
+          <text class="mono-tag" x="6" y="104" fill="#BE123C">实验性平台</text>
+        </g>
+      </g>
+    </g>
+  </g>
+
+  <!-- Connectors Layer 3 to Layer 4 -->
+  <g transform="translate(48, 820)">
+    <line x1="720" y1="0" x2="720" y2="24" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-gray)"/>
+    <text class="flow-label" x="720" y="16" text-anchor="middle" fill="#64748B">本地持久化存储 · 多模型调度 · SaaS 外部集成</text>
+  </g>
+
+  <!-- ==================== LAYER 4: DATA & INFRASTRUCTURE ==================== -->
+  <g transform="translate(48, 844)">
+    <!-- Layer Background -->
+    <rect width="1344" height="120" rx="14" fill="#FFFFFF" stroke="#E2E8F0" class="shadow-sm"/>
+
+    <g transform="translate(20, 14)">
+      <circle cx="6" cy="6" r="4" fill="#64748B"/>
+      <text class="layer-title" x="18" y="10" fill="#475569">Layer 4 · 本地数据底座与基础设施层 (Data &amp; Infrastructure Plane)</text>
+    </g>
+
+    <g transform="translate(20, 32)">
+      <!-- DB Sub-block -->
+      <g transform="translate(0, 0)">
+        <rect width="308" height="74" rx="8" fill="#F8FAFC" stroke="#E2E8F0"/>
+        <g transform="translate(12, 10)">
+          <text class="card-title" x="0" y="10" fill="#0F172A">💾 本地 SQLite 存储集群</text>
+          <text class="card-sub" x="0" y="28">• raw_jobs 原始抓取增量库 (rowid 差分)</text>
+          <text class="card-sub" x="0" y="44">• job_hunter.db 岗位主库 &amp; token_log 消耗</text>
+          <text class="card-sub" x="0" y="60">• boss_approvals 审批放行标记双保险</text>
+        </g>
+      </g>
+
+      <!-- Config Sub-block -->
+      <g transform="translate(324, 0)">
+        <rect width="288" height="74" rx="8" fill="#F8FAFC" stroke="#E2E8F0"/>
+        <g transform="translate(12, 10)">
+          <text class="card-title" x="0" y="10" fill="#0F172A">⚙️ 双层配置架构与热重载</text>
+          <text class="card-sub" x="0" y="28">• .env 提供启动期基线默认值</text>
+          <text class="card-sub" x="0" y="44">• settings.json 策略实验室运行时热重载</text>
+          <text class="card-sub" x="0" y="60">• 飞书长连与 Agent 实例无缝自动重连</text>
+        </g>
+      </g>
+
+      <!-- LLM Matrix Sub-block -->
+      <g transform="translate(628, 0)">
+        <rect width="360" height="74" rx="8" fill="#F8FAFC" stroke="#E2E8F0"/>
+        <g transform="translate(12, 10)">
+          <text class="card-title" x="0" y="10" fill="#0F172A">🤖 大模型多通道矩阵 (Multi-Channel LLM)</text>
+          <text class="card-sub" x="0" y="28">• 主通道：评估/改写/ChatAgent (OpenAI 协议)</text>
+          <text class="card-sub" x="0" y="44">• 清洗专用通道 (CLEANER_LLM) 极致省成本</text>
+          <text class="card-sub" x="0" y="60">• 独立视觉通道 (VISION_MODEL) + KV Cache 调优</text>
+        </g>
+      </g>
+
+      <!-- External SaaS Sub-block -->
+      <g transform="translate(1004, 0)">
+        <rect width="288" height="74" rx="8" fill="#F8FAFC" stroke="#E2E8F0"/>
+        <g transform="translate(12, 10)">
+          <text class="card-title" x="0" y="10" fill="#0F172A">🌐 外部 SaaS 与生态开放接口</text>
+          <text class="card-sub" x="0" y="28">• 飞书开放平台 (Bitable API / 卡片事件流)</text>
+          <text class="card-sub" x="0" y="44">• Tavily &amp; Serper 全网实时企业情报检索</text>
+          <text class="card-sub" x="0" y="60">• 火山引擎 ASR / TTS 语音面试训练营</text>
+        </g>
+      </g>
+    </g>
+  </g>
+
+  <!-- ==================== FOOTER ==================== -->
+  <g transform="translate(48, 980)">
+    <text class="card-sub" x="672" y="16" text-anchor="middle" fill="#94A3B8">
+      宿主机常驻部署（不可容器化 · 强依赖真实浏览器登录态）｜ 本地隐私安全架构（凭证、密钥与简历数据绝不上传第三方）｜ 架构图版本：v2.0 (2026)
+    </text>
+  </g>
+</svg>

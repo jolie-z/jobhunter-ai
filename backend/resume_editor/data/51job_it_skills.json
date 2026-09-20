@@ -1,0 +1,1616 @@
+[
+  {
+    "code": "0200",
+    "value": "大数据类",
+    "eValue": "Big Data",
+    "items": [
+      {
+        "code": "0212",
+        "value": "Access",
+        "eValue": "Access",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0212",
+            "label": "Access",
+            "id": "0212",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0202",
+        "value": "数据分析",
+        "eValue": "Data Analysis",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0202",
+            "label": "数据分析",
+            "id": "0202",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0205",
+        "value": "数据挖掘",
+        "eValue": "Data Mining",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0205",
+            "label": "数据挖掘",
+            "id": "0205",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0206",
+        "value": "数据建模",
+        "eValue": "Data Modeling",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0206",
+            "label": "数据建模",
+            "id": "0206",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0213",
+        "value": "DB2",
+        "eValue": "DB2",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0213",
+            "label": "DB2",
+            "id": "0213",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0207",
+        "value": "ERwin",
+        "eValue": "ERwin",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0207",
+            "label": "ERwin",
+            "id": "0207",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0210",
+        "value": "Hadoop",
+        "eValue": "Hadoop",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0210",
+            "label": "Hadoop",
+            "id": "0210",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0223",
+        "value": "Spark",
+        "eValue": "Spark",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0223",
+            "label": "Spark",
+            "id": "0223",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0209",
+        "value": "Hive",
+        "eValue": "Hive",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0209",
+            "label": "Hive",
+            "id": "0209",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0218",
+        "value": "MySQL",
+        "eValue": "MySQL",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0218",
+            "label": "MySQL",
+            "id": "0218",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0220",
+        "value": "OLAP",
+        "eValue": "OLAP",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0220",
+            "label": "OLAP",
+            "id": "0220",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0214",
+        "value": "Oracle",
+        "eValue": "Oracle",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0214",
+            "label": "Oracle",
+            "id": "0214",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0211",
+        "value": "R语言",
+        "eValue": "R",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0211",
+            "label": "R语言",
+            "id": "0211",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0208",
+        "value": "SAS",
+        "eValue": "SAS",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0208",
+            "label": "SAS",
+            "id": "0208",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0219",
+        "value": "SPSS",
+        "eValue": "SPSS",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0219",
+            "label": "SPSS",
+            "id": "0219",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0215",
+        "value": "SQL",
+        "eValue": "SQL",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0215",
+            "label": "SQL",
+            "id": "0215",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0216",
+        "value": "SQL Server",
+        "eValue": "SQL Server",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0216",
+            "label": "SQL Server",
+            "id": "0216",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0217",
+        "value": "Sybase",
+        "eValue": "Sybase",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0217",
+            "label": "Sybase",
+            "id": "0217",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0221",
+        "value": "Cloud",
+        "eValue": "Cloud",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0221",
+            "label": "Cloud",
+            "id": "0221",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0222",
+        "value": "DB2/database",
+        "eValue": "DB2/database",
+        "parents": [
+          {
+            "value": "0200_2",
+            "label": "大数据类",
+            "id": "0200",
+            "display": 1
+          },
+          {
+            "value": "0222",
+            "label": "DB2/database",
+            "id": "0222",
+            "display": 1
+          }
+        ]
+      }
+    ],
+    "parents": [
+      {
+        "value": "0200_2",
+        "label": "大数据类",
+        "id": "0200",
+        "display": 1
+      }
+    ]
+  },
+  {
+    "code": "0400",
+    "value": "开发编程类",
+    "eValue": "Program",
+    "items": [
+      {
+        "code": "0401",
+        "value": ".NET",
+        "eValue": ".NET",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0401",
+            "label": ".NET",
+            "id": "0401",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0402",
+        "value": "ActiveX",
+        "eValue": "ActiveX",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0402",
+            "label": "ActiveX",
+            "id": "0402",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0403",
+        "value": "ASP.NET",
+        "eValue": "ASP.NET",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0403",
+            "label": "ASP.NET",
+            "id": "0403",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0404",
+        "value": "C#.NET",
+        "eValue": "C#.NET",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0404",
+            "label": "C#.NET",
+            "id": "0404",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0405",
+        "value": "C/C++",
+        "eValue": "C/C++",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0405",
+            "label": "C/C++",
+            "id": "0405",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0432",
+        "value": "Golang",
+        "eValue": "Golang",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0432",
+            "label": "Golang",
+            "id": "0432",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0406",
+        "value": "ERP",
+        "eValue": "ERP",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0406",
+            "label": "ERP",
+            "id": "0406",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0434",
+        "value": "SAP",
+        "eValue": "SAP",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0434",
+            "label": "SAP",
+            "id": "0434",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0407",
+        "value": "HTML5",
+        "eValue": "HTML5",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0407",
+            "label": "HTML5",
+            "id": "0407",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0408",
+        "value": "iOS",
+        "eValue": "iOS",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0408",
+            "label": "iOS",
+            "id": "0408",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0409",
+        "value": "Java",
+        "eValue": "Java",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0409",
+            "label": "Java",
+            "id": "0409",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0433",
+        "value": "J2EE",
+        "eValue": "J2EE",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0433",
+            "label": "J2EE",
+            "id": "0433",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0410",
+        "value": "JavaScript",
+        "eValue": "JavaScript",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0410",
+            "label": "JavaScript",
+            "id": "0410",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0411",
+        "value": "PERL",
+        "eValue": "PERL",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0411",
+            "label": "PERL",
+            "id": "0411",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0412",
+        "value": "PHP",
+        "eValue": "PHP",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0412",
+            "label": "PHP",
+            "id": "0412",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0413",
+        "value": "Python",
+        "eValue": "Python",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0413",
+            "label": "Python",
+            "id": "0413",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0414",
+        "value": "SEO",
+        "eValue": "SEO",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0414",
+            "label": "SEO",
+            "id": "0414",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0427",
+        "value": "VB.Net",
+        "eValue": "VB.Net",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0427",
+            "label": "VB.Net",
+            "id": "0427",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0415",
+        "value": "UI",
+        "eValue": "UI",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0415",
+            "label": "UI",
+            "id": "0415",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0416",
+        "value": "Web前端",
+        "eValue": "Web Front End",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0416",
+            "label": "Web前端",
+            "id": "0416",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0417",
+        "value": "移动前端",
+        "eValue": "Mobile Front End",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0417",
+            "label": "移动前端",
+            "id": "0417",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0418",
+        "value": "Android",
+        "eValue": "Android",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0418",
+            "label": "Android",
+            "id": "0418",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0419",
+        "value": "Lua",
+        "eValue": "Lua",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0419",
+            "label": "Lua",
+            "id": "0419",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0420",
+        "value": "Clojure",
+        "eValue": "Clojure",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0420",
+            "label": "Clojure",
+            "id": "0420",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0421",
+        "value": "Ruby",
+        "eValue": "Ruby",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0421",
+            "label": "Ruby",
+            "id": "0421",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0422",
+        "value": "Matlab",
+        "eValue": "Matlab",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0422",
+            "label": "Matlab",
+            "id": "0422",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0423",
+        "value": "XML/XSLT",
+        "eValue": "XML/XSLT",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0423",
+            "label": "XML/XSLT",
+            "id": "0423",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0424",
+        "value": "Linux",
+        "eValue": "Linux",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0424",
+            "label": "Linux",
+            "id": "0424",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0428",
+        "value": "Unix/Linux development",
+        "eValue": "Unix/Linux development",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0428",
+            "label": "Unix/Linux development",
+            "id": "0428",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0429",
+        "value": "TensorFlow",
+        "eValue": "TensorFlow",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0429",
+            "label": "TensorFlow",
+            "id": "0429",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0430",
+        "value": "Scala",
+        "eValue": "Scala",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0430",
+            "label": "Scala",
+            "id": "0430",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0431",
+        "value": "Shell",
+        "eValue": "Shell",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0431",
+            "label": "Shell",
+            "id": "0431",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "0426",
+        "value": "Visual Basic",
+        "eValue": "Visual Basic",
+        "parents": [
+          {
+            "value": "0400_2",
+            "label": "开发编程类",
+            "id": "0400",
+            "display": 1
+          },
+          {
+            "value": "0426",
+            "label": "Visual Basic",
+            "id": "0426",
+            "display": 1
+          }
+        ]
+      }
+    ],
+    "parents": [
+      {
+        "value": "0400_2",
+        "label": "开发编程类",
+        "id": "0400",
+        "display": 1
+      }
+    ]
+  },
+  {
+    "code": "1300",
+    "value": "多媒体设计类",
+    "eValue": "Multimedia Design",
+    "items": [
+      {
+        "code": "1318",
+        "value": "3D Studio",
+        "eValue": "3D Studio",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1318",
+            "label": "3D Studio",
+            "id": "1318",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1319",
+        "value": "3D Studio MAX",
+        "eValue": "3D Studio MAX",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1319",
+            "label": "3D Studio MAX",
+            "id": "1319",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1341",
+        "value": "AUTOCAD",
+        "eValue": "AUTOCAD",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1341",
+            "label": "AUTOCAD",
+            "id": "1341",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1342",
+        "value": "CATIA",
+        "eValue": "CATIA",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1342",
+            "label": "CATIA",
+            "id": "1342",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1302",
+        "value": "Corel Draw",
+        "eValue": "Corel Draw",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1302",
+            "label": "Corel Draw",
+            "id": "1302",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1303",
+        "value": "Director",
+        "eValue": "Director",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1303",
+            "label": "Director",
+            "id": "1303",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1316",
+        "value": "Dreamweaver",
+        "eValue": "Dreamweaver",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1316",
+            "label": "Dreamweaver",
+            "id": "1316",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1317",
+        "value": "Fireworks/Frontpage",
+        "eValue": "Fireworks/Frontpage",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1317",
+            "label": "Fireworks/Frontpage",
+            "id": "1317",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1304",
+        "value": "Flash",
+        "eValue": "Flash",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1304",
+            "label": "Flash",
+            "id": "1304",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1326",
+        "value": "FrontPage",
+        "eValue": "FrontPage",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1326",
+            "label": "FrontPage",
+            "id": "1326",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1327",
+        "value": "GoLive",
+        "eValue": "GoLive",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1327",
+            "label": "GoLive",
+            "id": "1327",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1307",
+        "value": "Illustrator",
+        "eValue": "Illustrator",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1307",
+            "label": "Illustrator",
+            "id": "1307",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1329",
+        "value": "Lightwave",
+        "eValue": "Lightwave",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1329",
+            "label": "Lightwave",
+            "id": "1329",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1330",
+        "value": "Maya",
+        "eValue": "Maya",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1330",
+            "label": "Maya",
+            "id": "1330",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1332",
+        "value": "MS Publisher",
+        "eValue": "MS Publisher",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1332",
+            "label": "MS Publisher",
+            "id": "1332",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1311",
+        "value": "PageMaker",
+        "eValue": "PageMaker",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1311",
+            "label": "PageMaker",
+            "id": "1311",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1301",
+        "value": "Photoshop",
+        "eValue": "Photoshop",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1301",
+            "label": "Photoshop",
+            "id": "1301",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "1333",
+        "value": "Solid Works",
+        "eValue": "Solid Works",
+        "parents": [
+          {
+            "value": "1300_2",
+            "label": "多媒体设计类",
+            "id": "1300",
+            "display": 1
+          },
+          {
+            "value": "1333",
+            "label": "Solid Works",
+            "id": "1333",
+            "display": 1
+          }
+        ]
+      }
+    ],
+    "parents": [
+      {
+        "value": "1300_2",
+        "label": "多媒体设计类",
+        "id": "1300",
+        "display": 1
+      }
+    ]
+  },
+  {
+    "code": "2100",
+    "value": "办公应用软件",
+    "eValue": "Office",
+    "items": [
+      {
+        "code": "2101",
+        "value": "OutLook Express",
+        "eValue": "OutLook Express",
+        "parents": [
+          {
+            "value": "2100_2",
+            "label": "办公应用软件",
+            "id": "2100",
+            "display": 1
+          },
+          {
+            "value": "2101",
+            "label": "OutLook Express",
+            "id": "2101",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "2109",
+        "value": "MS Excel",
+        "eValue": "MS Excel",
+        "parents": [
+          {
+            "value": "2100_2",
+            "label": "办公应用软件",
+            "id": "2100",
+            "display": 1
+          },
+          {
+            "value": "2109",
+            "label": "MS Excel",
+            "id": "2109",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "2104",
+        "value": "MS OneNote",
+        "eValue": "MS OneNote",
+        "parents": [
+          {
+            "value": "2100_2",
+            "label": "办公应用软件",
+            "id": "2100",
+            "display": 1
+          },
+          {
+            "value": "2104",
+            "label": "MS OneNote",
+            "id": "2104",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "2106",
+        "value": "MS Powerpoint",
+        "eValue": "MS Powerpoint",
+        "parents": [
+          {
+            "value": "2100_2",
+            "label": "办公应用软件",
+            "id": "2100",
+            "display": 1
+          },
+          {
+            "value": "2106",
+            "label": "MS Powerpoint",
+            "id": "2106",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "2107",
+        "value": "MS Project",
+        "eValue": "MS Project",
+        "parents": [
+          {
+            "value": "2100_2",
+            "label": "办公应用软件",
+            "id": "2100",
+            "display": 1
+          },
+          {
+            "value": "2107",
+            "label": "MS Project",
+            "id": "2107",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "2103",
+        "value": "MS VISIO",
+        "eValue": "MS VISIO",
+        "parents": [
+          {
+            "value": "2100_2",
+            "label": "办公应用软件",
+            "id": "2100",
+            "display": 1
+          },
+          {
+            "value": "2103",
+            "label": "MS VISIO",
+            "id": "2103",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "2102",
+        "value": "MS WORD",
+        "eValue": "MS WORD",
+        "parents": [
+          {
+            "value": "2100_2",
+            "label": "办公应用软件",
+            "id": "2100",
+            "display": 1
+          },
+          {
+            "value": "2102",
+            "label": "MS WORD",
+            "id": "2102",
+            "display": 1
+          }
+        ]
+      }
+    ],
+    "parents": [
+      {
+        "value": "2100_2",
+        "label": "办公应用软件",
+        "id": "2100",
+        "display": 1
+      }
+    ]
+  },
+  {
+    "code": "2300",
+    "value": "财务管理类",
+    "eValue": "Financial Management",
+    "items": [
+      {
+        "code": "2303",
+        "value": "金蝶",
+        "eValue": "KIS",
+        "parents": [
+          {
+            "value": "2300_2",
+            "label": "财务管理类",
+            "id": "2300",
+            "display": 1
+          },
+          {
+            "value": "2303",
+            "label": "金蝶",
+            "id": "2303",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "2301",
+        "value": "Sun",
+        "eValue": "Sun",
+        "parents": [
+          {
+            "value": "2300_2",
+            "label": "财务管理类",
+            "id": "2300",
+            "display": 1
+          },
+          {
+            "value": "2301",
+            "label": "Sun",
+            "id": "2301",
+            "display": 1
+          }
+        ]
+      },
+      {
+        "code": "2302",
+        "value": "用友",
+        "eValue": "UFIDA",
+        "parents": [
+          {
+            "value": "2300_2",
+            "label": "财务管理类",
+            "id": "2300",
+            "display": 1
+          },
+          {
+            "value": "2302",
+            "label": "用友",
+            "id": "2302",
+            "display": 1
+          }
+        ]
+      }
+    ],
+    "parents": [
+      {
+        "value": "2300_2",
+        "label": "财务管理类",
+        "id": "2300",
+        "display": 1
+      }
+    ]
+  }
+]

@@ -1,0 +1,38 @@
+# prek 运行的 pre-commit 钩子（https://prek.j178.dev）
+# 安装：uv run prek install   手动全量跑：uv run prek run --all-files
+repos:
+  # ── 密钥扫描：阻止 API Key / App Secret 进入提交历史 ──
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  # ── 通用卫生：仅作用于后端业务源码，避免误改杂项文件 ──
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        files: ^backend/app/.*\.py$
+      - id: end-of-file-fixer
+        files: ^backend/app/.*\.py$
+      - id: check-yaml
+        files: ^backend/app/.*\.ya?ml$
+      - id: check-toml
+        files: ^backend/pyproject\.toml$
+
+  # ── 后端静态检查：与 CI 门禁完全一致（同一 ruff、同一 pyproject 配置）──
+  - repo: local
+    hooks:
+      - id: ruff-backend
+        name: ruff check (backend/app, 与 CI 门禁一致)
+        language: system
+        files: ^backend/app/.*\.py$
+        entry: bash -c 'cd backend && files=(); for a in "$@"; do files+=("${a#backend/}"); done; uv run ruff check --fix "${files[@]}"' --
+
+      # ── 前端 lint：仅检查本次提交触及的源码文件（不含 --fix，报错需手动修）──
+      - id: eslint-frontend
+        name: eslint (frontend 暂存文件)
+        language: system
+        files: ^frontend/.*\.[jt]sx?$
+        exclude: ^frontend/components\.json$
+        entry: bash -c 'cd frontend && files=(); for a in "$@"; do files+=("${a#frontend/}"); done; npx eslint "${files[@]}"' --

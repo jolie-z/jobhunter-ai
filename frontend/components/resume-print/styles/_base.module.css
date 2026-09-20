@@ -1,0 +1,243 @@
+@font-face {
+  font-family: 'Noto Sans SC';
+  src: url('/fonts/NotoSansSC.ttf') format('truetype');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+.resume-body {
+  /* Typography */
+  --resume-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Text colors */
+  --resume-text-primary: #000000;
+  --resume-text-secondary: #000000;
+  --resume-text-tertiary: #000000;
+  --resume-text-body: #000000;
+
+  /* Border colors */
+  --resume-border-primary: #000000;
+  --resume-border-secondary: #000000;
+  --resume-border-tertiary: #000000;
+  /* Spacing defaults */
+  --section-gap: 0.8rem;
+  --item-gap: 0.35rem;
+  --line-height: 1.5;
+  --font-size-base: 12px;
+  --header-scale: 2.2;
+  --section-header-scale: 1.25;
+  --header-font: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --body-font: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Helvetica, Arial, sans-serif;
+
+  /* Margin defaults - used as padding inside the resume container */
+  --margin-top: 8mm;
+  --margin-bottom: 15mm;
+  --margin-left: 15mm;
+  --margin-right: 15mm;
+
+  /* Apply base styles */
+  font-family: var(--body-font);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height);
+  color: var(--resume-text-body);
+  /* Use CSS variables for padding */
+  padding: var(--margin-top) var(--margin-right) var(--margin-bottom) var(--margin-left);
+}
+
+.resume-header {
+  margin-bottom: calc(var(--section-gap) * 1.5);
+  position: relative;
+}
+
+.resume-name {
+  font-size: calc(var(--font-size-base) * var(--header-scale));
+  font-family: var(--header-font);
+  font-weight: 700;
+  color: var(--resume-text-primary);
+  text-align: center;
+  letter-spacing: 0.1em;
+}
+
+.resume-title {
+  font-size: calc(var(--font-size-base) * 1.15);
+  color: var(--resume-text-body);
+}
+
+.resume-meta {
+  font-family: var(--body-font);
+  font-size: calc(var(--font-size-base) * 1.05);
+  color: var(--resume-text-primary);
+  text-align: center;
+}
+
+.resume-date {
+  font-family: var(--body-font);
+  font-size: var(--font-size-base);
+  color: var(--resume-text-primary);
+  white-space: nowrap;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.resume-text {
+  font-family: var(--body-font);
+}
+
+.resume-text-sm {
+  font-family: var(--body-font);
+  font-size: var(--font-size-base);
+}
+
+.resume-item-title {
+  font-family: var(--body-font);
+  font-size: calc(var(--font-size-base) * 1.05);
+  font-weight: 700;
+  color: var(--resume-text-primary);
+}
+
+.resume-item-subtitle {
+  font-family: var(--body-font);
+  font-size: var(--font-size-base);
+  font-weight: 700;
+  color: var(--resume-text-primary);
+}
+
+.resume-row {
+  margin-bottom: calc(var(--item-gap) * 0.5);
+}
+
+.resume-row-tight {
+  margin-bottom: calc(var(--item-gap) * 0.3);
+}
+
+.resume-list {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--item-gap) * 0.4);
+}
+
+.resume-section {
+  margin-bottom: var(--section-gap);
+}
+
+.resume-section:last-child {
+  margin-bottom: 0;
+}
+
+.resume-section-title {
+  font-size: calc(var(--font-size-base) * var(--section-header-scale));
+  font-family: var(--header-font);
+  font-weight: 700;
+  border-bottom: 1.5px solid var(--resume-text-primary);
+  margin-bottom: calc(var(--item-gap) * 1.5);
+  padding-bottom: 0.25rem;
+  color: var(--resume-text-primary);
+  break-after: avoid;
+  page-break-after: avoid;
+  orphans: 3;
+  widows: 3;
+}
+
+.resume-items {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--item-gap) * 1.5);
+}
+
+.resume-item {
+  margin-bottom: calc(var(--item-gap) * 1.5);
+}
+
+.resume-item:last-child {
+  margin-bottom: 0;
+}
+
+.resume-link {
+  color: var(--resume-text-primary);
+  text-decoration: none;
+}
+
+.resume-link:hover {
+  text-decoration: underline;
+}
+
+.resume-body :global(strong),
+.resume-body :global(b) {
+  font-weight: 700;
+}
+
+.resume-body :global(em),
+.resume-body :global(i) {
+  font-style: italic;
+}
+
+.text-muted {
+  color: var(--resume-text-tertiary);
+}
+
+@media print {
+  .resume-body {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+  }
+
+  .resume-section-title {
+    break-after: avoid !important;
+    page-break-after: avoid !important;
+  }
+
+  .resume-section-title+.resume-items>*:first-child,
+  .resume-section-title+p,
+  .resume-section-title+ul,
+  .resume-section-title+.resume-item {
+    break-before: avoid !important;
+    page-break-before: avoid !important;
+  }
+}
+
+:global(.print-preview-mode) .resume-body {
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+:global(.print-preview-mode) .resume-section-title {
+  break-after: avoid !important;
+  page-break-after: avoid !important;
+}
+
+:global(.print-preview-mode) .resume-section-title+.resume-items>*:first-child,
+:global(.print-preview-mode) .resume-section-title+p,
+:global(.print-preview-mode) .resume-section-title+ul,
+:global(.print-preview-mode) .resume-section-title+.resume-item {
+  break-before: avoid !important;
+  page-break-before: avoid !important;
+}
+.resume-markdown p {
+  margin: 0;
+  display: block;
+}
+
+.resume-markdown span.block {
+  display: block;
+  margin-top: 0.1rem;
+}
+
+.resume-markdown ul {
+  margin-top: 0.1rem;
+  margin-bottom: 0.1rem;
+  margin-left: 1rem;
+}
+
+.resume-markdown ul {
+  list-style-type: disc;
+  padding-left: 1rem;
+}
+
+.resume-markdown li {
+  margin-bottom: 0.15rem;
+}
+
+.resume-markdown strong {
+  font-weight: 700;
+}

@@ -1,0 +1,3 @@
+"""
+Automation sub-routes package.
+"""

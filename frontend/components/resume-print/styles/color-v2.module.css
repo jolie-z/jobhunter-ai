@@ -1,0 +1,306 @@
+@import './_base.module.css';
+
+/*
+ * 彩色简历模版2（大厂品牌风 / 极客高密版）
+ * 视觉特征：
+ *   1. 皇家蓝主色（#1e40af）+ 通栏实线底线
+ *   2. 经历主条带：全宽圆角横条，自适应品牌专属微色调底带 + 官方矢量 Logo / 平台徽章组
+ *   3. 独立精简页眉：左对齐紧凑 2~3 行（姓名、求职意向、语义化图标联系方式）
+ *   4. 章节成就高亮 Callout 框
+ *   5. 高密排版与流向链条微排版（→ 箭头高亮、技术 Chip 灰底）
+ */
+
+.container {
+  --color-accent: #1e40af;        /* 章节标题 / 条目名 / 姓名 */
+  --color-accent-soft: #2563eb;   /* 链接 / 图标 / 流向箭头 */
+  --color-chip: #eef2f6;          /* 行内技术名词 chip 底色 */
+  --color-chip-text: #0f172a;     /* chip 文字颜色 */
+  --color-callout-bg: #f0f7ff;     /* 章节成就高亮框底色 */
+  --color-callout-border: #dbeafe; /* 章节成就高亮框边框 */
+  --color-callout-text: #1e3a8a;   /* 章节成就文字 */
+
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+/* ---------- 页眉精简排版 (左上角大字姓名 + 4行紧凑信息) ---------- */
+.headerContainer {
+  margin-bottom: calc(var(--section-gap) * 1.2);
+  position: relative;
+}
+
+.headerName {
+  font-size: calc(var(--font-size-base) * 2.2);
+  font-family: var(--header-font);
+  font-weight: 900;
+  color: #000000;
+  letter-spacing: 0.02em;
+  line-height: 1.15;
+  text-align: left;
+  margin-bottom: 0.35rem;
+}
+
+.headerContactRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem 0.5rem;
+  font-size: calc(var(--font-size-base) * 0.98);
+  color: #111827;
+  margin-bottom: 0.25rem;
+}
+
+.headerTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: calc(var(--font-size-base) * 1.02);
+  font-weight: 600;
+  color: #111827;
+  margin-bottom: 0.25rem;
+}
+
+.headerGithubRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: calc(var(--font-size-base) * 0.98);
+  color: #111827;
+  margin-bottom: 0.4rem;
+}
+
+.headerItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.headerIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #000000;
+  flex-shrink: 0;
+}
+
+.headerDivider {
+  color: #64748b;
+  margin: 0 0.15rem;
+  opacity: 0.7;
+}
+
+.headerRepoTag {
+  color: #1f2937;
+  font-weight: 500;
+}
+
+.link {
+  color: #111827;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, #111827 40%, transparent);
+  text-underline-offset: 2px;
+}
+
+/* ---------- 章节标题：皇家蓝 + 通栏实线 ---------- */
+.sectionTitle {
+  font-size: calc(var(--font-size-base) * 1.32);
+  font-family: var(--header-font);
+  font-weight: 800;
+  color: var(--color-accent);
+  border-bottom: 2px solid var(--color-accent);
+  margin-bottom: calc(var(--item-gap) * 1.2);
+  padding-bottom: 0.2rem;
+  break-after: avoid;
+  page-break-after: avoid;
+}
+
+/* ---------- 章节专属成就高亮 Callout 框 ---------- */
+.sectionCallout {
+  background: var(--color-callout-bg);
+  border: 1px solid var(--color-callout-border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  margin-bottom: calc(var(--item-gap) * 1.2);
+  color: var(--color-callout-text);
+  font-size: calc(var(--font-size-base) * 0.95);
+  line-height: 1.45;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+/* ---------- 经历主条带（Company / Project Band）---------- */
+.entryBand {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  border-radius: 4px;
+  padding: 3.5px 8px;
+  margin-bottom: calc(var(--item-gap) * 1.0);
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.brandIcon {
+  flex-shrink: 0;
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.entryCompany {
+  font-weight: 800;
+  font-size: calc(var(--font-size-base) * 1.05);
+  color: #0f172a;
+  white-space: nowrap;
+}
+
+.entryDivider {
+  color: var(--color-accent-soft);
+  opacity: 0.6;
+  flex-shrink: 0;
+  font-weight: bold;
+}
+
+.entryRole {
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  color: #334155;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entryYears {
+  margin-left: auto;
+  font-size: var(--font-size-base);
+  color: #475569;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.entryLink {
+  font-size: calc(var(--font-size-base) * 0.9);
+  color: var(--color-accent-soft);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+  margin-left: 0.4rem;
+  flex-shrink: 0;
+}
+
+/* ---------- 自适应大厂品牌微色调条带样式 ---------- */
+.band-default { background: #f1f5f9; border-color: #e2e8f0; }
+.band-bytedance, .band-douyin { background: #f8fafc; border-color: #e2e8f0; }
+.band-feishu { background: #eff6ff; border-color: #bfdbfe; }
+.band-loreal { background: #fafaf9; border-color: #e7e5e4; }
+.band-boss { background: #f0fdfa; border-color: #99f6e4; }
+.band-zhilian { background: #eff6ff; border-color: #bfdbfe; }
+.band-job51, .band-liepin { background: #fff7ed; border-color: #fed7aa; }
+.band-alibaba, .band-xiaomi { background: #fff7ed; border-color: #ffedd5; }
+.band-tencent, .band-baidu, .band-gemini { background: #eff6ff; border-color: #dbeafe; }
+.band-meituan { background: #fefce8; border-color: #fef08a; }
+.band-kuaishou, .band-xiaohongshu, .band-jd, .band-pdd, .band-netease, .band-huawei { background: #fff1f2; border-color: #ffe4e6; }
+.band-openai, .band-kimi, .band-github { background: #f4f4f5; border-color: #e4e4e7; }
+.band-claude { background: #fffbeb; border-color: #fde68a; }
+.band-deepseek { background: #f0f9ff; border-color: #bae6fd; }
+.band-zcode { background: #eef2ff; border-color: #c7d2fe; }
+.band-qoder { background: #ecfdf5; border-color: #a7f3d0; }
+
+/* ---------- 平台徽章组 (如 4 大求职平台) ---------- */
+.platformBadgeGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: 0.3rem;
+}
+
+.platformPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 5px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  font-size: calc(var(--font-size-base) * 0.82);
+  font-weight: 600;
+  color: #334155;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.03);
+}
+
+/* ---------- 子项目大标题行 ---------- */
+.projectTitleRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-top: 0.35rem;
+  margin-bottom: 0.15rem;
+}
+
+.projectTitle {
+  font-weight: 800;
+  font-size: calc(var(--font-size-base) * 1.06);
+  color: #0f172a;
+}
+
+.projectSubtitle {
+  font-weight: 600;
+  font-size: var(--font-size-base);
+  color: #475569;
+  margin-left: 0.4rem;
+}
+
+.projectYears {
+  font-size: var(--font-size-base);
+  color: #64748b;
+  white-space: nowrap;
+}
+
+/* ---------- Markdown & 微排版规则 ---------- */
+.markdown {
+  color: #1e293b;
+  line-height: 1.48;
+}
+
+.markdown :global(code) {
+  font-family: var(--resume-font-mono);
+  font-size: 0.92em;
+  background: var(--color-chip);
+  color: var(--color-chip-text);
+  border-radius: 3px;
+  padding: 0.5px 4px;
+  font-weight: 600;
+}
+
+.markdown :global(strong),
+.markdown :global(b) {
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.markdown :global(ul) {
+  margin: 0.1rem 0;
+  padding-left: 1.1rem;
+  list-style-type: disc;
+}
+
+.markdown :global(li) {
+  margin-bottom: 0.18rem;
+}
+
+.markdown :global(p) {
+  margin: 0;
+  display: block;
+}
+
+/* 流向箭头样式增强 */
+.flowArrow {
+  color: var(--color-accent-soft);
+  font-weight: bold;
+  margin: 0 2px;
+}

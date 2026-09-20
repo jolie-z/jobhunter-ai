@@ -1,0 +1,13 @@
+__pycache__
+app.egg-info
+*.pyc
+.mypy_cache
+.coverage
+htmlcov
+.cache
+.venv
+.env
+# 用户运行时上传的自定义技能（含个人履历数据，不入库）。已跟踪文件不受影响；
+# 注意：若日后经界面向已跟踪技能目录（如 custom_llminternskill）新增文件，会被静默忽略
+ai_agents/skills/custom_*/
+ai_agents/skills/custom_*.json

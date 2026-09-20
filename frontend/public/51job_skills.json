@@ -1,0 +1,356 @@
+[
+  {
+    "code": "0200",
+    "name": "大数据类",
+    "children": [
+      {
+        "code": "0212",
+        "name": "Access"
+      },
+      {
+        "code": "0202",
+        "name": "数据分析"
+      },
+      {
+        "code": "0205",
+        "name": "数据挖掘"
+      },
+      {
+        "code": "0206",
+        "name": "数据建模"
+      },
+      {
+        "code": "0213",
+        "name": "DB2"
+      },
+      {
+        "code": "0207",
+        "name": "ERwin"
+      },
+      {
+        "code": "0210",
+        "name": "Hadoop"
+      },
+      {
+        "code": "0223",
+        "name": "Spark"
+      },
+      {
+        "code": "0209",
+        "name": "Hive"
+      },
+      {
+        "code": "0218",
+        "name": "MySQL"
+      },
+      {
+        "code": "0220",
+        "name": "OLAP"
+      },
+      {
+        "code": "0214",
+        "name": "Oracle"
+      },
+      {
+        "code": "0211",
+        "name": "R语言"
+      },
+      {
+        "code": "0208",
+        "name": "SAS"
+      },
+      {
+        "code": "0219",
+        "name": "SPSS"
+      },
+      {
+        "code": "0215",
+        "name": "SQL"
+      },
+      {
+        "code": "0216",
+        "name": "SQL Server"
+      },
+      {
+        "code": "0217",
+        "name": "Sybase"
+      },
+      {
+        "code": "0221",
+        "name": "Cloud"
+      },
+      {
+        "code": "0222",
+        "name": "DB2/database"
+      }
+    ]
+  },
+  {
+    "code": "0400",
+    "name": "开发编程类",
+    "children": [
+      {
+        "code": "0401",
+        "name": ".NET"
+      },
+      {
+        "code": "0402",
+        "name": "ActiveX"
+      },
+      {
+        "code": "0403",
+        "name": "ASP.NET"
+      },
+      {
+        "code": "0404",
+        "name": "C#.NET"
+      },
+      {
+        "code": "0405",
+        "name": "C/C++"
+      },
+      {
+        "code": "0432",
+        "name": "Golang"
+      },
+      {
+        "code": "0406",
+        "name": "ERP"
+      },
+      {
+        "code": "0434",
+        "name": "SAP"
+      },
+      {
+        "code": "0407",
+        "name": "HTML5"
+      },
+      {
+        "code": "0408",
+        "name": "iOS"
+      },
+      {
+        "code": "0409",
+        "name": "Java"
+      },
+      {
+        "code": "0433",
+        "name": "J2EE"
+      },
+      {
+        "code": "0410",
+        "name": "JavaScript"
+      },
+      {
+        "code": "0411",
+        "name": "PERL"
+      },
+      {
+        "code": "0412",
+        "name": "PHP"
+      },
+      {
+        "code": "0413",
+        "name": "Python"
+      },
+      {
+        "code": "0414",
+        "name": "SEO"
+      },
+      {
+        "code": "0427",
+        "name": "VB.Net"
+      },
+      {
+        "code": "0415",
+        "name": "UI"
+      },
+      {
+        "code": "0416",
+        "name": "Web前端"
+      },
+      {
+        "code": "0417",
+        "name": "移动前端"
+      },
+      {
+        "code": "0418",
+        "name": "Android"
+      },
+      {
+        "code": "0419",
+        "name": "Lua"
+      },
+      {
+        "code": "0420",
+        "name": "Clojure"
+      },
+      {
+        "code": "0421",
+        "name": "Ruby"
+      },
+      {
+        "code": "0422",
+        "name": "Matlab"
+      },
+      {
+        "code": "0423",
+        "name": "XML/XSLT"
+      },
+      {
+        "code": "0424",
+        "name": "Linux"
+      },
+      {
+        "code": "0428",
+        "name": "Unix/Linux development"
+      },
+      {
+        "code": "0429",
+        "name": "TensorFlow"
+      },
+      {
+        "code": "0430",
+        "name": "Scala"
+      },
+      {
+        "code": "0431",
+        "name": "Shell"
+      },
+      {
+        "code": "0426",
+        "name": "Visual Basic"
+      }
+    ]
+  },
+  {
+    "code": "1300",
+    "name": "多媒体设计类",
+    "children": [
+      {
+        "code": "1318",
+        "name": "3D Studio"
+      },
+      {
+        "code": "1319",
+        "name": "3D Studio MAX"
+      },
+      {
+        "code": "1341",
+        "name": "AUTOCAD"
+      },
+      {
+        "code": "1342",
+        "name": "CATIA"
+      },
+      {
+        "code": "1302",
+        "name": "Corel Draw"
+      },
+      {
+        "code": "1303",
+        "name": "Director"
+      },
+      {
+        "code": "1316",
+        "name": "Dreamweaver"
+      },
+      {
+        "code": "1317",
+        "name": "Fireworks/Frontpage"
+      },
+      {
+        "code": "1304",
+        "name": "Flash"
+      },
+      {
+        "code": "1326",
+        "name": "FrontPage"
+      },
+      {
+        "code": "1327",
+        "name": "GoLive"
+      },
+      {
+        "code": "1307",
+        "name": "Illustrator"
+      },
+      {
+        "code": "1329",
+        "name": "Lightwave"
+      },
+      {
+        "code": "1330",
+        "name": "Maya"
+      },
+      {
+        "code": "1332",
+        "name": "MS Publisher"
+      },
+      {
+        "code": "1311",
+        "name": "PageMaker"
+      },
+      {
+        "code": "1301",
+        "name": "Photoshop"
+      },
+      {
+        "code": "1333",
+        "name": "Solid Works"
+      }
+    ]
+  },
+  {
+    "code": "2100",
+    "name": "办公应用软件",
+    "children": [
+      {
+        "code": "2101",
+        "name": "OutLook Express"
+      },
+      {
+        "code": "2109",
+        "name": "MS Excel"
+      },
+      {
+        "code": "2104",
+        "name": "MS OneNote"
+      },
+      {
+        "code": "2106",
+        "name": "MS Powerpoint"
+      },
+      {
+        "code": "2107",
+        "name": "MS Project"
+      },
+      {
+        "code": "2103",
+        "name": "MS VISIO"
+      },
+      {
+        "code": "2102",
+        "name": "MS WORD"
+      }
+    ]
+  },
+  {
+    "code": "2300",
+    "name": "财务管理类",
+    "children": [
+      {
+        "code": "2303",
+        "name": "金蝶"
+      },
+      {
+        "code": "2301",
+        "name": "Sun"
+      },
+      {
+        "code": "2302",
+        "name": "用友"
+      }
+    ]
+  }
+]

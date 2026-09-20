@@ -1,0 +1,207 @@
+[project]
+name = "app"
+version = "0.1.0"
+description = ""
+requires-python = ">=3.10,<4.0"
+dependencies = [
+    "fastapi[standard]<1.0.0,>=0.114.2",
+    "python-multipart<1.0.0,>=0.0.27",
+    "email-validator<3.0.0.0,>=2.1.0.post1",
+    "tenacity<9.0.0,>=8.2.3",
+    "pydantic>2.0",
+    "emails<1.0,>=0.6",
+    "jinja2<4.0.0,>=3.1.4",
+    "alembic<2.0.0,>=1.12.1",
+    "httpx<1.0.0,>=0.25.1",
+    "psycopg[binary]<4.0.0,>=3.1.13",
+    "sqlmodel<1.0.0,>=0.0.21",
+    "pydantic-settings<3.0.0,>=2.2.1",
+    "sentry-sdk[fastapi]>=2.0.0,<3.0.0",
+    "pyjwt<3.0.0,>=2.8.0",
+    "pwdlib[argon2,bcrypt]>=0.3.0",
+    "playwright>=1.60.0",
+    "fake-useragent>=2.2.0",
+    "rich>=15.0.0",
+    "click>=8.4.1",
+    "qrcode>=8.2",
+    "browser-cookie3>=0.20.1",
+    "drissionpage>=4.1.1.4",
+    "markitdown[docx,pdf]>=0.1.6",
+    "sse-starlette>=3.4.5",
+    "redis>=8.0.1",
+    "langgraph>=1.2.7",
+    "apscheduler>=3.11.3",
+    "aiofiles>=25.1.0",
+    "lark-oapi>=1.7.0",
+    "openai>=3.1.0",
+    "markdown>=3.7",
+    "python-dotenv>=1.2.2",
+    "langchain-openai>=1.5.1",
+    "langchain>=1.3.15",
+    "langchain-core>=1.5.5",
+    "pandas>=2.3.3",
+    "langgraph-checkpoint-sqlite>=3.1.1",
+    "aiosqlite>=0.22.1",
+    "chinese-calendar>=1.10",
+]
+
+[dependency-groups]
+dev = [
+    "pytest<8.0.0,>=7.4.3",
+    "mypy<2.0.0,>=1.8.0",
+    "ty>=0.0.25",
+    "ruff<1.0.0,>=0.2.2",
+    "prek>=0.2.24,<1.0.0",
+    "coverage<8.0.0,>=7.4.3",
+    "types-markdown>=3.10.2.20260712",
+]
+
+[tool.pytest.ini_options]
+# 限制测试发现路径，防止扫描根目录和 test_scripts 下包含顶层执行逻辑的调试脚本触发浏览器弹窗
+testpaths = ["tests", "tests_pipeline"]
+norecursedirs = [
+    "test_scripts",
+    "data",
+    "profiles",
+    ".venv",
+    "build",
+    "dist",
+]
+# anyio auto 模式：裸 async def 测试自动被 anyio 接管执行。
+# 教训（2026-09-07）：此前 pytest-asyncio 未安装且无任何 async 配置，
+# 全仓库 @pytest.mark.asyncio 测试（含极速录入查重/落库生命周期）被静默 SKIP，
+# 形同虚设。anyio 为 fastapi/starlette 传递依赖，无需额外安装。
+anyio_mode = "auto"
+markers = [
+    "asyncio: 由 anyio auto 模式接管的 async 测试（历史标记，保持兼容）",
+]
+filterwarnings = [
+    # 第三方 lark_oapi SDK 内部的 Python 3.12 弃用用法（utcfromtimestamp / 裸 get_event_loop）。
+    # 我方代码域零弃用警告；SDK 升级修复后应移除这两条（开源清单模块十依赖卫生小项登记）。
+    "ignore:datetime.datetime.utcfromtimestamp:DeprecationWarning",
+    "ignore:There is no current event loop:DeprecationWarning",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.mypy]
+# ⚠️ 渐进收紧（2026-09 质量治理）：原 strict = true 从未通过（1684 错误），纯装饰。
+# 当前为"可执行底线"配置：CI 可跑绿。后续按模块逐步开启 disallow_untyped_defs 等严格项。
+exclude = ["venv", ".venv", "alembic"]
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+# 存量豁免的错误码——修复对应类别后应逐个删除（棘轮式收紧）
+disable_error_code = [
+    "type-arg",        # 泛型缺参数（list/dict 裸用）存量过多
+    "assignment",      # 赋值类型不匹配
+    "arg-type",        # 实参类型不匹配
+    "return-value",    # 返回值类型不匹配
+    "attr-defined",    # 属性不存在（动态属性-heavy 的存量代码）
+    "union-attr",      # Optional 成员访问
+    "index",           # 非下标对象取下标
+    "operator",        # 运算符不支持的操作数
+    "call-overload",   # 重载调用不匹配
+    "override",        # 签名与父类不兼容
+    "abstract",        # 抽象类实例化
+    "func-returns-value", # 返回值被丢弃
+    "typeddict-item",  # TypedDict 键错误
+    "typeddict-unknown-key",
+    "misc",            # 杂项（装饰器、动态 def 等）
+]
+
+# 第三方库缺类型桩（2026-09）：安装 types-* 后可移除
+[[tool.mypy.overrides]]
+module = ["markdown", "markdown.*", "dateutil", "dateutil.parser", "aiofiles"]
+ignore_missing_imports = true
+
+[tool.ruff]
+target-version = "py310"
+exclude = ["alembic"]
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "ARG001", # unused arguments in functions
+    "T201",   # print statements are not allowed
+]
+ignore = [
+    "E501",  # line too long, handled by black
+    "B008",  # do not perform function calls in argument defaults
+    "W191",  # indentation contains tabs
+    "B904",  # Allow raising exceptions without from e, for HTTPException
+]
+
+[tool.ruff.lint.pyupgrade]
+# Preserve types, even if a file imports `from __future__ import annotations`.
+keep-runtime-typing = true
+
+[tool.coverage.run]
+source = ["app"]
+dynamic_context = "test_function"
+
+[tool.coverage.report]
+show_missing = true
+sort = "-Cover"
+
+[tool.coverage.html]
+show_contexts = true
+
+[tool.ty.terminal]
+error-on-warning = true
+
+# ⚠️ 存量 print 隔离区（T201）——由 2026-09 质量治理生成，共 41 个文件 / 330 处历史 print。
+# 规则：新文件仍然全局禁止 print；上表文件在完成 print → logging 迁移后应逐个从本清单删除（棘轮式收紧）。
+[tool.ruff.lint.per-file-ignores]
+"app/agent_router.py" = ["T201"]
+"app/agents/qa_classifier_agent.py" = ["T201"]
+"app/api/resume_editor/agent_map_routes.py" = ["T201"]
+"app/api/resume_editor/platforms_routes.py" = ["T201"]
+"app/api/resume_editor/unified_routes.py" = ["T201"]
+"app/api/routes/chatops.py" = ["T201"]
+"app/api/routes/crawlers.py" = ["T201"]
+"app/api/routes/processor.py" = ["T201"]
+"app/api/routes/webhook.py" = ["T201"]
+"app/automation/full_auto.py" = ["T201"]
+"app/automation/pipeline_report.py" = ["T201"]
+"app/automation/platform_semaphore.py" = ["T201"]
+"app/automation/scheduler.py" = ["T201"]
+"app/automation/tools.py" = ["T201"]
+"app/automation/workflow.py" = ["T201"]
+"app/copilot/service.py" = ["T201"]
+"app/core/cache.py" = ["T201"]
+"app/core/chatops_monitors.py" = ["T201"]
+"app/core/feishu_messaging.py" = ["T201"]
+"app/core/feishu_utils.py" = ["T201"]
+"app/db_nl_controller.py" = ["T201"]
+"app/interview/interview_rag.py" = ["T201"]
+"app/interview/router.py" = ["T201"]
+"app/interview/service.py" = ["T201"]
+"app/jobs/action_service.py" = ["T201"]
+"app/jobs/router.py" = ["T201"]
+"app/jobs/service.py" = ["T201"]
+"app/main.py" = ["T201"]
+"app/pipeline/router.py" = ["T201"]
+"app/questions/service.py" = ["T201"]
+"app/services/eval_pipeline_feedback.py" = ["T201"]
+"app/services/feishu_service.py" = ["T201"]
+"app/services/job_dedup_gate.py" = ["T201"]
+"app/services/job_service.py" = ["T201"]
+"app/services/map_service.py" = ["T201"]
+"app/services/report_feishu.py" = ["T201"]
+"app/services/volc_stt_service.py" = ["T201"]
+"app/session/alerter.py" = ["T201"]
+"app/session/scrape_sessions.py" = ["T201"]
+"app/tasks/executor.py" = ["T201"]
+"app/tasks/router.py" = ["T201"]

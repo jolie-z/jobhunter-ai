@@ -1,0 +1,920 @@
+{
+  "yjsPcSearchJob": [],
+  "yjsPcRecommendJob": [],
+  "yjsPcInternJob": [],
+  "d_m_area": [],
+  "d_area": [],
+  "d_yjs_funtype": [],
+  "d_job_term": [
+    {
+      "code": "0",
+      "value": "全职",
+      "eValue": "Full-time"
+    },
+    {
+      "code": "1",
+      "value": "兼职",
+      "eValue": "Part-time"
+    },
+    {
+      "code": "2",
+      "value": "实习",
+      "eValue": "Intern/Trainee"
+    }
+  ],
+  "d_entry_time": [],
+  "d_job_status": [
+    {
+      "code": "0",
+      "value": "积极找工作",
+      "eValue": "I'm looking for jobs now"
+    },
+    {
+      "code": "3",
+      "value": "观望有好机会会考虑",
+      "eValue": "Only good opportunities I will consider"
+    }
+  ],
+  "d_company_size": [
+    {
+      "code": "1",
+      "value": "少于50人",
+      "eValue": "BELOW 50 PERSON"
+    },
+    {
+      "code": "2",
+      "value": "50-150人",
+      "eValue": "50-150"
+    },
+    {
+      "code": "3",
+      "value": "150-500人",
+      "eValue": "150-500"
+    },
+    {
+      "code": "4",
+      "value": "500-1000人",
+      "eValue": "500-1000"
+    },
+    {
+      "code": "5",
+      "value": "1000-5000人",
+      "eValue": "1000-5000"
+    },
+    {
+      "code": "6",
+      "value": "5000-10000人",
+      "eValue": "5000-10000"
+    },
+    {
+      "code": "7",
+      "value": "10000人以上",
+      "eValue": "ABOVE 10000"
+    }
+  ],
+  "d_company_type": [
+    {
+      "code": "01",
+      "value": "外资（欧美）",
+      "eValue": "Foreign Comp.(Eur./N.Amer.)"
+    },
+    {
+      "code": "02",
+      "value": "外资（非欧美）",
+      "eValue": "Foreign Comp.(Others)"
+    },
+    {
+      "code": "03",
+      "value": "合资",
+      "eValue": "Joint Ventures"
+    },
+    {
+      "code": "05",
+      "value": "国企",
+      "eValue": "State-Owned Comp."
+    },
+    {
+      "code": "06",
+      "value": "民营",
+      "eValue": "Private Comp."
+    },
+    {
+      "code": "13",
+      "value": "已上市",
+      "eValue": "Listed Comp."
+    },
+    {
+      "code": "14",
+      "value": "创业公司",
+      "eValue": "Startup Comp."
+    },
+    {
+      "code": "07",
+      "value": "外企代表处",
+      "eValue": "Rep. Office of Foreign Comp."
+    },
+    {
+      "code": "09",
+      "value": "政府机关",
+      "eValue": "Governmental Agencies"
+    },
+    {
+      "code": "10",
+      "value": "事业单位",
+      "eValue": "Institutions"
+    },
+    {
+      "code": "11",
+      "value": "非营利组织",
+      "eValue": "NPO(non-profit organization)"
+    }
+  ],
+  "d_search_companysize": [],
+  "d_search_cottype": [],
+  "d_search_degreefrom": [],
+  "d_search_jobterm": [],
+  "d_search_providesalary": [],
+  "d_search_workyear": [],
+  "d_politics": [
+    {
+      "code": "01",
+      "value": "中共党员",
+      "eValue": "Party Member"
+    },
+    {
+      "code": "06",
+      "value": "中共预备党员",
+      "eValue": "Probationary Party Member"
+    },
+    {
+      "code": "02",
+      "value": "共青团员",
+      "eValue": "League Member"
+    },
+    {
+      "code": "03",
+      "value": "民主党派人士",
+      "eValue": "Democratic Party"
+    },
+    {
+      "code": "04",
+      "value": "无党派民主人士",
+      "eValue": "No Party"
+    },
+    {
+      "code": "05",
+      "value": "普通公民",
+      "eValue": "Citizen"
+    }
+  ],
+  "d_district_dibiao": [],
+  "d_line": [],
+  "d_degree": [
+    {
+      "code": "1",
+      "value": "初中及以下",
+      "isMba": false,
+      "eValue": "Junior High and Below"
+    },
+    {
+      "code": "2",
+      "value": "高中",
+      "isMba": false,
+      "eValue": "High School"
+    },
+    {
+      "code": "4",
+      "value": "中技/中专",
+      "isMba": false,
+      "eValue": "Technical School/Polytechnic"
+    },
+    {
+      "code": "5",
+      "value": "大专",
+      "isMba": false,
+      "eValue": "Associate"
+    },
+    {
+      "code": "6",
+      "value": "本科",
+      "isMba": false,
+      "eValue": "Bachelor"
+    },
+    {
+      "code": "7",
+      "value": "硕士",
+      "isMba": false,
+      "eValue": "Master"
+    },
+    {
+      "code": "7",
+      "value": "MBA/EMBA",
+      "isMba": true,
+      "eValue": "MBA/EMBA"
+    },
+    {
+      "code": "8",
+      "value": "博士",
+      "isMba": false,
+      "eValue": "Doctorate"
+    }
+  ],
+  "d_languages": [
+    {
+      "id": 76,
+      "code": "2201",
+      "value": "英语",
+      "evalue": "English",
+      "serial": "22010",
+      "createAt": "2024-01-01 00:00:00"
+    },
+    {
+      "id": 80,
+      "code": "2202",
+      "value": "日语",
+      "evalue": "Japanese",
+      "serial": "22020",
+      "createAt": "2024-01-01 00:00:00"
+    },
+    {
+      "id": 84,
+      "code": "2205",
+      "value": "俄语",
+      "evalue": "Russian",
+      "serial": "22030",
+      "createAt": "2024-01-01 00:00:00"
+    },
+    {
+      "id": 73,
+      "code": "2208",
+      "value": "阿拉伯语",
+      "evalue": "Arabic",
+      "serial": "22040",
+      "createAt": "2024-01-01 00:00:00"
+    },
+    {
+      "id": 77,
+      "code": "2203",
+      "value": "法语",
+      "evalue": "French",
+      "serial": "22050",
+      "createAt": "2024-01-01 00:00:00"
+    },
+    {
+      "id": 78,
+      "code": "2204",
+      "value": "德语",
+      "evalue": "German",
+      "serial": "22060",
+      "createAt": "2024-01-01 00:00:00"
+    },
+    {
+      "id": 86,
+      "code": "2206",
+      "value": "西班牙语",
+      "evalue": "Spanish",
+      "serial": "22070",
+      "createAt": "2024-01-01 00:00:00"
+    },
+    {
+      "id": 83,
+      "code": "2211",
+      "value": "葡萄牙语",
+      "evalue": "Portuguese",
+      "serial": "22080",
+      "createAt": "2024-01-01 00:00:00"
+    },
+    {
+      "id": 79,
+      "code": "2212",
+      "value": "意大利语",
+      "evalue": "Italian",
+      "serial": "22090",
+      "createAt": "2024-01-01 00:00:00"
+    },
+    {
+      "id": 81,
+      "code": "2207",
+      "value": "韩语/朝鲜语",
+      "evalue": "Korean",
+      "serial": "22100",
+      "createAt": "2024-01-01 00:00:00"
+    },
+    {
+      "id": 85,
+      "code": "2210",
+      "value": "普通话",
+      "evalue": "Chinese Mandarin",
+      "serial": "22110",
+      "createAt": "2024-01-01 00:00:00"
+    },
+    {
+      "id": 74,
+      "code": "2213",
+      "value": "粤语",
+      "evalue": "Cantonese",
+      "serial": "22120",
+      "createAt": "2024-01-01 00:00:00"
+    },
+    {
+      "id": 82,
+      "code": "2214",
+      "value": "闽南语",
+      "evalue": "Minnan Dialect",
+      "serial": "22130",
+      "createAt": "2024-01-01 00:00:00"
+    },
+    {
+      "id": 75,
+      "code": "2215",
+      "value": "上海话",
+      "evalue": "Shanghainese",
+      "serial": "22140",
+      "createAt": "2024-01-01 00:00:00"
+    },
+    {
+      "id": 103,
+      "code": "2216",
+      "value": "泰语",
+      "evalue": "Thai",
+      "serial": "22150",
+      "createAt": "2024-11-27 00:00:00",
+      "updateAt": "2024-11-27 00:00:00"
+    },
+    {
+      "id": 104,
+      "code": "2217",
+      "value": "越南语",
+      "evalue": "Vietnamese",
+      "serial": "22160",
+      "createAt": "2024-11-27 00:00:00",
+      "updateAt": "2024-11-27 00:00:00"
+    },
+    {
+      "id": 105,
+      "code": "2218",
+      "value": "荷兰语",
+      "evalue": "Dutch",
+      "serial": "22170",
+      "createAt": "2024-11-27 00:00:00",
+      "updateAt": "2024-11-27 00:00:00"
+    },
+    {
+      "id": 106,
+      "code": "2219",
+      "value": "马来语",
+      "evalue": "Malay",
+      "serial": "22180",
+      "createAt": "2024-11-27 00:00:00",
+      "updateAt": "2024-11-27 00:00:00"
+    },
+    {
+      "id": 107,
+      "code": "2220",
+      "value": "瑞典语",
+      "evalue": "Swedish",
+      "serial": "22190",
+      "createAt": "2024-11-27 00:00:00",
+      "updateAt": "2024-11-27 00:00:00"
+    },
+    {
+      "id": 108,
+      "code": "2221",
+      "value": "土耳其语",
+      "evalue": "Turkish",
+      "serial": "22210",
+      "createAt": "2024-11-27 00:00:00",
+      "updateAt": "2024-11-27 00:00:00"
+    },
+    {
+      "id": 109,
+      "code": "2222",
+      "value": "哈萨克语",
+      "evalue": "Kazakh",
+      "serial": "22220",
+      "createAt": "2024-11-27 00:00:00",
+      "updateAt": "2024-11-27 00:00:00"
+    },
+    {
+      "id": 110,
+      "code": "2223",
+      "value": "捷克语",
+      "evalue": "Czech",
+      "serial": "22230",
+      "createAt": "2024-11-27 00:00:00",
+      "updateAt": "2024-11-27 00:00:00"
+    },
+    {
+      "id": 111,
+      "code": "2224",
+      "value": "希腊语",
+      "evalue": "Greek",
+      "serial": "22240",
+      "createAt": "2024-11-27 00:00:00",
+      "updateAt": "2024-11-27 00:00:00"
+    },
+    {
+      "id": 112,
+      "code": "2225",
+      "value": "希伯来语",
+      "evalue": "Hebrew",
+      "serial": "22250",
+      "createAt": "2024-11-27 00:00:00",
+      "updateAt": "2024-11-27 00:00:00"
+    },
+    {
+      "id": 113,
+      "code": "2226",
+      "value": "丹麦语",
+      "evalue": "Danish",
+      "serial": "22260",
+      "createAt": "2024-11-27 00:00:00",
+      "updateAt": "2024-11-27 00:00:00"
+    },
+    {
+      "id": 114,
+      "code": "2227",
+      "value": "斯瓦希里语",
+      "evalue": "Swahili",
+      "serial": "22270",
+      "createAt": "2024-11-27 00:00:00",
+      "updateAt": "2024-11-27 00:00:00"
+    },
+    {
+      "id": 115,
+      "code": "2228",
+      "value": "尼泊尔语",
+      "evalue": "Nepali",
+      "serial": "22280",
+      "createAt": "2024-11-27 00:00:00",
+      "updateAt": "2024-11-27 00:00:00"
+    },
+    {
+      "id": 116,
+      "code": "2229",
+      "value": "冰岛语",
+      "evalue": "Icelandic",
+      "serial": "22290",
+      "createAt": "2024-11-27 00:00:00",
+      "updateAt": "2024-11-27 00:00:00"
+    },
+    {
+      "id": 117,
+      "code": "2230",
+      "value": "阿姆哈拉语",
+      "evalue": "Amharic",
+      "serial": "22300",
+      "createAt": "2024-11-27 00:00:00",
+      "updateAt": "2024-11-27 00:00:00"
+    },
+    {
+      "id": 87,
+      "code": "2209",
+      "value": "其它",
+      "evalue": "Others",
+      "serial": "22310",
+      "createAt": "2024-01-01 00:00:00"
+    }
+  ],
+  "d_new_saltype": [
+    {
+      "id": "1",
+      "value": "0-2000",
+      "text": "2千以下",
+      "sub": []
+    },
+    {
+      "id": "2",
+      "value": "2000",
+      "text": "2千",
+      "sub": []
+    },
+    {
+      "id": "3",
+      "value": "2500",
+      "text": "2.5千",
+      "sub": []
+    },
+    {
+      "id": "4",
+      "value": "3000",
+      "text": "3千",
+      "sub": []
+    },
+    {
+      "id": "5",
+      "value": "3500",
+      "text": "3.5千",
+      "sub": []
+    },
+    {
+      "id": "6",
+      "value": "4000",
+      "text": "4千",
+      "sub": []
+    },
+    {
+      "id": "7",
+      "value": "4500",
+      "text": "4.5千",
+      "sub": []
+    },
+    {
+      "id": "8",
+      "value": "5000",
+      "text": "5千",
+      "sub": []
+    },
+    {
+      "id": "9",
+      "value": "6000",
+      "text": "6千",
+      "sub": []
+    },
+    {
+      "id": "10",
+      "value": "7000",
+      "text": "7千",
+      "sub": []
+    },
+    {
+      "id": "11",
+      "value": "8000",
+      "text": "8千",
+      "sub": []
+    },
+    {
+      "id": "12",
+      "value": "9000",
+      "text": "9千",
+      "sub": []
+    },
+    {
+      "id": "13",
+      "value": "10000",
+      "text": "1万",
+      "sub": []
+    },
+    {
+      "id": "14",
+      "value": "11000",
+      "text": "1.1万",
+      "sub": []
+    },
+    {
+      "id": "15",
+      "value": "12000",
+      "text": "1.2万",
+      "sub": []
+    },
+    {
+      "id": "16",
+      "value": "13000",
+      "text": "1.3万",
+      "sub": []
+    },
+    {
+      "id": "17",
+      "value": "14000",
+      "text": "1.4万",
+      "sub": []
+    },
+    {
+      "id": "18",
+      "value": "15000",
+      "text": "1.5万",
+      "sub": []
+    },
+    {
+      "id": "19",
+      "value": "16000",
+      "text": "1.6万",
+      "sub": []
+    },
+    {
+      "id": "20",
+      "value": "17000",
+      "text": "1.7万",
+      "sub": []
+    },
+    {
+      "id": "21",
+      "value": "18000",
+      "text": "1.8万",
+      "sub": []
+    },
+    {
+      "id": "22",
+      "value": "19000",
+      "text": "1.9万",
+      "sub": []
+    },
+    {
+      "id": "23",
+      "value": "20000",
+      "text": "2万",
+      "sub": []
+    },
+    {
+      "id": "24",
+      "value": "21000",
+      "text": "2.1万",
+      "sub": []
+    },
+    {
+      "id": "25",
+      "value": "22000",
+      "text": "2.2万",
+      "sub": []
+    },
+    {
+      "id": "26",
+      "value": "23000",
+      "text": "2.3万",
+      "sub": []
+    },
+    {
+      "id": "27",
+      "value": "24000",
+      "text": "2.4万",
+      "sub": []
+    },
+    {
+      "id": "28",
+      "value": "25000",
+      "text": "2.5万",
+      "sub": []
+    },
+    {
+      "id": "29",
+      "value": "26000",
+      "text": "2.6万",
+      "sub": []
+    },
+    {
+      "id": "30",
+      "value": "27000",
+      "text": "2.7万",
+      "sub": []
+    },
+    {
+      "id": "31",
+      "value": "28000",
+      "text": "2.8万",
+      "sub": []
+    },
+    {
+      "id": "32",
+      "value": "29000",
+      "text": "2.9万",
+      "sub": []
+    },
+    {
+      "id": "33",
+      "value": "30000",
+      "text": "3万",
+      "sub": []
+    },
+    {
+      "id": "34",
+      "value": "31000",
+      "text": "3.1万",
+      "sub": []
+    },
+    {
+      "id": "35",
+      "value": "32000",
+      "text": "3.2万",
+      "sub": []
+    },
+    {
+      "id": "36",
+      "value": "33000",
+      "text": "3.3万",
+      "sub": []
+    },
+    {
+      "id": "37",
+      "value": "34000",
+      "text": "3.4万",
+      "sub": []
+    },
+    {
+      "id": "38",
+      "value": "35000",
+      "text": "3.5万",
+      "sub": []
+    },
+    {
+      "id": "39",
+      "value": "36000",
+      "text": "3.6万",
+      "sub": []
+    },
+    {
+      "id": "40",
+      "value": "37000",
+      "text": "3.7万",
+      "sub": []
+    },
+    {
+      "id": "41",
+      "value": "38000",
+      "text": "3.8万",
+      "sub": []
+    },
+    {
+      "id": "42",
+      "value": "39000",
+      "text": "3.9万",
+      "sub": []
+    },
+    {
+      "id": "43",
+      "value": "40000",
+      "text": "4万",
+      "sub": []
+    },
+    {
+      "id": "44",
+      "value": "41000",
+      "text": "4.1万",
+      "sub": []
+    },
+    {
+      "id": "45",
+      "value": "42000",
+      "text": "4.2万",
+      "sub": []
+    },
+    {
+      "id": "46",
+      "value": "43000",
+      "text": "4.3万",
+      "sub": []
+    },
+    {
+      "id": "47",
+      "value": "44000",
+      "text": "4.4万",
+      "sub": []
+    },
+    {
+      "id": "48",
+      "value": "45000",
+      "text": "4.5万",
+      "sub": []
+    },
+    {
+      "id": "49",
+      "value": "46000",
+      "text": "4.6万",
+      "sub": []
+    },
+    {
+      "id": "50",
+      "value": "47000",
+      "text": "4.7万",
+      "sub": []
+    },
+    {
+      "id": "51",
+      "value": "48000",
+      "text": "4.8万",
+      "sub": []
+    },
+    {
+      "id": "52",
+      "value": "49000",
+      "text": "4.9万",
+      "sub": []
+    },
+    {
+      "id": "53",
+      "value": "50000",
+      "text": "5万",
+      "sub": []
+    },
+    {
+      "id": "54",
+      "value": "55000",
+      "text": "5.5万",
+      "sub": []
+    },
+    {
+      "id": "55",
+      "value": "60000",
+      "text": "6万",
+      "sub": []
+    },
+    {
+      "id": "56",
+      "value": "65000",
+      "text": "6.5万",
+      "sub": []
+    },
+    {
+      "id": "57",
+      "value": "70000",
+      "text": "7万",
+      "sub": []
+    },
+    {
+      "id": "58",
+      "value": "75000",
+      "text": "7.5万",
+      "sub": []
+    },
+    {
+      "id": "59",
+      "value": "80000",
+      "text": "8万",
+      "sub": []
+    },
+    {
+      "id": "60",
+      "value": "85000",
+      "text": "8.5万",
+      "sub": []
+    },
+    {
+      "id": "61",
+      "value": "90000",
+      "text": "9万",
+      "sub": []
+    },
+    {
+      "id": "62",
+      "value": "95000",
+      "text": "9.5万",
+      "sub": []
+    },
+    {
+      "id": "63",
+      "value": "100000-",
+      "text": "10万及以上",
+      "sub": []
+    }
+  ],
+  "hotJobList": [],
+  "d_it_ability": [
+    {
+      "code": "2",
+      "value": "一般",
+      "serial": "01",
+      "eValue": "Average"
+    },
+    {
+      "code": "3",
+      "value": "良好",
+      "serial": "02",
+      "eValue": "Good"
+    },
+    {
+      "code": "1",
+      "value": "熟练",
+      "serial": "03",
+      "eValue": "Advanced"
+    },
+    {
+      "code": "0",
+      "value": "精通",
+      "serial": "04",
+      "eValue": "Expert"
+    }
+  ],
+  "d_search_dynamic_provide_salary": [
+    {
+      "code": "201",
+      "value": "8千以下"
+    },
+    {
+      "code": "202",
+      "value": "0.8-1万"
+    },
+    {
+      "code": "203",
+      "value": "1-1.5万"
+    },
+    {
+      "code": "204",
+      "value": "1.5-2万"
+    },
+    {
+      "code": "205",
+      "value": "2-3万"
+    },
+    {
+      "code": "206",
+      "value": "3-4万"
+    },
+    {
+      "code": "207",
+      "value": "4-5万"
+    },
+    {
+      "code": "208",
+      "value": "5万以上"
+    }
+  ]
+}
