@@ -16,6 +16,10 @@ jobs:
       # 纯逻辑测试不需要真实密钥；部分模块在 import 时实例化 LLM 客户端，占位值即可
       OPENAI_API_KEY: ci-placeholder
       OPENAI_MODEL: ci-test-model
+      # 视觉闸门（极速录入截图/飞书发图录入/小红书清洗）在 VISION_MODEL 缺省时
+      # 会 fail-fast 拦截并提前 return，CI 下需占位放行走原导入流程
+      VISION_MODEL: ci-test-model
+      VISION_API_KEY: ci-placeholder
       CLEANER_LLM_API_KEY: ci-placeholder
       CLEANER_LLM_MODEL: ci-test-model
       QWEN_API_KEY: ci-placeholder
