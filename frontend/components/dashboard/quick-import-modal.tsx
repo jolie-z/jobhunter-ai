@@ -1,7 +1,9 @@
 "use client"
 
 import { API_BASE } from "@/lib/api"
-import { useState } from "react"
+import { fetchMissingKeys } from "@/lib/readiness"
+import { useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
 import {
   AlertTriangle,
   CheckCircle2,
@@ -12,6 +14,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
+import { ConfigGateDialog } from "@/components/dashboard/config-gate-dialog"
 
 
 // 与后端 service._PLACEHOLDER_VALUES 对齐：命中即视为该字段没拿到
@@ -90,11 +93,15 @@ type Props = {
 }
 
 export function QuickImportModal({ onClose, onSuccess }: Props) {
+  const router = useRouter()
   const [step, setStep] = useState<"input" | "confirm" | "done">("input")
   const [importText, setImportText] = useState("")
   const [importImages, setImportImages] = useState<string[]>([])
   const [parsing, setParsing] = useState(false)
   const [parseError, setParseError] = useState("")
+  // 视觉模型就绪度（打开弹窗时预检；拉取失败时置 null = 不预拦，由后端 400 兜底）
+  const [visionMissing, setVisionMissing] = useState<string[] | null>(null)
+  const [gateOpen, setGateOpen] = useState(false)
   const [fields, setFields] = useState<FieldMap>({})
   const [warnings, setWarnings] = useState<ImportWarnings>(EMPTY_WARNINGS)
   const [forceDuplicate, setForceDuplicate] = useState(false)
@@ -103,6 +110,15 @@ export function QuickImportModal({ onClose, onSuccess }: Props) {
   const [summary, setSummary] = useState("")
   const [reviewUrl, setReviewUrl] = useState("")
   const [linkConvertedNotice, setLinkConvertedNotice] = useState(false)
+
+  // 弹窗打开时预检视觉模型就绪度（极速录入截图识别依赖视觉模型；预检失败保持 null 不拦截）
+  useEffect(() => {
+    let cancelled = false
+    fetchMissingKeys("vision").then((missing) => {
+      if (!cancelled) setVisionMissing(missing)
+    })
+    return () => { cancelled = true }
+  }, [])
 
   // 将文件转为 Base64
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -145,9 +161,16 @@ export function QuickImportModal({ onClose, onSuccess }: Props) {
   }
 
   // 第一步：解析（图文一起传，后端视觉打底、文本覆盖合并；只解析不落库）
-  const handleParse = async () => {
-    if (!importText.trim() && importImages.length === 0) {
-      alert("请粘贴文本或上传至少一张截图！")
+  // imagesOverride：闸门「仅文本解析」次选动作清空截图后自动续跑时使用
+  const handleParse = async (imagesOverride?: string[]) => {
+    const imgs = imagesOverride ?? importImages
+    if (!importText.trim() && imgs.length === 0) {
+      setParseError("请粘贴文本或上传至少一张截图！")
+      return
+    }
+    // 视觉闸门：带截图但视觉模型未配置 → 拦截并引导配置（预检失败时由后端 400 兜底）
+    if (imgs.length > 0 && visionMissing !== null && visionMissing.length > 0) {
+      setGateOpen(true)
       return
     }
     setParsing(true)
@@ -156,10 +179,15 @@ export function QuickImportModal({ onClose, onSuccess }: Props) {
       const response = await fetch(`${API_BASE}/api/jobs/import/parse`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ raw_text: importText, images_base64: importImages }),
+        body: JSON.stringify({ raw_text: importText, images_base64: imgs }),
       })
       const result = await response.json()
       if (!response.ok) {
+        if (result.detail?.code === "vision_not_configured") {
+          setVisionMissing(result.detail.missing || ["VISION_MODEL"])
+          setGateOpen(true)
+          return
+        }
         setParseError(typeof result.detail === "string" ? result.detail : "解析失败，请重试")
         return
       }
@@ -319,7 +347,7 @@ export function QuickImportModal({ onClose, onSuccess }: Props) {
 
             <div className="flex justify-end gap-3 shrink-0 pt-2 border-t border-gray-100 mt-2">
               <Button variant="ghost" onClick={onClose}>取消</Button>
-              <Button onClick={handleParse} disabled={parsing} className="gap-2">
+              <Button onClick={() => handleParse()} disabled={parsing} className="gap-2">
                 {parsing ? <Spinner className="size-4" /> : null}
                 {parsing ? "解析中..." : "开始解析"}
               </Button>
@@ -487,6 +515,22 @@ export function QuickImportModal({ onClose, onSuccess }: Props) {
           </>
         )}
       </div>
+
+      {/* 视觉模型未配置闸门：截图识别不可用，引导前往配置 */}
+      <ConfigGateDialog
+        open={gateOpen}
+        onClose={() => setGateOpen(false)}
+        title="截图识别暂不可用"
+        description="识别招聘截图需要「视觉模型」，当前还未配置。前往 配置大盘 → 系统底层配置 → LLM 大模型，填写「视觉模型」后即可使用。"
+        missing={visionMissing ?? ["VISION_MODEL"]}
+        onGoConfigure={() => router.push("/strategy?section=system")}
+        secondaryLabel={importText.trim() ? "不用图片，仅按文本解析" : undefined}
+        onSecondary={
+          importText.trim()
+            ? () => { setImportImages([]); setVisionMissing([]); handleParse([]) }
+            : undefined
+        }
+      />
     </div>
   )
 }

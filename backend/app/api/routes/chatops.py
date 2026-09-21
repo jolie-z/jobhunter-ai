@@ -39,7 +39,7 @@ PLATFORM_CONFIG = {
     "boss":   {"per_page": 15, "script_name": "boss_collector.py",   "dir_name": "boss_scraper"},
     "51job":  {"per_page": 20, "script_name": "51job_collector.py",  "dir_name": "51job_scraper"},
     "liepin": {"per_page": 30, "script_name": "liepin_crawler.py",   "dir_name": "liepin_scraper"},
-    "zhaopin":{"per_page": 30, "script_name": "data_collector.py",   "dir_name": "zhilian_scraper"},
+    "zhaopin":{"per_page": 30, "script_name": "zhilian_collector.py",   "dir_name": "zhilian_scraper"},
 }
 
 # 任务状态队列（ChatOps 专属）

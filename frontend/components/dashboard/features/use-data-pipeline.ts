@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react"
 import { toast } from "sonner"
 import { useCrawlerTaskStore } from "@/store/crawler-task-store"
 import { getMainApiBase } from "@/lib/platform-auth"
+import { fetchMissingKeys } from "@/lib/readiness"
 
 export interface PipelineStats {
   raw_pending: number
@@ -36,6 +37,8 @@ export function useDataPipeline({ onTaskStarted }: UseDataPipelineProps) {
   const [loading, setLoading] = useState(true)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [runningTask, setRunningTask] = useState<string | null>(null)
+  // 小红书清洗的视觉模型闸门：非 null 时展示配置引导弹窗（缺失字段列表）
+  const [xhsGate, setXhsGate] = useState<string[] | null>(null)
   const [cleanLimit, setCleanLimit] = useState<string>("10")
 
   const addTask = useCrawlerTaskStore((state) => state.addTask)
@@ -237,6 +240,12 @@ export function useDataPipeline({ onTaskStarted }: UseDataPipelineProps) {
     if (isProcessing || stats.xhs_pending === 0) return
     setRunningTask("xhs")
     try {
+      // 视觉闸门：多模态清洗依赖视觉模型，未配置时弹配置引导而非裸报错（预检失败由后端 400 兜底）
+      const visionMissing = await fetchMissingKeys("vision")
+      if (visionMissing && visionMissing.length > 0) {
+        setXhsGate(visionMissing)
+        return
+      }
       const res = await fetch(`${getMainApiBase()}/v1/processor/run-xhs`, { method: "POST" })
       if (res.ok) {
         const data = await res.json()
@@ -255,7 +264,14 @@ export function useDataPipeline({ onTaskStarted }: UseDataPipelineProps) {
         onTaskStarted()
       } else {
         const err = await res.json().catch(() => ({}))
-        toast.error(`小红书清洗启动失败: ${err.detail || err.message || "服务繁忙"}`)
+        if (err.detail?.code === "vision_not_configured") {
+          setXhsGate(err.detail.missing || ["VISION_MODEL"])
+          return
+        }
+        const detailMsg = typeof err.detail === "string"
+          ? err.detail
+          : err.detail?.message || err.detail?.code
+        toast.error(`小红书清洗启动失败: ${detailMsg || err.message || "服务繁忙"}`)
       }
     } catch (e) {
       console.warn("[DataExplorer] 启动小红书清洗异常:", e)
@@ -390,6 +406,8 @@ export function useDataPipeline({ onTaskStarted }: UseDataPipelineProps) {
     isRefreshing,
     runningTask,
     isProcessing,
+    xhsGate,
+    clearXhsGate: () => setXhsGate(null),
     activeCleaningTask,
     cleanLimit,
     setCleanLimit,

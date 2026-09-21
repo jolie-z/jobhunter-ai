@@ -15,6 +15,14 @@ logger = logging.getLogger(__name__)
 _PLACEHOLDER_VALUES = {"", "-", "未知", "无", "未解析出岗位名", "未知猎头/公司"}
 
 
+class VisionNotConfiguredError(ValueError):
+    """带图请求但视觉模型未配置（detail.code=vision_not_configured，前端据此弹配置引导）。"""
+
+    def __init__(self, missing: list[str]):
+        self.missing = missing
+        super().__init__(f"视觉模型未配置：缺少 {'、'.join(missing)}")
+
+
 def _meaningful(value: Any) -> bool:
     """字段值是否真正拿到了（非空且不是占位兜底值）。"""
     return str(value if value is not None else "").strip() not in _PLACEHOLDER_VALUES
@@ -379,6 +387,13 @@ async def parse_job_from_sources(raw_text: str = "", images_base64: list[str] | 
     images = [img for img in (images_base64 or []) if img]
     if not raw_text and not images:
         raise ValueError("请提供招聘文本或至少一张截图")
+
+    # 视觉前置闸门：带图请求必须有可用视觉模型，否则后续只会拿着硬编码兜底模型名盲跑报错
+    if images:
+        from common.config import get_missing_vision_keys
+        missing_vision = get_missing_vision_keys()
+        if missing_vision:
+            raise VisionNotConfiguredError(missing_vision)
 
     detected_url, detected_platform = "", "未知"
     if raw_text:

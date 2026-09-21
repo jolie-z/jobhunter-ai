@@ -152,16 +152,6 @@
   </div>
 </section>
 
-<!-- ============ 核心理念 ============ -->
-<section class="sec alt" id="thesis" style="padding: 24px 0 24px;">
-  <div class="wrap">
-    <div class="thesis-card">
-      <div class="thesis-q">「人始终在闭环中，只做两件事：<span class="grad-text">下指令 · 点审批</span>。」</div>
-      <div class="thesis-a">翻列表、筛岗位、改简历、发招呼、点投递——所有机械重复的劳动全部交给机器与大模型；而「要不要投这家」这类决定职业走向的关键决策，永远由你签字。流水线在审批处主动挂起等你。</div>
-    </div>
-  </div>
-</section>
-
 <!-- ============ 壹 · 9 阶段执行导轨 ============ -->
 <section class="sec" id="pipeline">
   <div class="wrap">
@@ -861,7 +851,13 @@ var STAGES = [
     cSoft: "var(--auto-soft)",
     cGlow: "rgba(0, 113, 227, 0.18)",
     who: "机器自动",
-    d: "真实浏览器接管投递，当前已成熟支持 4 大主流平台，底层严密适配各平台物料差异：BOSS 直聘投递高保真图片简历 (PNG 长图) 搭配即时开聊招呼语；智联招聘、猎聘、前程无忧 (51job) 则动态上传过审 PDF 附件简历（精投专属 PDF 删旧传新 / 海投母本 PDF 批次复用）并填充求职信。辅以全局并发串行锁、15~25 秒拟人随机延迟与轨迹模拟、单日配额止损与 45s 死锁看门狗重试。",
+    d: '<p>真实浏览器接管投递，当前已成熟支持 4 大主流平台，底层严密适配各平台物料差异：</p>' +
+       '<div class="delivery-mat-list">' +
+         '<div class="delivery-mat-item"><b class="plat-boss">BOSS 直聘</b>投递：高保真图片简历 (PNG 长图) + 打招呼语</div>' +
+         '<div class="delivery-mat-item"><b class="plat-zhilian">智联招聘</b>、<b class="plat-liepin">猎聘</b>、<b class="plat-job51">前程无忧 (51job)</b>：动态上传过审 PDF 附件简历（精投专属 PDF 删旧传新 / 海投母本 PDF 批次复用）+ 打招呼语</div>' +
+         '<div class="delivery-mat-note">* 51job 不支持打招呼语发送</div>' +
+       '</div>' +
+       '<p>全局并发串行锁、15~25 秒拟人随机延迟与轨迹模拟、单日配额止损与 45s 死锁看门狗重试。</p>',
     tags: ["4 大平台成熟支持", "BOSS长图 vs 智联/猎聘/51job PDF", "拟人随机延迟", "全局串行锁", "单日配额止损"]
   }
 ];

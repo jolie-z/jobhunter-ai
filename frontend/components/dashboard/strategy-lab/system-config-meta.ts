@@ -17,12 +17,13 @@ export interface GroupMeta {
   required: boolean
   note?: string
   tutorial?: Tutorial
-  diagnose?: boolean  // 该分组支持「检测连通性」（目前仅飞书）
+  diagnose?: boolean  // 该分组支持「检测/测试连通性」（LLM 大模型 / 飞书）
 }
 
 export const GROUP_META: Record<string, GroupMeta> = {
   "LLM 大模型": {
     required: true,
+    diagnose: true,
     tutorial: {
       title: "LLM 大模型配置教程",
       intro: "系统的核心推理引擎。支持任意 OpenAI 兼容的服务（小米 Mimo、OpenAI、DeepSeek、Moonshot 等），只要 Base URL 与模型名相互匹配即可。",

@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -21,6 +22,7 @@ import {
 
 import { Dialog, DialogContent, DialogTrigger, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { RuleEngineBoard } from "@/components/dashboard/rule-engine-board"
+import { ConfigGateDialog } from "@/components/dashboard/config-gate-dialog"
 import { useTrashBinStore } from "@/store/trash-bin-store"
 import { useDataPipeline } from "./use-data-pipeline"
 
@@ -29,6 +31,7 @@ interface DataExplorerProps {
 }
 
 export function DataExplorer({ onTaskStarted }: DataExplorerProps) {
+  const router = useRouter()
   const [showXhsCard, setShowXhsCard] = useState(false)
   const openTrashBin = useTrashBinStore((state) => state.openTrashBin)
 
@@ -38,6 +41,8 @@ export function DataExplorer({ onTaskStarted }: DataExplorerProps) {
     isRefreshing,
     runningTask,
     isProcessing,
+    xhsGate,
+    clearXhsGate,
     cleanLimit,
     setCleanLimit,
     fetchStats,
@@ -453,6 +458,16 @@ export function DataExplorer({ onTaskStarted }: DataExplorerProps) {
           </div>
         )}
       </div>
+
+      {/* 小红书多模态清洗的视觉模型闸门 */}
+      <ConfigGateDialog
+        open={xhsGate !== null}
+        onClose={clearXhsGate}
+        title="小红书图文清洗暂不可用"
+        description="多模态清洗需要「视觉模型」识别笔记截图，当前还未配置。前往 配置大盘 → 系统底层配置 → LLM 大模型，填写「视觉模型」后即可使用。"
+        missing={xhsGate ?? ["VISION_MODEL"]}
+        onGoConfigure={() => router.push("/strategy?section=system")}
+      />
     </div>
   )
 }

@@ -302,6 +302,18 @@ async def _import_images(chat_id: str, items: list[tuple[str, str]]) -> None:
         )
         return
 
+    # 视觉前置闸门：未配置视觉模型时无法识别截图，直接回复配置指引（不进解析管道）
+    from common.config import get_missing_vision_keys, missing_guide_text
+    missing_vision = get_missing_vision_keys()
+    if missing_vision:
+        await send_feishu_message(
+            chat_id,
+            "❌ 暂时无法识别截图：" + missing_guide_text(missing_vision, "截图识别")
+            + "。填写「视觉模型」后，再重新发送截图即可。",
+            "chat_id",
+        )
+        return
+
     await send_feishu_message(
         chat_id,
         f"🖼️ 收到 {len(images_base64)} 张截图，正在识别岗位信息，请稍候…",

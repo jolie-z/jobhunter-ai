@@ -145,34 +145,86 @@ def _extract_json_block(text: str) -> dict:
         text = text[:-3]
     return json.loads(text.strip())
 
-async def parse_resume_to_json(markdown_text: str) -> dict:
-    """Parses raw Markdown resume into a structured ResumeData dictionary."""
+async def parse_resume_to_json(
+    markdown_text: str,
+    progress_cb: Any = None,
+    strict: bool = False,
+) -> dict:
+    """Parses raw Markdown resume into a structured ResumeData dictionary.
+
+    progress_cb: 可选回调 cb(chars_so_far)。提供时走流式调用，按已生成字符数回报进度，
+    供上传链路透出实时进度；注意回退覆盖流式全程——任何阶段（含中途断连）失败都会
+    整单重发一次非流式请求，保证出结果，代价是该情形下的一次重复计费。
+    strict: True 时 JSON 解析/校验失败直接抛 ValueError（上传链路用于诚实报错+可重试）；
+            默认 False 保持旧行为（返回空结构兜底，ATS 诊断等既有调用方不受影响）。
+    """
     client = get_openai_client()
     if not client:
         raise ValueError("OpenAI client not configured.")
 
     prompt = PARSE_RESUME_PROMPT.replace("{resume_text}", markdown_text)
+    model = settings.OPENAI_MODEL if settings.OPENAI_MODEL else "gpt-4o"
+    messages = [
+        {"role": "system", "content": "You are a JSON extraction engine. Output ONLY valid JSON, no explanations or markdown blocks if possible."},
+        {"role": "user", "content": prompt}
+    ]
+
+    def call_llm_stream() -> str:
+        parts: list[str] = []
+        last_reported = 0
+        stream = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.1,
+            response_format={"type": "json_object"},
+            stream=True,
+        )
+        for chunk in stream:
+            try:
+                delta = chunk.choices[0].delta.content if chunk.choices else None
+            except Exception:
+                delta = None
+            if delta:
+                parts.append(delta)
+                total = sum(len(p) for p in parts)
+                if progress_cb is not None and total - last_reported >= 150:
+                    last_reported = total
+                    try:
+                        progress_cb(total)
+                    except Exception:
+                        pass
+        return "".join(parts)
 
     def call_llm():
         response = client.chat.completions.create(
-            model=settings.OPENAI_MODEL if settings.OPENAI_MODEL else "gpt-4o",
-            messages=[
-                {"role": "system", "content": "You are a JSON extraction engine. Output ONLY valid JSON, no explanations or markdown blocks if possible."},
-                {"role": "user", "content": prompt}
-            ],
+            model=model,
+            messages=messages,
             temperature=0.1,
             response_format={"type": "json_object"}
         )
         return response.choices[0].message.content or "{}"
 
     logger.info("🚀 Parsing resume to JSON AST...")
-    llm_reply = await asyncio.to_thread(call_llm)
+    if progress_cb is not None:
+        try:
+            llm_reply = await asyncio.to_thread(call_llm_stream)
+        except Exception:
+            logger.warning("流式结构化失败，回退非流式调用一次", exc_info=True)
+            llm_reply = await asyncio.to_thread(call_llm)
+    else:
+        llm_reply = await asyncio.to_thread(call_llm)
+
     try:
         parsed_json = _extract_json_block(llm_reply)
         validated = ResumeData.model_validate(parsed_json)
         return validated.model_dump()
     except Exception as e:
-        logger.error(f"Failed to parse resume JSON: {e}\nReply was: {llm_reply}")
+        logger.error(f"Failed to parse resume JSON: {e}\nReply was: {llm_reply[:500]}")
+        if strict:
+            raise ValueError(
+                "AI 返回的内容无法解析为结构化简历（可能是模型输出被截断或格式异常），请重试。"
+                f"模型返回片段：{llm_reply[:200]}"
+            ) from e
         # Fallback to empty structure
         return ResumeData().model_dump()
 

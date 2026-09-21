@@ -56,7 +56,7 @@ export function ResumeBuilderToolbar(props: ResumeBuilderToolbarProps) {
   const {
     editingItem, togglingResumeId, handleToggleResumeStatus,
     saving, handleSave,
-    isParsing, fileInputRef, handleFileImport,
+    isParsing, parseProgress, fileInputRef, handleFileImport,
     setEditingItem, setResumes, markDirty
   } = useStrategyStore()
 
@@ -165,8 +165,8 @@ export function ResumeBuilderToolbar(props: ResumeBuilderToolbarProps) {
               title="支持 PDF / Word"
             >
               {isParsing ? <RefreshCw className="h-4 w-4 shrink-0 animate-spin text-blue-500" /> : <Upload className="h-4 w-4 shrink-0 text-blue-500 group-hover:text-blue-600 transition-colors" />}
-              <span className="max-w-0 overflow-hidden opacity-0 group-hover:max-w-[100px] group-hover:opacity-100 group-hover:ml-1.5 text-[13px] font-medium whitespace-nowrap text-foreground transition-all duration-300 ease-out">
-                {isParsing ? '解析中...' : '简历导入'}
+              <span className="max-w-0 overflow-hidden opacity-0 group-hover:max-w-[140px] group-hover:opacity-100 group-hover:ml-1.5 text-[13px] font-medium whitespace-nowrap text-foreground transition-all duration-300 ease-out">
+                {isParsing ? `${parseProgress?.stageLabel || '解析中'}...` : '简历导入'}
               </span>
             </Button>
 

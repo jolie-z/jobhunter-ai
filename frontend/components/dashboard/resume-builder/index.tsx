@@ -7,6 +7,7 @@ import { ResumeSidebar } from "./resume-sidebar"
 import { ModuleNav, type ModuleNavItem } from "./module-nav"
 import { useResumeBuilderActions } from "./use-resume-builder-actions"
 import { ResumeBuilderToolbar } from "./resume-builder-toolbar"
+import { ParseProgressCard } from "./parse-progress-card"
 import { ResumeModulesRenderer } from "./resume-modules-renderer"
 import { SkillArtifactsSheet } from "../features/v2-resume-editor/components/skill-artifacts-sheet"
 
@@ -114,6 +115,9 @@ export function ResumeBuilder() {
 
         {/* 🌟 模块导览条：悬停展开，点击平滑滚动到对应模块 */}
         <ModuleNav items={navItems} />
+
+        {/* 🌟 简历解析进度浮动卡（上传期间展示阶段/字数/耗时，失败态带重试） */}
+        <ParseProgressCard />
 
         {/* 🌟 Skill 作战产物库抽屉 */}
         <SkillArtifactsSheet

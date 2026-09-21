@@ -35,3 +35,35 @@ async def diagnose_feishu() -> dict[str, Any]:
         return await _diagnose()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/readiness")
+async def get_readiness() -> dict[str, Any]:
+    """功能就绪度速查：主 LLM / 视觉 / 飞书最小字段是否配置齐全（零网络调用）。"""
+    try:
+        return await service.get_readiness()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/setup-status")
+async def get_setup_status() -> dict[str, Any]:
+    """新手引导配置体检：最小启动字段 + 简历库 + 指挥中心 9 模块聚合一次返回。"""
+    try:
+        from app.settings.setup_status import get_setup_status as _status
+        return await _status()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/diagnose/llm")
+async def diagnose_llm() -> dict[str, Any]:
+    """LLM 链路自检：推理通道配置 + 真实探活 + 视觉通道探活（视觉为选填项）。
+
+    仅提供 POST：本端点会触发真实（极小）计费调用，不设 GET 以防浏览器预取误触。
+    """
+    try:
+        from app.settings.diagnostics import diagnose_llm as _diagnose
+        return await _diagnose()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

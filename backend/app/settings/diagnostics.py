@@ -12,11 +12,19 @@
 fix 给出修复动作。新手排错 90% 的死点：应用未发布版本、应用未加为表格协作者、
 机器人能力未开、im 权限未开通、机器人没拉群——诊断文案围绕这些死点组织。
 """
+import asyncio
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
 import httpx
+
+from common.config import (
+    get_configured_value,
+    get_missing_llm_keys,
+    get_missing_vision_keys,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +55,8 @@ def _mask(val: str) -> str:
     return val[:4] + "****" + val[-4:] if len(val) > 8 else "****"
 
 
-def _check(key: str, label: str, ok: bool, detail: str, fix: str = "") -> dict[str, Any]:
-    return {"key": key, "label": label, "ok": ok, "detail": detail, "fix": fix}
+def _check(key: str, label: str, ok: bool, detail: str, fix: str = "", optional: bool = False) -> dict[str, Any]:
+    return {"key": key, "label": label, "ok": ok, "detail": detail, "fix": fix, "optional": optional}
 
 
 def _explain_token_fail(msg: str) -> tuple[str, str]:
@@ -260,6 +268,184 @@ async def diagnose_feishu() -> dict[str, Any]:
             "ws_running": ws_running,
             "chats_count": len(chats),
             "chats": chats,
+            "checks": checks,
+        },
+    }
+
+
+# ============================================================
+# LLM 通道诊断（配置页「LLM 大模型」分组的「测试连通性」按钮后端）
+# ============================================================
+
+# 探活用的极小请求文案与 1×1 测试图（PNG，透明单像素）
+_PING_TEXT = "请只回复两个字母：OK"
+_TINY_PNG_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+# 诊断专用短超时：探活不该被 get_safe_httpx_client 的 180s 长超时拖住
+_DIAGNOSE_TIMEOUT_SECONDS = 30.0
+
+
+def _explain_llm_fail(e: Exception) -> tuple[str, str]:
+    """把 OpenAI 兼容调用异常翻译成新手能懂的死因 + 修复动作。"""
+    import openai
+
+    msg = str(e)
+    low = msg.lower()
+    if isinstance(e, openai.AuthenticationError) or "401" in low or "invalid api key" in low:
+        return (
+            "API Key 无效或已过期（服务端返回 401）",
+            "核对 Key 是否复制完整（首尾别带空格）、账户是否有余额/免费额度是否用尽",
+        )
+    if isinstance(e, openai.NotFoundError):
+        if "model" in low:
+            return (
+                f"模型名不存在（404）：{msg[:120]}",
+                "核对「推理模型」名是否为该服务商的可用模型名；Base URL 与模型必须同一家服务商",
+            )
+        return (
+            "接口路径不存在（404）：Base URL 多半填错了",
+            "确认 Base URL 以 /v1 结尾、域名拼写正确（如 https://api.deepseek.com/v1）",
+        )
+    if isinstance(e, openai.RateLimitError) or "429" in low:
+        return (
+            "触发限流或额度不足（429）",
+            "去服务商控制台检查额度与限流配置，稍后重试",
+        )
+    if isinstance(e, openai.APITimeoutError) or "timed out" in low or "timeout" in low:
+        return (
+            "请求超时：本机到服务商之间网络不通",
+            "检查代理/VPN 干扰（系统已强制直连不走代理）；确认服务商服务状态页正常",
+        )
+    if isinstance(e, openai.APIConnectionError):
+        return (
+            "无法建立连接：域名解析失败或网络被拦截",
+            "核对 Base URL 域名拼写；在本机浏览器打开 Base URL 确认可达",
+        )
+    if isinstance(e, openai.BadRequestError):
+        return (
+            f"服务端拒绝请求（400）：{msg[:140]}",
+            "常见原因：模型名与能力不匹配（如非视觉模型收图）、网关不支持某参数；核对模型名后重试",
+        )
+    return (
+        f"服务端返回错误：{msg[:160]}",
+        "把该报错与服务商文档对照排查；确认无误仍失败欢迎提 issue",
+    )
+
+
+def _short_client(api_key: str, base_url: str | None):
+    """诊断专用 OpenAI 客户端：30s 超时 + 1 次重试，快速失败。"""
+    from openai import OpenAI
+
+    return OpenAI(
+        api_key=api_key,
+        base_url=base_url or None,
+        http_client=httpx.Client(trust_env=False, timeout=_DIAGNOSE_TIMEOUT_SECONDS),
+        max_retries=1,
+    )
+
+
+async def diagnose_llm() -> dict[str, Any]:
+    """LLM 链路自检：配置齐全性 → 推理通道真实探活 → 视觉通道真实探活。
+
+    视觉为选填能力：未配置时标记 optional=True 不计入 all_ok，
+    但 detail 明确列出受影响功能，引导用户按需补配。
+    """
+    checks: list[dict[str, Any]] = []
+
+    # ---- 1. 推理通道配置齐全性 ----
+    missing_llm = get_missing_llm_keys()
+    if missing_llm:
+        checks.append(_check(
+            "main_credentials", "推理通道配置齐全（API Key / Base URL / 推理模型）", False,
+            f"缺少：{'、'.join(missing_llm)}",
+            "在「LLM 大模型」分组补齐对应字段后保存",
+        ))
+    else:
+        checks.append(_check(
+            "main_credentials", "推理通道配置齐全（API Key / Base URL / 推理模型）", True,
+            f"API Key 已填写（{_mask(get_configured_value('OPENAI_API_KEY'))}），"
+            f"模型 {get_configured_value('OPENAI_MODEL')}",
+        ))
+
+        # ---- 2. 推理链路真实探活（一次极小调用，成本可忽略）----
+        t0 = time.monotonic()
+        client = _short_client(get_configured_value("OPENAI_API_KEY"), get_configured_value("OPENAI_BASE_URL"))
+        try:
+            model = get_configured_value("OPENAI_MODEL")
+
+            def _ping():
+                return client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": _PING_TEXT}],
+                    max_tokens=16,
+                    temperature=0,
+                )
+
+            await asyncio.to_thread(_ping)
+            dt = time.monotonic() - t0
+            checks.append(_check(
+                "main_chat", "推理链路实测（真实调用一次）", True,
+                f"模型 {model} 通畅，耗时 {dt:.1f}s。之后调用大模型再报错，可直接回到这里复测定位",
+            ))
+        except Exception as e:
+            detail, fix = _explain_llm_fail(e)
+            checks.append(_check("main_chat", "推理链路实测（真实调用一次）", False, detail, fix))
+        finally:
+            client.close()
+
+    # ---- 3. 视觉通道（选填）----
+    missing_vision = get_missing_vision_keys()
+    if missing_vision:
+        checks.append(_check(
+            "vision", "视觉模型（选填：截图识别能力）", False,
+            f"未配置：{'、'.join(missing_vision)}。受影响功能：极速录入截图识别、小红书图文清洗、飞书群里发截图录入岗位",
+            "在「LLM 大模型」组的「视觉模型」填入支持图片的模型名（如 mimo-v2.5、gpt-4o）；"
+            "仅当主通道不支持图片输入时，才需要单独配置「视觉通道」的 Key 与 Base URL",
+            optional=True,
+        ))
+    else:
+        t0 = time.monotonic()
+        vision_key = get_configured_value("VISION_API_KEY") or get_configured_value("OPENAI_API_KEY")
+        vision_url = get_configured_value("VISION_BASE_URL") or get_configured_value("OPENAI_BASE_URL")
+        client = _short_client(vision_key, vision_url)
+        try:
+            model = get_configured_value("VISION_MODEL")
+
+            def _vision_ping():
+                return client.chat.completions.create(
+                    model=model,
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": _TINY_PNG_DATA_URL}},
+                            {"type": "text", "text": "这是一张测试图，能收到请只回复：OK"},
+                        ],
+                    }],
+                    max_tokens=16,
+                    temperature=0,
+                )
+
+            await asyncio.to_thread(_vision_ping)
+            dt = time.monotonic() - t0
+            checks.append(_check(
+                "vision", "视觉通道实测（发一张测试图）", True,
+                f"视觉模型 {model} 可正常读图，耗时 {dt:.1f}s",
+            ))
+        except Exception as e:
+            detail, fix = _explain_llm_fail(e)
+            checks.append(_check("vision", "视觉通道实测（发一张测试图）", False, detail, fix))
+        finally:
+            client.close()
+
+    all_ok = all(c["ok"] for c in checks if not c.get("optional"))
+    return {
+        "code": 0,
+        "data": {
+            "all_ok": all_ok,
+            "checked_at": datetime.now().isoformat(timespec="seconds"),
             "checks": checks,
         },
     }

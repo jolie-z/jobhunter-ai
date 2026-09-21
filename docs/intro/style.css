@@ -801,35 +801,6 @@ a {
   }
 }
 
-/* ==========================================================================
-   Thesis Statement Card
-   ========================================================================== */
-.thesis-card {
-  background: #ffffff;
-  border-radius: var(--radius-xl);
-  border: 1px solid var(--hair);
-  padding: 60px 48px;
-  text-align: center;
-  box-shadow: var(--shadow-card);
-  max-width: 880px;
-  margin: 0 auto;
-}
-
-.thesis-q {
-  font-size: clamp(24px, 3.2vw, 34px);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.35;
-  color: var(--ink);
-}
-
-.thesis-a {
-  max-width: 660px;
-  margin: 22px auto 0;
-  color: var(--gray);
-  font-size: 16px;
-  line-height: 1.7;
-}
 
 /* ==========================================================================
    Interactive Pipeline Stepper (#pipeline)
@@ -1059,6 +1030,57 @@ a {
   color: var(--ink-secondary);
   line-height: 1.7;
   max-width: 920px;
+}
+
+.stage-detail-desc p {
+  margin: 0 0 10px;
+}
+
+.stage-detail-desc p:last-child {
+  margin-bottom: 0;
+}
+
+.delivery-mat-list {
+  margin: 12px 0;
+  padding: 12px 18px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-md);
+  border-left: 3px solid var(--blue);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.delivery-mat-item {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.delivery-mat-note {
+  font-size: 13px;
+  color: var(--gray);
+  margin-top: -2px;
+}
+
+.plat-boss {
+  color: #009688;
+  font-weight: 700;
+}
+
+.plat-zhilian {
+  color: #0066cc;
+  font-weight: 700;
+}
+
+.plat-liepin {
+  color: #e65100;
+  font-weight: 700;
+}
+
+.plat-job51 {
+  color: #c25e00;
+  font-weight: 700;
 }
 
 .stage-detail-tags {

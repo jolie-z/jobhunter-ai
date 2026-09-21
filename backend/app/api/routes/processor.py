@@ -129,6 +129,16 @@ async def run_xhs_cleaner(background_tasks: BackgroundTasks):
     if xhs_vision_cleaner.XHS_CLEAN_LOCK.locked() or _xhs_clean_lock.locked():
         raise HTTPException(status_code=409, detail="小红书多模态清洗正在后台执行中，请勿重复触发！")
 
+    # 视觉前置闸门：多模态清洗依赖视觉模型，未配置时直接拒绝并给出配置指引
+    from common.config import get_missing_vision_keys, missing_guide_text
+    missing_vision = get_missing_vision_keys()
+    if missing_vision:
+        raise HTTPException(status_code=400, detail={
+            "code": "vision_not_configured",
+            "message": missing_guide_text(missing_vision, "小红书图文清洗"),
+            "missing": missing_vision,
+        })
+
     task_id = f"clean_xhs_{uuid.uuid4().hex[:8]}"
 
     from app.tasks.state import task_queues

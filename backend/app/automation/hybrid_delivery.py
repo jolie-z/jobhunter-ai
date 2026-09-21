@@ -196,7 +196,7 @@ async def run_scraper_with_rate_limit(platform: str, config: dict):
     elif platform == "liepin":
         script_path = "liepin_scraper/liepin_crawler.py"
     elif platform == "zhilian":
-        script_path = "zhilian_scraper/data_collector.py"
+        script_path = "zhilian_scraper/zhilian_collector.py"
 
     if not script_path:
         logger.warning(f"⚠️ [Scraper] 平台 {platform} 的爬虫暂未对接，跳过")

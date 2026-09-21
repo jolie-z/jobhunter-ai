@@ -2,11 +2,12 @@
 
 import { useEffect, useState } from "react"
 import Link from "next/link"
-import { Sparkles, Mic, Beaker, Globe, TerminalSquare, Loader2, Zap, Briefcase, Trash2, Upload } from "lucide-react"
+import { Sparkles, Mic, Beaker, Globe, TerminalSquare, Loader2, Zap, Briefcase, Trash2, Upload, Rocket } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { API_BASE } from "@/lib/api"
 import type { GlobalView } from "@/app/page"
 import { useTerminalStore } from "@/store/terminal-store"
+import { useSetupGuide } from "@/components/dashboard/setup-guide/setup-guide-provider"
 
 interface TopNavBarProps {
   currentView: GlobalView
@@ -30,6 +31,9 @@ export function TopNavBar({
 
   const { mode, restoreFromMinimize, minimize } = useTerminalStore()
   const isTerminalOpen = mode !== "minimize"
+
+  // 🌟 新手引导入口（未完成配置时按钮带提醒小点）
+  const { openGuide, incomplete: setupIncomplete } = useSetupGuide()
 
   // 🌟 Token 消耗实时徽标
   const [tokenStats, setTokenStats] = useState<{
@@ -108,6 +112,27 @@ export function TopNavBar({
           <Zap className="size-3.5" />
           全自动全链路中心
         </Link>
+
+        {/* 🌟 新手引导入口 */}
+        <button
+          type="button"
+          onClick={openGuide}
+          className={cn(
+            "relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all",
+            setupIncomplete
+              ? "text-amber-600 bg-amber-50 hover:bg-amber-100"
+              : "text-slate-400 hover:text-slate-700 hover:bg-slate-50"
+          )}
+        >
+          <Rocket className="size-3.5" />
+          新手引导
+          {setupIncomplete && (
+            <span className="absolute -top-0.5 -right-0.5 flex size-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
+              <span className="relative inline-flex size-2 rounded-full bg-amber-500" />
+            </span>
+          )}
+        </button>
       </div>
 
       {/* Center: Main Tabs（v0 风格 pill） */}

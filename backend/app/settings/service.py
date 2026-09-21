@@ -6,7 +6,11 @@ from typing import Any
 
 import common.config as _config_module
 from app.settings.schemas import SettingsPayload
+from common.config import MINIMAL_REQUIRED_KEYS
 from common.config import SETTINGS_JSON_PATH as SETTINGS_DATA_PATH
+
+# 字段级「最小启动必填」集合（LLM 3 键 + 飞书 5 键，与 common.config 同源）
+_MINIMAL_REQUIRED = {key for keys in MINIMAL_REQUIRED_KEYS.values() for key in keys}
 
 # 敏感字段集合 — 这些字段返回时做遮罩处理
 _SENSITIVE_KEYS = {
@@ -83,10 +87,43 @@ async def get_system_settings() -> dict[str, Any]:
         for key, label, sensitive in fields:
             raw = cfg(key, json_key=key)
             value = _mask_key(raw) if sensitive else (raw or "")
-            items.append({"key": key, "label": label, "value": value, "sensitive": sensitive})
+            items.append({
+                "key": key,
+                "label": label,
+                "value": value,
+                "sensitive": sensitive,
+                "required": key in _MINIMAL_REQUIRED,
+            })
         groups.append({"group": group_name, "fields": items})
 
     return {"groups": groups}
+
+
+async def get_readiness() -> dict[str, Any]:
+    """功能就绪度速查（纯本地配置读取，零网络调用）。
+
+    供前端在各功能入口做前置拦截：主 LLM 未就绪时简历上传不可用、
+    视觉未就绪时截图识别类功能不可用、飞书最小字段未齐时同步链路不可用。
+    """
+    from common.config import (
+        get_missing_feishu_min_keys,
+        get_missing_llm_keys,
+        get_missing_vision_keys,
+    )
+
+    llm_missing = get_missing_llm_keys()
+    vision_missing = get_missing_vision_keys()
+    feishu_missing = get_missing_feishu_min_keys()
+
+    return {
+        "code": 0,
+        "data": {
+            "main_llm_ready": not llm_missing,
+            "vision_ready": not vision_missing,
+            "feishu_min_ready": not feishu_missing,
+            "missing": {"llm": llm_missing, "vision": vision_missing, "feishu": feishu_missing},
+        },
+    }
 
 
 # 保存后钩子的分组归属：键 → 变更后需要触发的动作

@@ -333,6 +333,16 @@ async def _run_51job_task(task_id: str, city: str, keyword: str, salary: str, st
 
 async def _run_xhs_task(task_id: str, keyword: str, target_jobs: int, sort_by: str = "general"):
     try:
+        # 视觉前置闸门：小红书管道 = 抓图 + 视觉清洗，未配置视觉模型时整链无意义，抓前拦截
+        from common.config import get_missing_vision_keys, missing_guide_text
+        missing_vision = get_missing_vision_keys()
+        if missing_vision:
+            warn_msg = f"视觉模型未配置，小红书图文清洗不可用，已跳过本次抓取。{missing_guide_text(missing_vision, '小红书图文清洗')}后重试"
+            logger.warning(f"🚧 [xhs] {warn_msg}")
+            from app.tasks.state import task_queues as _tq
+            await _tq[task_id].put(f"data: {json.dumps({'type': 'error', 'message': warn_msg}, ensure_ascii=False)}\n\n")
+            return
+
         import sys
         xhs_dir = os.path.join(PROJECT_ROOT, "xiaohongshu_scraper")
         if xhs_dir not in sys.path:

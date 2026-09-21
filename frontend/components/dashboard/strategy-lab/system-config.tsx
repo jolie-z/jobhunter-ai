@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { GROUP_META, type Tutorial } from "./system-config-meta"
+import { LlmDiagnoseButton } from "./llm-diagnose"
 import { useStrategyStore } from "@/hooks/use-strategy-store"
 import { apiFetch } from "@/lib/api"
 
@@ -18,6 +19,8 @@ interface FieldItem {
   label: string
   value: string
   sensitive: boolean
+  /** 字段级「最小启动必填」标注（后端 common.config MINIMAL_REQUIRED_KEYS 同源下发） */
+  required?: boolean
 }
 
 interface ConfigGroup {
@@ -146,7 +149,7 @@ export function SystemConfig() {
               </span>
             </div>
             <p className="mt-1 text-xs leading-relaxed text-slate-500">
-              API 密钥写入本地独立环境，页面不回显敏感明文；修改保存后即时生效（语音识别等少数项需重启）。如需撤回自定义值，可悬停目标字段点击「清除」回落至 <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] text-slate-700">.env</code> 默认值。
+              字段标 <span className="font-bold text-rose-500">*</span> 为<span className="font-semibold text-slate-700">最小启动必填项</span>，配齐即可启动；其余按需选配。API 密钥写入本地独立环境，页面不回显敏感明文；修改保存后即时生效（语音识别等少数项需重启）。如需撤回自定义值，可悬停目标字段点击「清除」回落至 <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] text-slate-700">.env</code> 默认值。
             </p>
           </div>
         </div>
@@ -175,6 +178,10 @@ export function SystemConfig() {
                     </span>
                   )}
                 </div>
+                {/* 仅 LLM 分组挂 LLM 诊断按钮；diagnose 标志为分组级通用位（飞书组的诊断在飞书集成中心），不可单独作渲染条件 */}
+                {group.group === "LLM 大模型" && meta?.diagnose && (
+                  <LlmDiagnoseButton hasDirtyEdits={dirtyCount > 0} />
+                )}
                 {meta?.tutorial && (
                   <button
                     type="button"
@@ -250,6 +257,14 @@ export function SystemConfig() {
                         <div className="mb-2 flex items-center justify-between">
                           <label className="text-xs font-semibold text-slate-700">
                             {field.label}
+                            {field.required && (
+                              <span
+                                className="ml-1 text-rose-500"
+                                title="最小启动必填字段：缺任一项项目无法完整启动"
+                              >
+                                *
+                              </span>
+                            )}
                           </label>
                           {field.sensitive && (
                             <span className="text-[10px] font-mono text-slate-400" title="加密密钥字段">

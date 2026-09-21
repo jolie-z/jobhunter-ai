@@ -14,10 +14,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.core.config import settings
 from app.core.feishu_client import feishu_client
-from app.core.resume_parser import (
-    assemble_final_markdown,
-    extract_and_truncate_personal_info,
-)
+from app.core.resume_parser import assemble_final_markdown
 
 logger = logging.getLogger("strategy_upload_router")
 logger.setLevel(logging.INFO)
@@ -92,6 +89,17 @@ async def upload_resume_vision(file: Annotated[UploadFile, File(...)]):
         f"大小: {len(file_bytes) / (1024 * 1024):.2f}MB, 类型: {file.content_type}"
     )
 
+    # 主 LLM 前置闸门：解析唯一的重活是结构化调用，未配置 Key 时不发起解析流水线（上传流量已发生），
+    # 直接给出可行动指引，避免任务失败后才暴露原因
+    from common.config import get_missing_llm_keys, missing_guide_text
+    missing_llm = get_missing_llm_keys()
+    if missing_llm:
+        raise HTTPException(status_code=400, detail={
+            "code": "llm_not_configured",
+            "message": missing_guide_text(missing_llm, "简历解析"),
+            "missing": missing_llm,
+        })
+
     from app.services.resume_upload_service import create_task, run_parse_pipeline
 
     task_id = await create_task(filename)
@@ -111,12 +119,17 @@ async def upload_resume_vision(file: Annotated[UploadFile, File(...)]):
 
 @router.get("/upload_stream/{task_id}", responses={404: {"description": "Error 404"}})
 async def get_upload_stream(task_id: str):
-    """SSE 接口：主动推送简历解析结果。"""
-    from app.services.resume_upload_service import get_task
+    """SSE 接口：透出解析真进度（stage/字数）+ 终态结果。
+
+    processing 期间按 stage/progress_chars 变化 yield progress 事件，
+    状态未变的间隔周期性发 ping 心跳维持连接。
+    """
+    from app.services.resume_upload_service import STAGE_LABELS, get_task
 
     async def event_generator():
         poll_count = 0
-        max_polls = 900
+        max_polls = 1125  # 0.8s × 1125 ≈ 15 分钟（与僵尸自愈 10min 阈值对齐后留缓冲）
+        last_sig: tuple | None = None
         while True:
             task = await get_task(task_id)
             if not task:
@@ -129,8 +142,21 @@ async def get_upload_stream(task_id: str):
                 if poll_count > max_polls:
                     yield {"event": "error", "data": json.dumps({"detail": "解析等待超时，请重新上传"})}
                     break
-                yield {"event": "ping", "data": "processing"}
-                await asyncio.sleep(1)
+                stage = task.get("stage") or "reading"
+                chars = int(task.get("progress_chars") or 0)
+                # structuring 阶段字数会持续增长，纳入签名以触发增量推送
+                sig = (stage, chars if stage == "structuring" else 0)
+                if sig != last_sig:
+                    last_sig = sig
+                    payload = {
+                        "stage": stage,
+                        "stage_label": STAGE_LABELS.get(stage, stage),
+                        "progress_chars": chars if stage == "structuring" else 0,
+                    }
+                    yield {"event": "progress", "data": json.dumps(payload, ensure_ascii=False)}
+                elif poll_count % 15 == 0:
+                    yield {"event": "ping", "data": "processing"}
+                await asyncio.sleep(0.8)
                 continue
 
             resp = {"status": status, "filename": task.get("filename")}
@@ -185,7 +211,11 @@ async def get_upload_status(task_id: str):
 )
 async def retry_upload(task_id: str):
     """重试失败的解析任务（复用 Redis 中已存的 original_markdown，不重读本地文件）。"""
-    from app.services.resume_upload_service import get_task, update_task
+    from app.services.resume_upload_service import (
+        get_task,
+        run_retry_pipeline,
+        update_task,
+    )
 
     task = await get_task(task_id)
     if not task:
@@ -197,32 +227,8 @@ async def retry_upload(task_id: str):
     if not raw_markdown.strip():
         raise HTTPException(status_code=400, detail="原始文档文本缺失，无法重试，请重新上传文件")
 
-    await update_task(task_id, status="processing", error_msg=None)
-
-    async def retry_pipeline(tid: str, md: str):
-        try:
-            p_info, s_text = extract_and_truncate_personal_info(md)
-            await update_task(tid, personal_info=json.dumps(p_info, ensure_ascii=False))
-
-            from app.core.resume_structurer import (
-                json_to_markdown,
-                parse_resume_to_json,
-            )
-
-            structured = await parse_resume_to_json(s_text)
-            cleaned_md = json_to_markdown(structured)
-
-            await update_task(tid, cleaned_markdown=cleaned_md)
-            await update_task(
-                tid,
-                structured_json=json.dumps(structured, ensure_ascii=False),
-                status="ready",
-                error_msg=None,
-            )
-        except Exception as e:
-            await update_task(tid, status="failed", error_msg=str(e))
-
-    asyncio.create_task(retry_pipeline(task_id, raw_markdown))
+    await update_task(task_id, status="processing", error_msg=None, progress_chars=0)
+    asyncio.create_task(run_retry_pipeline(task_id, raw_markdown))
     return {"status": "processing", "task_id": task_id}
 
 

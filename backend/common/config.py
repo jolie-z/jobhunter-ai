@@ -121,6 +121,63 @@ def get_vision_llm_client(caller: str = "vision"):
     return make_tracked_client(raw_client, caller=caller)
 
 
+# ==================== 最小启动字段判定（配置页必填标注 / readiness / LLM 诊断三处共享） ====================
+
+# 最小启动必填字段（按通道分组）：缺任一项，项目都无法完整启动
+MINIMAL_REQUIRED_KEYS: dict[str, list[str]] = {
+    "llm": ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"],
+    "feishu": [
+        "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_APP_TOKEN",
+        "FEISHU_TABLE_ID_JOBS", "FEISHU_TABLE_ID_RESUMES",
+    ],
+}
+
+# 键 → 运行时取值链（与上方模块级常量的 _cfg 参数保持同一优先级口径）
+_RUNTIME_KEY_CHAINS: dict[str, tuple] = {
+    "OPENAI_API_KEY": ("OPENAI_API_KEY", "LLM_API_KEY", "api_key"),
+    "OPENAI_BASE_URL": ("OPENAI_BASE_URL", "LLM_BASE_URL", "base_url"),
+    "OPENAI_MODEL": ("OPENAI_MODEL", "LLM_MODEL"),
+    "VISION_MODEL": ("VISION_MODEL",),
+    "VISION_API_KEY": ("VISION_API_KEY",),
+    "FEISHU_APP_ID": ("FEISHU_APP_ID", "APP_ID"),
+    "FEISHU_APP_SECRET": ("FEISHU_APP_SECRET", "APP_SECRET"),
+    "FEISHU_APP_TOKEN": ("FEISHU_APP_TOKEN", "APP_TOKEN"),
+    "FEISHU_TABLE_ID_JOBS": ("FEISHU_TABLE_ID_JOBS", "TABLE_ID_JOBS", "TABLE_ID"),
+    "FEISHU_TABLE_ID_RESUMES": ("FEISHU_TABLE_ID_RESUMES",),
+}
+
+
+def get_configured_value(key: str) -> str:
+    """按运行时同源优先级（settings.json > .env）读取配置值并 strip，供判定类场景使用。"""
+    chain = _RUNTIME_KEY_CHAINS.get(key, (key,))
+    return (_cfg(*chain, json_key=key) or "").strip()
+
+
+def get_missing_llm_keys() -> list[str]:
+    """主推理通道缺失字段列表（空列表 = 就绪）。"""
+    return [k for k in MINIMAL_REQUIRED_KEYS["llm"] if not get_configured_value(k)]
+
+
+def get_missing_feishu_min_keys() -> list[str]:
+    """飞书最小字段（凭证 + 岗位总表 + 简历库）缺失列表。"""
+    return [k for k in MINIMAL_REQUIRED_KEYS["feishu"] if not get_configured_value(k)]
+
+
+def get_missing_vision_keys() -> list[str]:
+    """视觉通道缺失字段列表。VISION_MODEL 是硬前提；通道 Key 未配置时回落主通道 Key。"""
+    missing: list[str] = []
+    if not get_configured_value("VISION_MODEL"):
+        missing.append("VISION_MODEL")
+    if not get_configured_value("VISION_API_KEY") and not get_configured_value("OPENAI_API_KEY"):
+        missing.append("VISION_API_KEY")
+    return missing
+
+
+def missing_guide_text(missing: list[str], feature: str) -> str:
+    """功能闸门的标准指引文案（后端各拦截点单点复用，防文案漂移）。"""
+    return f"{feature}需要配置（缺少 {'、'.join(missing)}）——请前往 配置大盘 → 系统底层配置 填写"
+
+
 def get_tavily_api_key() -> str | None:
     """动态读取最新 Tavily API Key（感知 settings.json 变更）。"""
     return _cfg("TAVILY_API_KEY", json_key="TAVILY_API_KEY")

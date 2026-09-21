@@ -3,7 +3,9 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react'
 import { useResumeV2Store, createEmptyResume } from '@/hooks/use-resume-v2-store'
 import { apiFetch } from '@/lib/api'
-import { useResumeUpload } from '@/hooks/use-resume-upload'
+import { STRATEGY_SET_SECTION_EVENT } from '@/lib/strategy-events'
+import { useResumeUpload, type ParseProgress } from '@/hooks/use-resume-upload'
+import { ConfigGateDialog } from '@/components/dashboard/config-gate-dialog'
 
 // Markdown 解析/序列化纯函数与简历模块类型：实现下沉 lib/resume-blocks.ts（Q-M4-6 拆分），此处 re-export 保持兼容
 export { parseMarkdownToBlocks, serializeBlocksToMarkdown, DEFAULT_RESUME_MARKDOWN } from '@/lib/resume-blocks'
@@ -41,6 +43,12 @@ type StrategyContextType = {
     fileInputRef: React.RefObject<HTMLInputElement | null>;
     parseError: { taskId: string; msg: string } | null;
     handleRetry: () => Promise<void>;
+    /** SSE 真进度（阶段 + 流式字数），解析结束后复位为 null */
+    parseProgress: ParseProgress | null;
+    /** 主 LLM 未配置的上传闸门：非 null 时弹配置引导（缺失字段列表） */
+    uploadGate: string[] | null;
+    clearUploadGate: () => void;
+    dismissParseError: () => void;
     updateBlock: (id: string, patch: Partial<ResumeModule>) => void;
     deleteBlock: (id: string) => void;
     addBlock: () => void;
@@ -81,7 +89,9 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
     }
 
     // 🌟 自动解析 URL 中的 section / tab 参数（如 /strategy?section=feishu 即刻进入飞书集成中心）
+    // 另监听 strategy:set-section 自定义事件：新手引导等组件在页内免刷新直达指定板块
     useEffect(() => {
+        const VALID_SECTIONS = ['feishu', 'resume', 'system', 'preferences']
         const updateSectionFromUrl = () => {
             if (typeof window !== 'undefined') {
                 const params = new URLSearchParams(window.location.search)
@@ -91,10 +101,20 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
                 }
             }
         }
+        const onSetSectionEvent = (e: Event) => {
+            const s = (e as CustomEvent).detail
+            if (typeof s === 'string' && VALID_SECTIONS.includes(s)) {
+                setSection(s as SectionId)
+            }
+        }
 
         updateSectionFromUrl()
         window.addEventListener('popstate', updateSectionFromUrl)
-        return () => window.removeEventListener('popstate', updateSectionFromUrl)
+        window.addEventListener(STRATEGY_SET_SECTION_EVENT, onSetSectionEvent)
+        return () => {
+            window.removeEventListener('popstate', updateSectionFromUrl)
+            window.removeEventListener(STRATEGY_SET_SECTION_EVENT, onSetSectionEvent)
+        }
     }, [])
 
     // ========== 简历编辑器状态 ==========
@@ -107,6 +127,10 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
     // 异步解析状态机
     // （structuredJsonCache 已退役：结构化数据的唯一真相源是 v2 store + editingItem.structured_json）
     const [parseError, setParseError] = useState<{ taskId: string; msg: string } | null>(null)
+    // SSE 真进度（阶段 + 流式字数）
+    const [parseProgress, setParseProgress] = useState<ParseProgress | null>(null)
+    // 主 LLM 未配置的上传闸门
+    const [uploadGate, setUploadGate] = useState<string[] | null>(null)
 
     // 🌟 V2 Data Binding
     // v2OwnerRef 记录当前画布数据归属的简历。切换简历时若目标没有结构化数据（新简历/老记录），
@@ -223,18 +247,29 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
                 useResumeV2Store.getState().setResumeData(structuredJson)
             })
             setParseError(null)
+            showToast('✅ 简历解析成功，已生成结构化数据')
         },
         onError: (msg, taskId) => {
             if (taskId) setParseError({ taskId, msg })
+            showToast('❌ ' + msg)
         },
-        onParsingChange: setIsParsing,
-        onUploadStart: () => setParseError(null),
+        onParsingChange: (parsing) => {
+            setIsParsing(parsing)
+            if (!parsing) setParseProgress(null)
+        },
+        onProgress: (p) => setParseProgress(p),
+        onGateBlocked: (missing) => setUploadGate(missing),
+        onUploadStart: () => {
+            setParseError(null)
+            setParseProgress(null)
+        },
         fileInputRef,
     })
 
     const handleRetry = async () => {
         if (!parseError?.taskId) return
         setParseError(null)
+        setParseProgress(null)
         setIsParsing(true)
         try {
             const res = await apiFetch(`/api/strategy/retry_upload/${parseError.taskId}`, { method: "POST" })
@@ -243,7 +278,7 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
             connectSSE(parseError.taskId)
         } catch (err) {
             setIsParsing(false)
-            alert("❌ 重试失败: " + (err instanceof Error ? err.message : String(err)))
+            showToast('❌ 重试失败: ' + (err instanceof Error ? err.message : String(err)))
         }
     }
 
@@ -484,11 +519,23 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
             section, setSection, resumes, setResumes, loading, saving,
             editingItem, setEditingItem, resumeBlocks, setResumeBlocks, showRawMarkdown, setShowRawMarkdown,
             isParsing, fileInputRef, parseError, handleRetry, updateBlock, deleteBlock, addBlock, updateSubModule, deleteSubModule, addSubModule, handleFileImport,
+            parseProgress, uploadGate,
+            clearUploadGate: () => setUploadGate(null),
+            dismissParseError: () => setParseError(null),
             toastMsg, showToast, togglingResumeId, fetchConfig, handleToggleResumeStatus, handleCreateNew, handleDuplicate, handleSave, handleDelete,
             hasUnsavedChanges: () => isDirtyRef.current,
             markDirty: () => { isDirtyRef.current = true }
         }}>
             {children}
+            {/* 主 LLM 未配置的上传闸门：引导前往系统底层配置 */}
+            <ConfigGateDialog
+                open={uploadGate !== null}
+                onClose={() => setUploadGate(null)}
+                title="简历解析暂不可用"
+                description="上传简历需要「大模型」做结构化解析，当前还未配置。前往 系统底层配置 → LLM 大模型，填好 API Key、Base URL 与推理模型后即可使用。"
+                missing={uploadGate ?? []}
+                onGoConfigure={() => { setUploadGate(null); setSection('system') }}
+            />
         </StrategyContext.Provider>
     )
 }

@@ -19,7 +19,14 @@ from app.jobs.schemas import (
 
 
 def _import_error_response(e: Exception) -> HTTPException:
-    """极速录入异常 → HTTP 状态码：硬缺失 422（弹回补料）、查重命中 409（可 force 放行）。"""
+    """极速录入异常 → HTTP 状态码：视觉未配置 400（弹配置引导）、硬缺失 422（弹回补料）、查重命中 409（可 force 放行）。"""
+    if isinstance(e, service.VisionNotConfiguredError):
+        from common.config import missing_guide_text
+        return HTTPException(status_code=400, detail={
+            "code": "vision_not_configured",
+            "message": missing_guide_text(e.missing, "截图识别"),
+            "missing": e.missing,
+        })
     if isinstance(e, service.InvalidJobFieldsError):
         return HTTPException(status_code=422, detail={
             "message": f"存在必须提供的字段缺失（{('、'.join(e.missing))}），请补充后重试",
@@ -83,6 +90,8 @@ async def parse_import_payload(payload: JobImportParseRequest):
     供 Web 确认补全页展示硬/软缺失、链接缺失与疑似重复。"""
     try:
         fields = await service.parse_job_from_sources(payload.raw_text, payload.images_base64)
+    except service.VisionNotConfiguredError as e:
+        raise _import_error_response(e)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -148,6 +157,8 @@ async def import_job_from_images(payload: JobImportImageRequest):
         data = await service.import_job_from_images_service(payload.images_base64)
         print("====== 🎉 多图极速录入完美收官！ ======\n")
         return {"status": "success", "message": "图片解析并录入飞书成功！", "data": data}
+    except service.VisionNotConfiguredError as e:
+        raise _import_error_response(e)
     except (service.InvalidJobFieldsError, service.DuplicateJobError) as e:
         raise _import_error_response(e)
     except ValueError as e:

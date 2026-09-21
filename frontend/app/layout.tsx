@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { Analytics } from '@vercel/analytics/next'
 import { Toaster } from '@/components/ui/toaster'
 import { GlobalTerminalDrawer } from '@/components/global/global-terminal-drawer'
+import { SetupGuideProvider } from '@/components/dashboard/setup-guide/setup-guide-provider'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -35,9 +36,11 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="font-sans antialiased">
-        {children}
-        <GlobalTerminalDrawer />
-        <Toaster />
+        <SetupGuideProvider>
+          {children}
+          <GlobalTerminalDrawer />
+          <Toaster />
+        </SetupGuideProvider>
         <Analytics />
       </body>
     </html>

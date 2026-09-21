@@ -14,6 +14,7 @@ from app.jobs.import_parser import (  # noqa: F401
     _BOSS_MOBILE_JOB_URL,
     _PLACEHOLDER_VALUES,
     _SHARE_BOILERPLATE,
+    VisionNotConfiguredError,
     _call_llm_for_job_parsing,
     _clean_and_parse_json,
     _detect_platform,
