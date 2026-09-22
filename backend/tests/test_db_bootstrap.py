@@ -16,9 +16,8 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-import pytest
-
 from app.core.db_bootstrap import (
+    BLUEPRINT_TABLE_COLUMNS,
     BOOTSTRAP_SCRIPT,
     _split_statements,
     ensure_main_db_schema,
@@ -96,10 +95,9 @@ def test_raw_jobs_trigger_maintains_updated_at(tmp_path):
 
 
 def test_narrow_raw_jobs_preserved_and_trigger_skipped(tmp_path):
-    # 历史窄 raw_jobs（缺 updated_at）：引导绝不 crash/替换重建，窄表数据原样保留。
-    # 实测行为锁定：SQLite 建触发器不校验体内列名——引用缺失列的触发器会「带病创建」，
-    # 对窄表的 INSERT 要到触发器执行时才报缺列。该存量迁移债已在 db_bootstrap TODO 挂账
-    # （schema diff 级修复另行立项），本用例防的是引导层 crash 与数据被替换。
+    # 历史窄 raw_jobs（缺 updated_at）：引导绝不 crash/替换重建，窄表数据原样保留，
+    # 且触发器必须被守卫跳过——SQLite 建触发器不校验体内列名，若放任带病创建，
+    # 该表原本可用的 INSERT 会在触发器执行时爆缺列（引导反把好路径改坏）
     db_path = str(tmp_path / "narrow.db")
     with closing(sqlite3.connect(db_path)) as conn:
         conn.execute("CREATE TABLE raw_jobs (job_link TEXT PRIMARY KEY, crawl_time TEXT)")
@@ -111,10 +109,31 @@ def test_narrow_raw_jobs_preserved_and_trigger_skipped(tmp_path):
     with closing(sqlite3.connect(db_path)) as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_jobs").fetchone()[0] == 1
         triggers = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
-        assert EXPECTED_TRIGGERS <= triggers  # 带病创建（SQLite 不预校验触发器体内列名）
-        with pytest.raises(sqlite3.OperationalError):
-            # 窄表 INSERT 在触发器执行时爆缺列——存量迁移债的实证形态，非引导层回归
-            conn.execute("INSERT INTO raw_jobs VALUES ('u2', '2026-09-23 09:00:00')")
+        assert not (EXPECTED_TRIGGERS & triggers)  # 窄表触发器被守卫跳过，绝不带病创建
+        conn.execute("INSERT INTO raw_jobs VALUES ('u2', '2026-09-23 09:00:00')")  # 写路径保持可用
+
+
+def test_narrow_table_trigger_backfills_after_column_added(tmp_path):
+    # 窄表补齐缺失列后，下一次引导应自动补建触发器（守卫只挡「当前缺列」，不永久拉黑）
+    db_path = str(tmp_path / "narrow_then_fixed.db")
+    # 构造除 updated_at 外与蓝本同列的窄表
+    cols = sorted(BLUEPRINT_TABLE_COLUMNS["raw_jobs"] - {"updated_at"})
+    col_defs = ", ".join(f"{c} TEXT PRIMARY KEY" if c == "job_link" else f"{c} TEXT" for c in cols)
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(f"CREATE TABLE raw_jobs ({col_defs})")
+        conn.commit()
+
+    ensure_main_db_schema(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        assert not (EXPECTED_TRIGGERS & {
+            r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")})
+        conn.execute("ALTER TABLE raw_jobs ADD COLUMN updated_at TEXT")
+        conn.commit()
+
+    ensure_main_db_schema(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        assert EXPECTED_TRIGGERS <= {
+            r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
 
 
 def test_update_goals_autocreates_row_when_missing(tmp_path, monkeypatch):

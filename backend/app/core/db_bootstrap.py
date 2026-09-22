@@ -253,6 +253,41 @@ def _split_statements(script: str) -> list[str]:
     return statements
 
 
+def _pre_existing_table_columns(conn: sqlite3.Connection) -> dict[str, set[str]]:
+    """引导前已存在的表 → 当前列集（用于识别历史窄表）。"""
+    return {
+        row[0]: {c[1] for c in conn.execute(f'PRAGMA table_info("{row[0]}")')}
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+
+
+def _trigger_target_table(stmt: str) -> str | None:
+    """从 CREATE TRIGGER DDL 里取目标表名（... ON <table>）。"""
+    m = re.search(r"\bON\s+[\"']?(\w+)", stmt, re.IGNORECASE)
+    return m.group(1) if m else None
+
+
+def _derive_blueprint_table_columns() -> dict[str, set[str]]:
+    """从蓝本自身派生「表 → 列集」（:memory: 执行一次），供窄表触发器守卫比对。
+
+    自蓝本派生而非手抄：蓝本改列时守卫口径自动跟进，不产生第二份需要人工同步的清单。
+    """
+    mem = sqlite3.connect(":memory:")
+    try:
+        for stmt in _split_statements(BOOTSTRAP_SCRIPT):
+            mem.execute(stmt)
+        return {
+            row[0]: {c[1] for c in mem.execute(f'PRAGMA table_info("{row[0]}")')}
+            for row in mem.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    finally:
+        mem.close()
+
+
+# 蓝本列集（import 期派生一次；进程内蓝本为常量，无失效问题）
+BLUEPRINT_TABLE_COLUMNS = _derive_blueprint_table_columns()
+
+
 def ensure_main_db_schema(db_path: str | None = None) -> list[str]:
     """幂等补齐主库全部表/索引/触发器，返回本次实际新建的对象名。
 
@@ -262,6 +297,11 @@ def ensure_main_db_schema(db_path: str | None = None) -> list[str]:
 
     逐条执行、单条失败记警告继续：若库里已有历史窄表缺蓝本索引的列（如旧版懒建的
     token_log 没有 created_at），对应索引跳过即可，不能卡死整个引导。
+
+    触发器特殊：SQLite 不预校验触发器体内列名，历史窄表上「带病创建」会让后续
+    每次 INSERT 到触发器执行时才爆缺列——把原本可用的写路径改成必失败且无告警。
+    因此对「引导前已存在、列集窄于蓝本」的表跳过其触发器（与索引容错同口径），
+    并记入 skipped 留痕；表补齐列后下一次引导会自动补建触发器。
     """
     path = db_path or resolve_main_db_path()
     parent = os.path.dirname(path)
@@ -271,15 +311,32 @@ def ensure_main_db_schema(db_path: str | None = None) -> list[str]:
     conn = sqlite3.connect(path, timeout=10.0)
     # TODO(债): 单条语句 busy timeout 10s，库被长事务持锁时最坏逐条串行等待；
     # 后续可收紧单条超时或加全局引导超时（逐条容错设计本身保留：旧窄表只跳过缺索引，不整体失败）
-    # TODO(债): SQLite 不预校验触发器体内列名——历史窄表（如旧版懒建的 raw_jobs 缺
-    # updated_at）会让触发器「带病创建」，INSERT 到触发器执行时才爆缺列。
-    # 根治需 schema diff 级迁移（先补列再建触发器），见 tests/...narrow_raw_jobs 实证用例
     skipped: list[str] = []
     try:
         # 与 goal_service._get_conn 同款：主库在线上本就以 WAL 运行，非本批新增行为
         conn.execute("PRAGMA journal_mode=WAL")
         before = _user_objects(conn)
+        pre_existing_cols = _pre_existing_table_columns(conn)
         for stmt in _split_statements(BOOTSTRAP_SCRIPT):
+            # 触发器防带病创建：目标表在引导前已存在且缺蓝本列（历史窄表）→ 跳过，
+            # 否则 SQLite 会照建不误、把写失败延迟到业务 INSERT 时才爆
+            if stmt.upper().lstrip().startswith("CREATE TRIGGER"):
+                target = _trigger_target_table(stmt)
+                existing_cols = pre_existing_cols.get(target or "")
+                if existing_cols is not None:
+                    blueprint_cols = BLUEPRINT_TABLE_COLUMNS.get(target or "")
+                    if blueprint_cols and blueprint_cols - existing_cols:
+                        m = re.search(
+                            r"TRIGGER\s+(?:IF\s+NOT\s+EXISTS\s+)?[\"']?(\w+)",
+                            stmt, re.IGNORECASE,
+                        )
+                        trg_name = m.group(1) if m else stmt[:50]
+                        skipped.append(trg_name)
+                        logger.warning(
+                            f"⚠️ [db_bootstrap] 触发器跳过（历史窄表 {target} 缺列 "
+                            f"{sorted(blueprint_cols - existing_cols)}，防带病创建）: {trg_name}"
+                        )
+                        continue
             try:
                 conn.execute(stmt)
             except sqlite3.Error as e:

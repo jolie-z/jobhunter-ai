@@ -91,7 +91,9 @@ export async function fetchAuthStatus(force = false): Promise<AuthStatusMap> {
   return status
 }
 
-// 本机未装 Edge 时的兜底下载页（正常以后端返回为准，仅后端不可达时使用）
+// 本机未装 Edge 时的兜底下载页：仅后端 /auth/edge-status 不可达时使用；
+// 正常链路以后端返回为准（与 backend/app/session/browser.py 的 EDGE_DOWNLOAD_URL 同源，
+// 改址需两处同步——前端无法在预检失败时再向后端要地址）
 export const FALLBACK_EDGE_DOWNLOAD_URL = "https://www.microsoft.com/zh-cn/edge/download"
 
 /** 结构化错误码：本机未安装 Microsoft Edge（与后端 edge_not_installed_detail 对应） */
@@ -170,9 +172,12 @@ export function parseEdgeErrorDetail(
 ): Pick<EdgeLaunchResult, "message" | "code" | "downloadUrl"> | null {
   if (!detail || typeof detail !== "object") return null
   const d = detail as Record<string, unknown>
+  // 无 code 的对象型 detail（如 FastAPI 422 校验错误的数组/普通错误体）不归本解析管，
+  // 交回调用方走各自的通用兜底，避免把真实校验错误贴成 Edge 文案
+  if (typeof d.code !== "string" || !d.code) return null
   return {
     message: String(d.message || EDGE_MISSING_MESSAGE),
-    code: typeof d.code === "string" ? d.code : undefined,
+    code: d.code,
     downloadUrl: typeof d.download_url === "string" && d.download_url
       ? d.download_url
       : FALLBACK_EDGE_DOWNLOAD_URL,

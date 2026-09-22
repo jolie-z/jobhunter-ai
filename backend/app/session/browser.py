@@ -23,7 +23,9 @@ _EDGE_CANDIDATES = [
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
 ]
 
-# 本机未装 Edge 时给用户的官方下载页（各唤起入口统一引用这份）
+# 本机未装 Edge 时给用户的官方下载页（各唤起入口统一引用这份）。
+# 前端 lib/platform-auth.ts 的 FALLBACK_EDGE_DOWNLOAD_URL 是同一地址的兜底副本，
+# 改址需两处同步（前端在预检不可达时拿不到后端地址）。
 EDGE_DOWNLOAD_URL = "https://www.microsoft.com/zh-cn/edge/download"
 
 # 统一用户文案：异常与结构化错误体共用，避免多处手抄漂移
