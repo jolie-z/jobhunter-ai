@@ -3,21 +3,15 @@
 求职目标管理服务 - SQLite 单行配置表 job_goals。
 提供目标 CRUD + 实时进度计算。
 """
-import os
 import sqlite3
 from datetime import date, datetime
 from typing import Any
 
-# 主项目 live DB：默认用本仓库内 backend/data/job_hunter.db，
-# 特殊部署可用环境变量 MAIN_PROJECT_DB 指向外部主库
-_MAIN_PROJECT_DB = os.environ.get("MAIN_PROJECT_DB", "")
-_LOCAL_DB = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data", "job_hunter.db"
-)
-DB_PATH = os.environ.get("ANALYTICS_DB_PATH") or (
-    _MAIN_PROJECT_DB if _MAIN_PROJECT_DB and os.path.exists(_MAIN_PROJECT_DB) else _LOCAL_DB
-)
+from app.core.db_bootstrap import resolve_main_db_path
+
+# 主项目 live DB：路径解析唯一真源在 app/core/db_bootstrap.resolve_main_db_path，
+# 本常量只是 import 时冻结的一份快照（与历史行为一致：环境变量在 import 时读取）
+DB_PATH = resolve_main_db_path()
 
 DDL = """
 CREATE TABLE IF NOT EXISTS job_goals (
@@ -191,13 +185,16 @@ def get_current_goals() -> dict[str, Any] | None:
 
 
 def update_goals(params: dict[str, Any]) -> dict[str, Any] | None:
-    """更新目标参数（部分更新）。"""
+    """更新目标参数（部分更新）。无目标行且有实际参数时按默认值自动建档（Q-M4-4 后端化），
+    保存接收群/保存时间表不再依赖先手动 /start；空参数保持旧行为（无行返回 None）。"""
+    if not params:
+        return get_current_goals()
     ensure_table()
     conn = _get_conn()
     row = conn.execute("SELECT * FROM job_goals WHERE id = 1").fetchone()
     if not row:
         conn.close()
-        return None
+        return start_goals(params)
 
     updatable_fields = [
         "daily_deliver_target", "daily_crawl_target", "weekly_interview_target",

@@ -210,6 +210,17 @@ async def lifespan(app: FastAPI):  # noqa: ARG001  # FastAPI lifespan 协议签�
         logging.getLogger("main").warning(f"⚠️ 老 Agent 记忆持久化初始化失败（回退链路将退化为内存记忆）: {e}")
 
     try:
+        # 主库统一建表引导（全新装配「用到就有」）：backend/data 被 gitignore，全新克隆无库无目录，
+        # 这里幂等补齐全部表/索引/触发器后再放行后续初始化（2026-09-22 新机装配排查）。
+        # 显式传 goal_service.DB_PATH：引导与 goal_service 用同一个 import 期解析的路径，
+        # 杜绝「运行时再解析」与「import 期冻结」两套时机在环境变量后设时各建各库。
+        from app.core.db_bootstrap import ensure_main_db_schema
+        from app.services.goal_service import DB_PATH as _main_db_path
+        ensure_main_db_schema(_main_db_path)
+    except Exception as e:
+        logging.getLogger("main").warning(f"⚠️ 主库建表引导失败（已有功能不受影响）: {e}")
+
+    try:
         # 续抓页码 + 条件×平台进度台账（分母/分子）建表与存量迁移
         from app.session.scrape_sessions import init_scrape_sessions_table
         init_scrape_sessions_table()
