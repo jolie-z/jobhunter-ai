@@ -43,15 +43,26 @@ export function ExperienceGriller({ originalExperience, onAccept, onCancel, cust
   })
 
   const [jdReportContext, setJdReportContext] = useState("")
+  // SSE 真进度：阶段文案 / 已生成字数 / 已等待秒数（grill 输出为 JSON 协议，不逐字渲染，用字数做活跃感）
+  const [streamStage, setStreamStage] = useState("")
+  const [streamChars, setStreamChars] = useState(0)
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const initRef = useRef(false)
   // 面板卸载时中断在飞的拷问请求；新一轮提问会自动中断上一轮
   const grillAbortRef = useRef<AbortController | null>(null)
   useEffect(() => () => grillAbortRef.current?.abort(), [])
 
   useEffect(() => {
+    if (!isLoading) return
+    setElapsedSeconds(0)
+    const timer = setInterval(() => setElapsedSeconds(s => s + 1), 1000)
+    return () => clearInterval(timer)
+  }, [isLoading])
+
+  useEffect(() => {
     if (!initRef.current) {
       initRef.current = true
-      
+
       if (customJdContext !== undefined) {
         setJdReportContext(customJdContext)
         handleGrillRequest([], false, customJdContext)
@@ -74,11 +85,13 @@ export function ExperienceGriller({ originalExperience, onAccept, onCancel, cust
 
   const handleGrillRequest = async (history: ChatMessage[], isForceFinish: boolean = false, contextStr: string = jdReportContext) => {
     setIsLoading(true)
+    setStreamStage("正在连接面试官…")
+    setStreamChars(0)
     grillAbortRef.current?.abort()
     const controller = new AbortController()
     grillAbortRef.current = controller
     try {
-      const res = await fetch(`${API_BASE}/api/strategy/grill_experience`, {
+      const res = await fetch(`${API_BASE}/api/strategy/grill_experience_stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
@@ -90,10 +103,40 @@ export function ExperienceGriller({ originalExperience, onAccept, onCancel, cust
           full_resume_context: fullResumeContext
         })
       })
-      const data = await res.json()
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
+
+      // 手写 SSE 帧解析（POST 无法用 EventSource）：sse_starlette 以 CRLF 分隔，按空行分帧兼容 LF/CRLF
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ""
+      let finalData: { question: string, suggested_options: string[], is_finished: boolean, blocks: Block[] } | null = null
+      let errMsg = ""
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const frames = buffer.split(/\r?\n\r?\n/)
+        buffer = frames.pop() || ""
+        for (const frame of frames) {
+          let eventName = "message"
+          let dataStr = ""
+          for (const line of frame.split(/\r?\n/)) {
+            const text = line.trim()
+            if (text.startsWith("event:")) eventName = text.slice(6).trim()
+            else if (text.startsWith("data:")) dataStr += text.slice(5).trim()
+          }
+          if (!dataStr) continue
+          let payload: any
+          try { payload = JSON.parse(dataStr) } catch { continue }
+          if (eventName === "stage") setStreamStage(payload.message || "模型已响应，正在生成…")
+          else if (eventName === "progress") setStreamChars(payload.chars || 0)
+          else if (eventName === "final") finalData = payload
+          else if (eventName === "error") errMsg = payload.message || "服务异常，请稍后重试"
+        }
+      }
       if (controller.signal.aborted) return
-      if (res.ok && data.status === "success") {
-        const { question, suggested_options, is_finished, blocks: responseBlocks } = data.data
+      if (finalData) {
+        const { question, suggested_options, is_finished, blocks: responseBlocks } = finalData
         if (is_finished) {
           setMode('done')
           const finalBlocks: Block[] = responseBlocks || []
@@ -106,7 +149,7 @@ export function ExperienceGriller({ originalExperience, onAccept, onCancel, cust
           setCurrentTurn(prev => prev + 1)
         }
       } else {
-        alert("❌ 拷问请求失败: " + data.message)
+        alert("❌ 拷问请求失败: " + (errMsg || "连接中断或响应异常，请重试"))
       }
     } catch (err) {
       if (controller.signal.aborted) return
@@ -284,9 +327,18 @@ export function ExperienceGriller({ originalExperience, onAccept, onCancel, cust
       )}
 
       {isLoading && !currentQuestion && mode === 'grilling' && (
-        <div className="flex items-center gap-2 text-sm text-orange-600 font-medium p-2">
-          <Bot className="h-4 w-4 animate-bounce" />
-          <span>面试官正在思考下一个问题...</span>
+        <div className="flex flex-col gap-1 text-sm text-orange-600 font-medium p-2">
+          <div className="flex items-center gap-2">
+            <Bot className="h-4 w-4 animate-bounce shrink-0" />
+            <span className="flex-1">{streamStage || "面试官正在思考下一个问题..."}</span>
+            <span className="text-xs font-normal text-orange-400">已等待 {elapsedSeconds}s</span>
+            <button onClick={onCancel} className="text-xs font-normal text-gray-400 hover:text-gray-600 underline">
+              取消
+            </button>
+          </div>
+          {streamChars > 0 && (
+            <div className="ml-6 text-xs font-normal text-orange-400">已生成 {streamChars} 字…</div>
+          )}
         </div>
       )}
 

@@ -161,15 +161,30 @@ export function ResumeModulesRenderer({
           if (modKey === "additional") {
             const additionalValue = resumeData?.additional?.technicalSkills?.join('\n') || "";
             const additionalOnChange = (val: string) => updateAdditional({ technicalSkills: val.split('\n') });
+            // 技能概述：解析阶段承接的散文/描述性文字（七项修复#2），独立编辑不与技能清单混淆
+            const overviewValue = resumeData?.additional?.skillOverview || "";
+            const overviewOnChange = (val: string) => updateAdditional({ skillOverview: val });
             return (
               <ModuleCard key={modKey} id={anchorId} title={title} icon={<Wrench className="h-4 w-4" />} {...commonProps}>
                 <div className="flex flex-col gap-3">
-                  <MarkdownEditor
-                    value={additionalValue}
-                    onChange={additionalOnChange}
-                    placeholder="专业技能，支持 Markdown"
-                    minHeight="min-h-[120px]"
-                  />
+                  <div>
+                    <div className="mb-1 text-[11px] font-medium text-muted-foreground">技能概述（描述性文字）</div>
+                    <MarkdownEditor
+                      value={overviewValue}
+                      onChange={overviewOnChange}
+                      placeholder="技能概述（描述性文字，可选；简历上传时自动保留于此）"
+                      minHeight="min-h-[60px]"
+                    />
+                  </div>
+                  <div>
+                    <div className="mb-1 text-[11px] font-medium text-muted-foreground">技能清单</div>
+                    <MarkdownEditor
+                      value={additionalValue}
+                      onChange={additionalOnChange}
+                      placeholder="专业技能，支持 Markdown"
+                      minHeight="min-h-[120px]"
+                    />
+                  </div>
                   {renderSyncButtons(modKey, title, additionalValue, additionalOnChange)}
                   {activeSyncModuleId === modKey && (
                     <AiModuleSyncInline

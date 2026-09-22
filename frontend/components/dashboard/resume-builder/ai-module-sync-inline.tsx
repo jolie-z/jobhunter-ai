@@ -29,6 +29,7 @@ export function AiModuleSyncInline({
   onCancel
 }: AiModuleSyncInlineProps) {
   const [loading, setLoading] = useState(false)
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [result, setResult] = useState<{
     blocks: Block[]
     reason: string
@@ -39,6 +40,14 @@ export function AiModuleSyncInline({
   // 组件卸载（收起面板/取消）时中断在飞的 LLM 请求，避免无效计费与迟到写入
   const abortRef = useRef<AbortController | null>(null)
   useEffect(() => () => abortRef.current?.abort(), [])
+
+  // 已等待秒数：AI 联动是同步全量调用（实测约 1 分钟），明示耗时预期消除"卡死感"
+  useEffect(() => {
+    if (!loading) return
+    setElapsedSeconds(0)
+    const timer = setInterval(() => setElapsedSeconds(s => s + 1), 1000)
+    return () => clearInterval(timer)
+  }, [loading])
 
   const handleStartSync = async () => {
     if (!experiencesContext.trim()) {
@@ -52,6 +61,8 @@ export function AiModuleSyncInline({
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
+    // 120s 前端超时（实测单次全量调用约 60s，留一倍余量）；旧实现无超时最坏挂 12 分钟
+    const timeoutId = setTimeout(() => controller.abort(), 120000)
 
     try {
       const res = await fetch(`${API_BASE}/api/strategy/sync_basic_module`, {
@@ -64,7 +75,7 @@ export function AiModuleSyncInline({
           experiences_context: experiencesContext
         })
       })
-      
+
       const data = await res.json()
       if (controller.signal.aborted) return
       if (res.ok && data.status === "success" && data.data) {
@@ -76,10 +87,16 @@ export function AiModuleSyncInline({
         setError(data.message || "请求失败")
       }
     } catch (err) {
-      if (controller.signal.aborted) return
-      setError("网络请求异常")
+      // 用户主动取消走 onCancel（组件卸载），setState 卸载后为 no-op；到达这里的
+      // aborted = 120s 超时，给出可行动文案（R2 审查 H1：loading 复位收口到 finally）
+      if (controller.signal.aborted) {
+        setError("AI 联动超时（120 秒无响应），请检查网络或稍后重试")
+      } else {
+        setError("网络请求异常")
+      }
     } finally {
-      if (!controller.signal.aborted) setLoading(false)
+      clearTimeout(timeoutId)
+      setLoading(false)
     }
   }
 
@@ -90,9 +107,21 @@ export function AiModuleSyncInline({
 
   if (loading) {
     return (
-      <div className="mt-3 rounded-lg border border-indigo-100 bg-indigo-50/30 p-5 flex flex-col items-center justify-center text-indigo-500 animate-pulse">
-        <Loader2 className="h-6 w-6 animate-spin mb-3" />
-        <p className="text-sm font-medium">正在扫描全局经历，为您联动精修 {moduleTitle}...</p>
+      <div className="mt-3 rounded-lg border border-indigo-100 bg-indigo-50/30 p-5 flex flex-col items-center justify-center text-indigo-500">
+        <div className="w-full max-w-sm space-y-2.5 mb-4" aria-hidden>
+          {/* 骨架屏：内容骨架行，替代单一 pulse 呼吸块 */}
+          <div className="h-3 w-3/4 rounded bg-indigo-100 animate-pulse" />
+          <div className="h-3 w-full rounded bg-indigo-100/80 animate-pulse" />
+          <div className="h-3 w-5/6 rounded bg-indigo-100/60 animate-pulse" />
+        </div>
+        <div className="flex items-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <p className="text-sm font-medium">正在扫描全局经历，为您联动精修 {moduleTitle}...</p>
+        </div>
+        <div className="mt-1.5 flex items-center gap-3 text-xs text-indigo-400">
+          <span>已等待 {elapsedSeconds}s（通常约 1 分钟）</span>
+          <button onClick={onCancel} className="underline hover:text-indigo-600">取消</button>
+        </div>
       </div>
     )
   }

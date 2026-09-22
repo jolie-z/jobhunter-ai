@@ -10,6 +10,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { JdReportDialog } from "./jd-report-dialog"
 import { SkillSelector } from "@/components/skill-selector"
 import { PdfPreviewDialog } from "../features/v2-resume-editor/components/pdf-preview-dialog"
+import { useGlobalFormat } from "../features/v2-resume-editor/hooks/use-global-format"
+import { EditToolsCluster } from "./edit-tools-cluster"
 import { useStrategyStore } from "@/hooks/use-strategy-store"
 import type { ResumeBuilderActions } from "./use-resume-builder-actions"
 import {
@@ -61,6 +63,13 @@ export function ResumeBuilderToolbar(props: ResumeBuilderToolbarProps) {
   } = useStrategyStore()
 
   const activeName = editingItem?.name || "简历"
+
+  // 🌟 全局排版：直接复用「简历编辑区」优化版 hook（L1 本地秒级排版 + L2 并发池=2 + 超时/竞态守卫 + 撤销），
+  // 与编辑区同一套代码（2026-09-23 七项修复#3：替换旧的串行逐模块实现）
+  const globalFormat = useGlobalFormat()
+
+  // 🌟 编辑工具岛：撤销/重做/加粗/查找替换（自编辑区迁移，2026-09-23 七项修复#5）
+  const editTools = <EditToolsCluster resumeKey={editingItem?.record_id || undefined} />
 
   // 🌟 顶部简历名称编辑状态控制（自包含：仅本工具栏消费）
   const [isEditingName, setIsEditingName] = useState(false)
@@ -140,17 +149,19 @@ export function ResumeBuilderToolbar(props: ResumeBuilderToolbarProps) {
         {/* Apple Minimalist Toolbar */}
         <div className="flex items-center gap-1 shrink-0 p-1 rounded-xl bg-secondary/40 border border-border/40 backdrop-blur-md shadow-sm">
           <div className="flex items-center gap-0.5">
+            {editTools}
+
             <Button
               variant="ghost"
               size="sm"
               className="group h-8 px-2 hover:px-2.5 text-muted-foreground hover:bg-background hover:shadow-sm rounded-lg transition-all duration-300 ease-out flex items-center"
-              onClick={actions.handleGlobalFormat}
-              disabled={actions.isGlobalFormatting}
-              title="一键自动排版全文"
+              onClick={globalFormat.handleGlobalFormat}
+              disabled={globalFormat.isGlobalFormatting}
+              title="一键自动排版全文（本地秒级排版先行，AI 精细排版并发跟进）"
             >
-              {actions.isGlobalFormatting ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-amber-500" /> : <Paintbrush className="h-4 w-4 shrink-0 text-amber-500 group-hover:text-amber-600 transition-colors" />}
-              <span className="max-w-0 overflow-hidden opacity-0 group-hover:max-w-[100px] group-hover:opacity-100 group-hover:ml-1.5 text-[13px] font-medium whitespace-nowrap text-foreground transition-all duration-300 ease-out">
-                {actions.isGlobalFormatting ? actions.globalFormatProgress : '全局排版'}
+              {globalFormat.isGlobalFormatting ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-amber-500" /> : <Paintbrush className="h-4 w-4 shrink-0 text-amber-500 group-hover:text-amber-600 transition-colors" />}
+              <span className="max-w-0 overflow-hidden opacity-0 group-hover:max-w-[180px] group-hover:opacity-100 group-hover:ml-1.5 text-[13px] font-medium whitespace-nowrap text-foreground transition-all duration-300 ease-out">
+                {globalFormat.isGlobalFormatting ? globalFormat.globalFormatProgress : '全局排版'}
               </span>
             </Button>
 
@@ -280,6 +291,18 @@ export function ResumeBuilderToolbar(props: ResumeBuilderToolbarProps) {
           </Button>
         </div>
       </div>
+
+      {/* 🌟 全局排版进行中的可见进度带（无需悬停，与简历上传的进度卡同款动作效果） */}
+      {globalFormat.isGlobalFormatting && (
+        <div className="flex items-center gap-3 px-5 pb-2 -mt-0.5">
+          <div className="h-1 flex-1 overflow-hidden rounded-full bg-amber-100">
+            <div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-amber-400 to-orange-400" />
+          </div>
+          <span className="whitespace-nowrap text-[11px] font-medium text-amber-600">
+            {globalFormat.globalFormatProgress || "正在应用基础排版规范..."}
+          </span>
+        </div>
+      )}
     </header>
   )
 }

@@ -4,6 +4,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
 
 from app.strategy import service
 from app.strategy.schemas import (
@@ -49,6 +50,31 @@ async def grill_experience(payload: GrillExperienceRequest):
     except Exception as e:
         logger.exception(f"[grill_experience] 报错: {e}")
         return {"code": 500, "status": "error", "message": str(e)}
+
+
+@router.post("/grill_experience_stream")
+async def grill_experience_stream(payload: GrillExperienceRequest):
+    """Grill 深度拷问 SSE 流式版（旧 REST 端点保留兼容，前端逐步切换）。
+
+    事件：stage(模型已响应) → progress(已生成字数) → final(完整解析结果) / error(友好文案)。
+    """
+    logger.info(f"[grill_experience_stream] 收到前端流式请求，当前轮次: {payload.current_turn}")
+
+    async def event_generator():
+        try:
+            async for event in service.grill_experience_stream_service(payload):
+                yield {
+                    "event": event["event"],
+                    "data": json.dumps(event["data"], ensure_ascii=False),
+                }
+        except Exception as e:
+            logger.exception(f"[grill_experience_stream] 流式管道异常: {e}")
+            yield {
+                "event": "error",
+                "data": json.dumps({"message": "服务异常，请稍后重试"}, ensure_ascii=False),
+            }
+
+    return EventSourceResponse(event_generator())
 
 
 @router.post("/sync_basic_module")

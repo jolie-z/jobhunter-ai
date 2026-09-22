@@ -17,9 +17,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from app.core.error_messages import friendly_error
 from app.services.redis_service import redis_service
 
 logger = logging.getLogger("resume_upload_service")
+
 
 # 僵尸任务判定阈值：超过该秒数仍 processing，视为进程重启丢失，自动标 failed
 _ZOMBIE_TIMEOUT_SECONDS = 600  # 10 分钟
@@ -162,7 +164,7 @@ async def run_parse_pipeline(task_id: str, file_path: str, filename: str) -> Non
 
     except Exception as e:
         logger.exception(f"[File: resume_upload_service.py -> Func: run_parse_pipeline] ❌ 任务 {task_id} 解析失败")
-        await update_task(task_id, status="failed", error_msg=str(e))
+        await update_task(task_id, status="failed", error_msg=friendly_error(str(e)))
     finally:
         # 阅后即焚
         if os.path.exists(file_path):
@@ -188,4 +190,4 @@ async def run_retry_pipeline(task_id: str, raw_markdown: str) -> None:
         logger.info(f"[File: resume_upload_service.py -> Func: run_retry_pipeline] ✅ 任务 {task_id} 重试成功")
     except Exception as e:
         logger.exception(f"[File: resume_upload_service.py -> Func: run_retry_pipeline] ❌ 任务 {task_id} 重试失败")
-        await update_task(task_id, status="failed", error_msg=str(e))
+        await update_task(task_id, status="failed", error_msg=friendly_error(str(e)))

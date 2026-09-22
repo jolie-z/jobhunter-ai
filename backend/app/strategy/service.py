@@ -55,12 +55,17 @@ from app.strategy.config_service import (  # noqa: E402
     upsert_preference_service,
 )
 
-# 2. Grill 追问与基础模块联动、格式化
+# 2.1 简历排版（自 grill_service 拆出，≤500 行治理）
+from app.strategy.format_service import (  # noqa: E402
+    format_markdown_service,
+)
+
+# 2. Grill 追问与基础模块联动
 from app.strategy.grill_service import (  # noqa: E402
     _build_grill_context,
     _build_grill_messages,
-    format_markdown_service,
     grill_experience_service,
+    grill_experience_stream_service,
     grill_suggestion_service,
     predict_keyword_desc_service,
     sync_basic_module_service,
@@ -107,6 +112,7 @@ __all__ = [
     "_build_grill_context",
     "_build_grill_messages",
     "grill_experience_service",
+    "grill_experience_stream_service",
     "grill_suggestion_service",
     "sync_basic_module_service",
     "format_markdown_service",

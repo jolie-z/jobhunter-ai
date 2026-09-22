@@ -1,5 +1,6 @@
 import os
 import json
+import threading
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -83,22 +84,47 @@ def get_safe_httpx_client():
         timeout=180.0
     )
 
-def get_openai_client(caller: str = ""):
+# 客户端连接复用缓存：指纹 (api_key, base_url, caller, max_retries) -> 包装后的 TrackedClient。
+# 原先每次调用新建 OpenAI 客户端，每轮 LLM 调用都重付 TCP+TLS 握手（2026-09-23 慢因修复）。
+_openai_client_cache: dict = {}
+_openai_client_lock = threading.Lock()
+_OPENAI_CLIENT_CACHE_MAX = 32
+
+
+def get_openai_client(caller: str = "", max_retries: int = 3):
     """返回使用最新配置的 OpenAI 客户端（动态读取，感知 settings.json 变更）。
     自动包装 token 追踪代理，所有调用方的 LLM 消耗均会被记录。
+
+    按 (key, url, caller, max_retries) 指纹缓存复用连接池；配置变更时指纹失配自动重建。
+    caller 进指纹是为保留 TrackedClient 的按模块埋点语义（全仓约 18 个 caller 标签，
+    容量 32 内 FIFO 淘汰极少触发；每个池为少量 keep-alive 空闲连接，资源开销远小于
+    每次调用重付 TCP+TLS 握手）。淘汰不显式 close：避免在锁内做阻塞 I/O，旧连接由 GC 回收。
+    max_retries 默认维持全局 3 次（后台批量链路的韧性不变）；交互类调用方
+    （grill/排版/联动）显式传 1——SDK 仅对 408/429/5xx 重试，180s 超时 × 3 次重试
+    会把单次失败放大到 12 分钟级挂死（实测排版单模块已 59s）。
     """
     from openai import OpenAI
     from app.core.llm_tracker import make_tracked_client
 
     key = _cfg("OPENAI_API_KEY", "LLM_API_KEY", "api_key", json_key="OPENAI_API_KEY")
     url = _cfg("OPENAI_BASE_URL", "LLM_BASE_URL", "base_url", json_key="OPENAI_BASE_URL")
-    raw_client = OpenAI(
-        api_key=key,
-        base_url=url,
-        http_client=get_safe_httpx_client(),
-        max_retries=3
-    )
-    return make_tracked_client(raw_client, caller=caller)
+    fingerprint = (key, url, caller, max_retries)
+    with _openai_client_lock:
+        cached = _openai_client_cache.get(fingerprint)
+        if cached is None:
+            raw_client = OpenAI(
+                api_key=key,
+                base_url=url,
+                http_client=get_safe_httpx_client(),
+                max_retries=max_retries
+            )
+            cached = make_tracked_client(raw_client, caller=caller)
+            if len(_openai_client_cache) >= _OPENAI_CLIENT_CACHE_MAX:
+                # FIFO 淘汰最旧指纹（dict 保序）；不显式 close——避免在锁内做阻塞 I/O，
+                # 旧连接由 GC 回收
+                _openai_client_cache.pop(next(iter(_openai_client_cache)))
+            _openai_client_cache[fingerprint] = cached
+        return cached
 
 
 def get_vision_llm_client(caller: str = "vision"):

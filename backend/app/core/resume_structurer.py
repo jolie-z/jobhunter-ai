@@ -13,7 +13,14 @@ logger = logging.getLogger("resume_structurer")
 # ---------------------------------------------------------------------------
 # Pydantic Models for Structured Resume Data
 # ---------------------------------------------------------------------------
-class PersonalInfo(BaseModel):
+# extra="allow"：LLM 可能输出 schema 之外的字段/模块，默认 extra=ignore 会在数据层
+# 静默丢弃导致内容丢失（2026-09-23 简历库七项修复），改为保留；json_to_markdown
+# 末尾对未被消费的顶层额外模块有兜底渲染（见 _render_unconsumed_modules）。
+class _PreserveExtraModel(BaseModel):
+    model_config = {"extra": "allow"}
+
+
+class PersonalInfo(_PreserveExtraModel):
     name: str = ""
     title: str = ""
     email: str = ""
@@ -21,32 +28,35 @@ class PersonalInfo(BaseModel):
     location: str = ""
     website: str | None = None
 
-class Experience(BaseModel):
+class Experience(_PreserveExtraModel):
     title: str = ""
     company: str = ""
     location: str | None = None
     years: str = ""
     description: list[str] = Field(default_factory=list)
 
-class Education(BaseModel):
+class Education(_PreserveExtraModel):
     institution: str = ""
     major: str = ""
     degree: str = ""
     years: str = ""
     description: str | None = None
 
-class Project(BaseModel):
+class Project(_PreserveExtraModel):
     name: str = ""
     role: str = ""
     years: str = ""
     description: list[str] = Field(default_factory=list)
 
-class AdditionalInfo(BaseModel):
+class AdditionalInfo(_PreserveExtraModel):
+    # skillOverview：承接"专业技能"段落中的散文/描述性文字（非 bullet 部分），
+    # 修复描述被结构性丢弃的问题；旧数据无此字段时默认空串，完全向后兼容。
+    skillOverview: str = ""
     technicalSkills: list[str] = Field(default_factory=list)
     languages: list[str] = Field(default_factory=list)
     certificationsTraining: list[str] = Field(default_factory=list)
 
-class ResumeData(BaseModel):
+class ResumeData(_PreserveExtraModel):
     personalInfo: PersonalInfo = Field(default_factory=PersonalInfo)
     summary: str = ""
     workExperience: list[Experience] = Field(default_factory=list)
@@ -113,6 +123,7 @@ CRITICAL: 简历上给的是什么大模块，回来就是什么模块名称，�
     }
   ],
   "additional": {
+    "skillOverview": "该段落中的散文/描述性文字原文（如无则留空字符串）",
     "technicalSkills": ["Skill 1", "Skill 2"],
     "languages": [],
     "certificationsTraining": []
@@ -130,6 +141,11 @@ CRITICAL: 简历上给的是什么大模块，回来就是什么模块名称，�
 }
 
 CRITICAL: Do NOT output `...` anywhere in the JSON. If a list is empty or a string is missing, output an empty array `[]` or an empty string `""`. Do not use placeholders.
+
+### CONTENT PRESERVATION RULES (CRITICAL - 内容丢失不可接受) ###
+1. additional（专业技能）模块：原文可能同时包含「散文描述」和「bullet point 技能条目」。所有非 bullet 的描述性句子必须【逐字】放进 `additional.skillOverview`（保持原语言原文，禁止概括改写）；只有具体的技能名词/短语才进 `additional.technicalSkills`。两者都要，缺一不可。
+2. workExperience / personalProjects 的 description 数组：原文里的每一个 bullet point 都必须成为数组中独立的一个元素，并且【逐字保留原文措辞】（如原文有 **加粗** 标记也要保留）。禁止把多条 bullet 合并成一条，禁止丢弃任何一条，禁止改写、翻译或删减。
+3. 任何段落下的独立描述段落（非 bullet 的普通文字）也不允许丢弃：workExperience/personalProjects 里作为 description 数组的第一个元素保留；additional 里放进 `skillOverview`。
 
 ### RESUME TEXT ###
 {resume_text}
@@ -229,6 +245,47 @@ async def parse_resume_to_json(
         return ResumeData().model_dump()
 
 
+def _render_desc_line(desc: str) -> str:
+    """bullet 保真渲染：LLM 返回的条目若已带 bullet/加粗前缀则保持，• 与 * 规范化为 '- '，纯文本补 '- '。"""
+    if not desc:
+        return ""
+    if desc.startswith("**"):
+        return desc
+    if desc.startswith("- ") or desc.startswith("-\t"):
+        return desc
+    if desc.startswith("•") or desc.startswith("*"):
+        return "- " + desc[1:].lstrip()
+    return f"- {desc}"
+
+
+def _render_unconsumed_modules(data: dict, module_order: list, lines: list) -> None:
+    """兜底渲染：extra="allow" 保留的 schema 外顶层模块若未被 module_order 消费，
+    以 `# 字段名 + 原文` 附加到输出末尾，保证 LLM 多识别的内容对用户可见而非烂在 JSON 里。"""
+    known = set(module_order) | {
+        "personalInfo", "summary", "workExperience", "education",
+        "personalProjects", "additional", "moduleOrder", "moduleTitles", "customModules",
+    }
+    module_titles = data.get("moduleTitles", {}) or {}
+    for key, value in data.items():
+        if key in known or not value:
+            continue
+        lines.append(f"# {module_titles.get(key, key)}")
+        if isinstance(value, str):
+            lines.append(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    parts = [str(v) if not isinstance(v, (dict, list)) else json.dumps(v, ensure_ascii=False) for v in item.values() if v]
+                    lines.append("- " + " · ".join(parts))
+                else:
+                    lines.append(f"- {item}")
+        elif isinstance(value, dict):
+            for k, v in value.items():
+                if v:
+                    lines.append(f"- {k}：{v}")
+        lines.append("")
+
+
 def json_to_markdown(data: dict) -> str:
     """
     Deterministic renderer to convert JSON ATS data into strict Markdown format expected by the frontend.
@@ -258,10 +315,17 @@ def json_to_markdown(data: dict) -> str:
             lines.append("")
 
         elif mod == "additional" and data.get("additional"):
-            skills = data["additional"].get("technicalSkills", [])
-            if skills:
+            additional = data["additional"]
+            overview = (additional.get("skillOverview") or "").strip()
+            skills = additional.get("technicalSkills", []) or []
+            if overview or skills:
                 lines.append(f"# {title}")
-                lines.append(" / ".join(skills))
+                if overview:
+                    lines.append(overview)
+                if overview and skills:
+                    lines.append("")
+                if skills:
+                    lines.append(" / ".join(skills))
                 lines.append("")
 
         elif mod == "workExperience" and data.get("workExperience"):
@@ -271,10 +335,9 @@ def json_to_markdown(data: dict) -> str:
                 title_parts = [p for p in title_parts if p]
                 lines.append(f"## {' · '.join(title_parts)}")
                 for desc in exp.get("description", []):
-                    if desc.startswith("**"):
-                        lines.append(desc)
-                    else:
-                        lines.append(f"- {desc}")
+                    rendered = _render_desc_line(desc)
+                    if rendered:
+                        lines.append(rendered)
                 lines.append("")
 
         elif mod == "personalProjects" and data.get("personalProjects"):
@@ -284,10 +347,9 @@ def json_to_markdown(data: dict) -> str:
                 title_parts = [p for p in title_parts if p]
                 lines.append(f"## {' · '.join(title_parts)}")
                 for desc in proj.get("description", []):
-                    if desc.startswith("**"):
-                        lines.append(desc)
-                    else:
-                        lines.append(f"- {desc}")
+                    rendered = _render_desc_line(desc)
+                    if rendered:
+                        lines.append(rendered)
                 lines.append("")
 
         elif mod == "education" and data.get("education"):
@@ -311,10 +373,12 @@ def json_to_markdown(data: dict) -> str:
                     if title_parts:
                         lines.append(f"## {' · '.join(title_parts)}")
                     for desc in item.get("description", []):
-                        if desc.startswith("**"):
-                            lines.append(desc)
-                        else:
-                            lines.append(f"- {desc}")
+                        rendered = _render_desc_line(desc)
+                        if rendered:
+                            lines.append(rendered)
                     lines.append("")
+
+    # schema 外的额外模块兜底渲染（extra="allow" 配套，防内容不可见）
+    _render_unconsumed_modules(data, module_order, lines)
 
     return "\n".join(lines).strip()

@@ -1,7 +1,8 @@
 "use client"
 
 // 简历库顶栏动作集合 hook（从 resume-builder/index.tsx 拆出，Q-M4-6 行数治理）
-// 覆盖：Skill 母版改写 / 保存 PDF / 保存图片 / 单模块排版 / 全局排版
+// 覆盖：Skill 母版改写 / 保存 PDF / 保存图片 / 单模块排版
+// 全局排版已迁移至编辑区同款 useGlobalFormat（2026-09-23 七项修复#3：旧串行实现删除），由 toolbar 直接消费
 
 import { useState } from "react"
 import { useStrategyStore } from "@/hooks/use-strategy-store"
@@ -18,17 +19,13 @@ export function useResumeBuilderActions(opts: {
 }) {
     const { activeId, resumeName, selectedSkill, setArtifactsOpen } = opts
     const { fetchConfig, handleSave } = useStrategyStore()
-    const { resumeData, setResumeData, updateSummary, updateAdditional, updateWorkExperience, updateProject, updateEducation } = useResumeV2Store()
+    const { resumeData, setResumeData } = useResumeV2Store()
 
     // 🌟 Skill 智能体改写状态
     const [isTestingSkill, setIsTestingSkill] = useState(false)
 
     // AI 排版状态
     const [formattingModuleId, setFormattingModuleId] = useState<string | null>(null)
-
-    // 全局排版状态
-    const [isGlobalFormatting, setIsGlobalFormatting] = useState(false)
-    const [globalFormatProgress, setGlobalFormatProgress] = useState("")
 
     // 🌟 PDF 生成状态
     const [isGeneratingPdf, setIsGeneratingPdf] = useState(false)
@@ -123,12 +120,21 @@ export function useResumeBuilderActions(opts: {
         if (!content.trim()) return
         setFormattingModuleId(id)
         try {
-            const res = await fetch(`${API_BASE}/api/strategy/format_markdown`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ module_title: title, current_content: content })
-            })
-            const data = await res.json()
+            const controller = new AbortController()
+            // 单模块排版实测约 60s（上游网关生成速度），120s 前端超时防挂死（旧实现无超时最坏 12 分钟）
+            const timeoutId = setTimeout(() => controller.abort(), 120000)
+            let data: any
+            try {
+                const res = await fetch(`${API_BASE}/api/strategy/format_markdown`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ module_title: title, current_content: content }),
+                    signal: controller.signal,
+                })
+                data = await res.json()
+            } finally {
+                clearTimeout(timeoutId)
+            }
             if (data.status === "success" && data.data?.formatted_content) {
                 onChange(data.data.formatted_content)
             }
@@ -139,97 +145,11 @@ export function useResumeBuilderActions(opts: {
         }
     }
 
-    const handleGlobalFormat = async () => {
-        if (!resumeData) return
-        setIsGlobalFormatting(true)
-        try {
-            const formatApi = async (title: string, content: string) => {
-                if (!content.trim()) return content
-                const res = await fetch(`${API_BASE}/api/strategy/format_markdown`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ module_title: title, current_content: content })
-                })
-                const data = await res.json()
-                if (data.status === "success" && data.data?.formatted_content) {
-                    return data.data.formatted_content
-                }
-                return content
-            }
-
-            // 个人总结
-            if (resumeData.summary) {
-                setGlobalFormatProgress("排版个人总结...")
-                const res = await formatApi("个人总结", resumeData.summary)
-                updateSummary(res)
-            }
-
-            // 专业技能
-            if (resumeData.additional?.technicalSkills?.length) {
-                setGlobalFormatProgress("排版专业技能...")
-                const content = resumeData.additional.technicalSkills.join('\n')
-                const res = await formatApi("专业技能", content)
-                updateAdditional({ technicalSkills: res.split('\n') })
-            }
-
-            // 工作经历
-            if (resumeData.workExperience?.length) {
-                for (let i = 0; i < resumeData.workExperience.length; i++) {
-                    const exp = resumeData.workExperience[i]
-                    setGlobalFormatProgress(`排版工作经历 ${i + 1}/${resumeData.workExperience.length}...`)
-                    const content = Array.isArray(exp.description) ? exp.description.join('\n') : (exp.description || "")
-                    if (content) {
-                        const title = exp.company || exp.title || "工作经历"
-                        const res = await formatApi(title, content)
-                        updateWorkExperience(i, { description: res.split('\n') })
-                    }
-                }
-            }
-
-            // 项目经历
-            if (resumeData.personalProjects?.length) {
-                for (let i = 0; i < resumeData.personalProjects.length; i++) {
-                    const proj = resumeData.personalProjects[i]
-                    setGlobalFormatProgress(`排版项目经历 ${i + 1}/${resumeData.personalProjects.length}...`)
-                    const content = Array.isArray(proj.description) ? proj.description.join('\n') : (proj.description || "")
-                    if (content) {
-                        const title = proj.name || "项目经历"
-                        const res = await formatApi(title, content)
-                        updateProject(i, { description: res.split('\n') })
-                    }
-                }
-            }
-
-            // 教育背景
-            if (resumeData.education?.length) {
-                for (let i = 0; i < resumeData.education.length; i++) {
-                    const edu = resumeData.education[i]
-                    setGlobalFormatProgress(`排版教育背景 ${i + 1}/${resumeData.education.length}...`)
-                    const content = Array.isArray(edu.description) ? edu.description.join('\n') : (edu.description || "")
-                    if (content) {
-                        const title = edu.institution || "教育背景"
-                        const res = await formatApi(title, content)
-                        updateEducation(i, { description: res })
-                    }
-                }
-            }
-
-            alert("全局自动排版完成！")
-        } catch (e) {
-            console.error(e)
-            alert("全局自动排版发生错误")
-        } finally {
-            setIsGlobalFormatting(false)
-            setGlobalFormatProgress("")
-        }
-    }
-
     return {
         isTestingSkill, handleSkillRewrite,
         isGeneratingPdf, handleSavePdf,
         isGeneratingImages, handleSaveImages,
         formattingModuleId, handleFormatMarkdown,
-        isGlobalFormatting, globalFormatProgress, handleGlobalFormat,
     }
 }
 

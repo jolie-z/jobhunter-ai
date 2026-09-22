@@ -82,6 +82,8 @@ export interface ProjectV2 {
 }
 
 export interface AdditionalInfoV2 {
+  /** 技能概述：解析自"专业技能"段落的散文/描述性文字（七项修复#2 新增，旧数据无此字段） */
+  skillOverview?: string
   technicalSkills: string[]
   languages: string[]
   certificationsTraining: string[]

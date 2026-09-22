@@ -1,14 +1,17 @@
 import asyncio
+import copy
 import json
 import logging
 import re
 import sys
+import threading
 import time
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import common.config as _ccfg
+from app.core.error_messages import friendly_error
 from app.strategy.schemas import (
-    FormatMarkdownRequest,
     GrillExperienceRequest,
     GrillSuggestionRequest,
     SyncBasicModuleRequest,
@@ -21,6 +24,9 @@ logger.setLevel(logging.INFO)
 MARKDOWN_JSON_PREFIX = "```json"
 MARKDOWN_PREFIX = "```"
 
+# 注意：排版服务（format_markdown + 结果缓存）已拆至 app/strategy/format_service.py（≤500行治理），
+# service.py 侧的 format_markdown_service 名字保持不变，路由与测试无需感知。
+
 
 def _get_svc():
     return sys.modules.get("app.strategy.service")
@@ -29,7 +35,12 @@ def _get_svc():
 def _get_client():
     svc = _get_svc()
     getter = getattr(svc, "get_openai_client", get_openai_client) if svc else get_openai_client
-    return getter()
+    # 交互类链路（grill/排版/联动）：max_retries=1，杜绝 429/5xx 时 3 次重试 × 180s 超时
+    # 把单次失败放大到 12 分钟级挂死；后台批量链路（解析/投递）维持全局默认 3 次。
+    try:
+        return getter(caller="strategy_grill", max_retries=1)
+    except TypeError:
+        return getter()
 
 
 def _parse_json_safely(content) -> Any:
@@ -94,12 +105,9 @@ def _build_grill_messages(payload: GrillExperienceRequest, system_prompt: str) -
     return messages
 
 
-async def grill_experience_service(payload: GrillExperienceRequest) -> dict:
-    """处理简历经历的 Grill 追问逻辑"""
-    client = _get_client()
-    context_instruction = _build_grill_context(payload)
-
-    system_prompt = (
+def _grill_system_prompt(context_instruction: str) -> str:
+    """Grill 深度拷问 system prompt（非流式与流式两条链路共用，改动需同步两侧行为）。"""
+    return (
         "你是一位拥有10年经验的顶级简历精修师兼面试教练。\n"
         "你的任务分两个阶段：\n"
         "  阶段一（系统化追问）：通过犀利的追问，从用户干瘪的项目/工作经历中挖掘出饱满的事实细节。\n"
@@ -139,6 +147,42 @@ async def grill_experience_service(payload: GrillExperienceRequest) -> dict:
         "}"
     )
 
+
+_GRILL_FALLBACK_REPLY = {
+    "question": "不好意思，我的大脑短路了。你能换个方式描述一下吗？",
+    "suggested_options": [],
+    "is_finished": False,
+    "blocks": [],
+}
+
+
+def _parse_grill_reply(llm_reply_str: str) -> dict:
+    """解析 Grill LLM 回复（剥 markdown 包裹 → JSON → 归一化结构）。"""
+    llm_reply_str = llm_reply_str.strip()
+    if llm_reply_str.startswith(MARKDOWN_JSON_PREFIX):
+        llm_reply_str = llm_reply_str[7:]
+    if llm_reply_str.startswith(MARKDOWN_PREFIX):
+        llm_reply_str = llm_reply_str[3:]
+    if llm_reply_str.endswith(MARKDOWN_PREFIX):
+        llm_reply_str = llm_reply_str[:-3]
+
+    parsed_data = json.loads(llm_reply_str.strip())
+    is_finished = parsed_data.get("is_finished", False)
+    blocks = parsed_data.get("blocks", [])
+    return {
+        "question": parsed_data.get("question", "系统无法解析问题"),
+        "suggested_options": parsed_data.get("suggested_options", []),
+        "is_finished": is_finished,
+        "blocks": blocks if is_finished else [],
+    }
+
+
+async def grill_experience_service(payload: GrillExperienceRequest) -> dict:
+    """处理简历经历的 Grill 追问逻辑"""
+    client = _get_client()
+    context_instruction = _build_grill_context(payload)
+    system_prompt = _grill_system_prompt(context_instruction)
+
     messages = _build_grill_messages(payload, system_prompt)
     logger.info(f"[Func: grill_experience_service] 🚀 开始第 {payload.current_turn} 轮 Grill。")
 
@@ -157,35 +201,116 @@ async def grill_experience_service(payload: GrillExperienceRequest) -> dict:
         elapsed = time.time() - start_time
         logger.info(f"[Func: grill_experience_service] ✅ 大模型 Grill 响应成功，耗时 {elapsed:.2f}秒。")
 
-        llm_reply_str = llm_reply_str.strip()
-        if llm_reply_str.startswith(MARKDOWN_JSON_PREFIX):
-            llm_reply_str = llm_reply_str[7:]
-        if llm_reply_str.startswith(MARKDOWN_PREFIX):
-            llm_reply_str = llm_reply_str[3:]
-        if llm_reply_str.endswith(MARKDOWN_PREFIX):
-            llm_reply_str = llm_reply_str[:-3]
-
-        parsed_data = json.loads(llm_reply_str.strip())
-        is_finished = parsed_data.get("is_finished", False)
-        blocks = parsed_data.get("blocks", [])
-
-        if is_finished:
-            logger.info("[Func: grill_experience_service] 触发终止条件，开始返回细节提取结果")
-
-        return {
-            "question": parsed_data.get("question", "系统无法解析问题"),
-            "suggested_options": parsed_data.get("suggested_options", []),
-            "is_finished": is_finished,
-            "blocks": blocks if is_finished else [],
-        }
+        return _parse_grill_reply(llm_reply_str)
     except Exception as e:
         logger.exception(f"[Func: grill_experience_service] 解析 LLM Grill 结果失败: {e}")
-        return {
-            "question": "不好意思，我的大脑短路了。你能换个方式描述一下吗？",
-            "suggested_options": [],
-            "is_finished": False,
-            "blocks": [],
-        }
+        return copy.deepcopy(_GRILL_FALLBACK_REPLY)
+
+
+async def grill_experience_stream_service(payload: GrillExperienceRequest) -> AsyncGenerator[dict, None]:
+    """Grill 深度拷问流式版（SSE 事件源）。
+
+    复用与 grill_experience_service 完全相同的 prompt 与解析逻辑，仅把
+    「非流式全量等待」换成「同步线程流式迭代 + asyncio.Queue 跨线程转发」。
+    事件序列：stage(模型已响应) → progress(已生成字数) → final(完整解析结果) / error(友好文案)。
+    输出是 JSON 协议文本，不适合逐字渲染给用户，因此 progress 只透出字数计数做「活跃感」。
+
+    取消贯通（R1 审查修正）：客户端断开 → 生成器 finally 置 cancel_event →
+    线程侧检测后关闭上游 stream（停止计费）；_push 失败（loop 不可达）时置位
+    cancel_event 并返回 False，线程立即退出，杜绝「生成器永挂 + 后台白跑」。
+    """
+    client = _get_client()
+    context_instruction = _build_grill_context(payload)
+    system_prompt = _grill_system_prompt(context_instruction)
+    messages = _build_grill_messages(payload, system_prompt)
+    logger.info(f"[Func: grill_experience_stream_service] 🚀 流式 Grill 第 {payload.current_turn} 轮。")
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+    cancel_event = threading.Event()
+
+    def _push(event: str, data: dict) -> bool:
+        if cancel_event.is_set():
+            return False
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, {"event": event, "data": data})
+            return True
+        except Exception:
+            # 事件循环已不可达（客户端断开/生成器被回收）：置位取消并让线程退出
+            cancel_event.set()
+            return False
+
+    def call_llm_stream() -> None:
+        start = time.time()
+        first_token_at: float | None = None
+        reported_chars = 0
+        total = 0
+        parts: list[str] = []
+        stream = None
+        try:
+            stream = client.chat.completions.create(
+                model=_ccfg.OPENAI_MODEL if _ccfg.OPENAI_MODEL else "gpt-4o",
+                messages=messages,
+                temperature=0.7,
+                response_format={"type": "json_object"},
+                stream=True,
+            )
+            for chunk in stream:
+                if cancel_event.is_set():
+                    logger.info("[Func: grill_experience_stream_service] 客户端已断开，中断上游流式调用。")
+                    return
+                try:
+                    delta = chunk.choices[0].delta.content if chunk.choices else None
+                except Exception:
+                    delta = None
+                if not delta:
+                    continue
+                if first_token_at is None:
+                    first_token_at = time.time() - start
+                    logger.info(f"[Func: grill_experience_stream_service] 首字延迟 {first_token_at:.2f}秒。")
+                    if not _push("stage", {"stage": "generating", "message": "模型已响应，正在生成…"}):
+                        return
+                parts.append(delta)
+                total += len(delta)
+                if total - reported_chars >= 200:
+                    reported_chars = total
+                    if not _push("progress", {"chars": total}):
+                        return
+            elapsed = time.time() - start
+            logger.info(f"[Func: grill_experience_stream_service] ✅ 流式 Grill 完成，耗时 {elapsed:.2f}秒，生成 {total} 字。")
+            try:
+                _push("final", _parse_grill_reply("".join(parts)))
+            except Exception:
+                logger.exception("[Func: grill_experience_stream_service] 解析流式结果失败，返回兜底追问")
+                _push("final", copy.deepcopy(_GRILL_FALLBACK_REPLY))
+        except Exception as e:
+            logger.exception(f"[Func: grill_experience_stream_service] 流式调用失败: {e}")
+            _push("error", {"message": friendly_error(str(e))})
+        finally:
+            # 无论正常结束还是中断，都关闭上游 HTTP 流（未消费完的流不关闭会占连接）
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+
+    worker = threading.Thread(target=call_llm_stream, daemon=True)
+    worker.start()
+    try:
+        while True:
+            try:
+                # 心跳超时：超时后若线程已死/已取消则退出（防生成器永挂），否则发 ping 维持连接
+                event = await asyncio.wait_for(queue.get(), timeout=20.0)
+            except asyncio.TimeoutError:
+                if cancel_event.is_set() or not worker.is_alive():
+                    break
+                yield {"event": "ping", "data": "keepalive"}
+                continue
+            yield event
+            if event.get("event") in ("final", "error"):
+                break
+    finally:
+        cancel_event.set()
 
 
 async def grill_suggestion_service(payload: GrillSuggestionRequest) -> list:
@@ -330,38 +455,7 @@ async def sync_basic_module_service(payload: SyncBasicModuleRequest) -> dict:
         }
     except Exception as e:
         logger.exception(f"[Func: sync_basic_module_service] 解析失败: {e}")
-        raise ValueError(f"AI 更新失败: {str(e)}")
-
-
-async def format_markdown_service(payload: FormatMarkdownRequest) -> dict:
-    client = _get_client()
-    system_prompt = (
-        "你是一个资深的简历排版与精修专家。你的任务是将用户提供的粗糙、未排版的简历内容（例如个人总结或专业技能），进行结构化和美观的 Markdown 格式排版。\n"
-        "【核心排版规则】\n"
-        "1. 层级排版规则：如果内容存在大分类（即原先的大 bullet point）和小要点（小 bullet point），**绝对不要给大分类加上任何 bullet point（- 或 *）**，请直接将大分类当作小标题**加粗并独占一行**。只有大分类下方的具体要点，才使用 '-' 进行缩进排列。【极为重要】：在每一个加粗的小标题（大分类）的**上方和下方，必须各空一行（即使用两次换行）**！否则渲染器会把新的小标题错当成上一个列表项的延续内容。\n"
-        "2. 对每条亮点的关键词（如具体技能、数据、核心成果）使用加粗（**关键词**），提高扫描效率。\n"
-        "3. 绝对不要随意篡改用户的核心意思、不要无中生有、不要增删技能。只做**排版美化**和**同义精简**。\n"
-        "4. 每个 bullet point（列表项）的结尾**绝对不要使用句号（。）**，请直接去掉句号，保持干净利落。\n"
-        "5. 特殊字段排版规则：当识别到描述“技术栈”、“核心技术栈”等包含众多并列短语或名词的内容时，**绝对不要使用垂直的 bullet point 列表，也不要对每个技术栈名词单独加粗**。请将其处理为同一行内的普通文本，各项之间使用中文顿号（、）分隔，例如：`核心技术栈：Python、RPA (GUI 自动化)、LLM API(通义千问)、Prompt Engineering、飞书 Open API`。\n"
-        "6. 严禁在输出中重复“【当前模块】”等提示信息，严禁自行脑补并添加任何主模块标题。你只需要输出经过排版的【待排版内容】本身！\n"
-        "7. 链接展示规则：如果遇到包含网址链接的内容（如 GitHub源码：https://github.com/... 等），请保持纯文本形式，**绝对不要对其加粗，不要使用 `[]()` 等 Markdown 超链接语法，也不要将其变成 bullet point**。直接平铺显示即可。\n"
-        "8. 输出必须是一段纯 Markdown 文本，不要有 ```markdown 等任何代码块包裹，不要有任何多余的开头问候语。\n"
-    )
-    user_prompt = f"【当前模块】：{payload.module_title}\n【待排版内容】：\n{payload.current_content}"
-
-    def call_llm():
-        response = client.chat.completions.create(
-            model=_ccfg.OPENAI_MODEL if _ccfg.OPENAI_MODEL else "gpt-4o",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.2,
-        )
-        return response.choices[0].message.content or ""
-
-    formatted_content = await asyncio.to_thread(call_llm)
-    return {"formatted_content": formatted_content.strip()}
+        raise ValueError(f"AI 更新失败: {friendly_error(str(e))}")
 
 
 async def predict_keyword_desc_service(keyword: str) -> str:

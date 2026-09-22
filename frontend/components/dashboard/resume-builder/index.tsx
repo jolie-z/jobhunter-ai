@@ -104,7 +104,9 @@ export function ResumeBuilder() {
           onOpenArtifacts={() => setArtifactsOpen(true)}
         />
 
-        <main className="flex-1 overflow-y-auto">
+        {/* data-resume-canvas：查找替换高亮 hook（useEditorSearchHighlight）的画布容器标记，
+            与编辑区 v2-resume-editor/index.tsx 同名约定（2026-09-23 七项修复#5） */}
+        <main data-resume-canvas="true" className="flex-1 overflow-y-auto">
           <ResumeModulesRenderer
             formattingModuleId={actions.formattingModuleId}
             handleFormatMarkdown={actions.handleFormatMarkdown}

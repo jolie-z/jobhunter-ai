@@ -13,6 +13,7 @@ from fastapi.responses import Response
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.config import settings
+from app.core.error_messages import friendly_error
 from app.core.feishu_client import feishu_client
 from app.core.resume_parser import assemble_final_markdown
 
@@ -167,7 +168,8 @@ async def get_upload_stream(task_id: str):
                 break
 
             elif status == "failed":
-                resp["error"] = task.get("error_msg") or "解析失败"
+                # 第二层兜底：error_msg 可能来自旧版本写入的裸报错，出口再翻译一次（幂等）
+                resp["error"] = friendly_error(task.get("error_msg"), "解析失败，请重试；若持续失败请查看后端日志")
                 yield {"event": "message", "data": json.dumps(resp, ensure_ascii=False)}
                 break
 
@@ -197,7 +199,7 @@ async def get_upload_status(task_id: str):
             "full_markdown": assemble_final_markdown(personal_info, cleaned_md),
         })
     elif status == "failed":
-        resp["error"] = task.get("error_msg") or "解析失败"
+        resp["error"] = friendly_error(task.get("error_msg"), "解析失败，请重试；若持续失败请查看后端日志")
 
     return resp
 

@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import sys
+import threading
+import time
 
 import httpx
 import requests
@@ -101,8 +103,19 @@ async def generate_jd_report_service() -> str:
     return report_text
 
 
-async def get_global_jd_report() -> str | None:
-    """从飞书简历库读取『全局A级JD能力画像』字段值。"""
+# 进程内缓存：grill-me 每次启动都会拉一次能力画像，报告本身低频更新，5 分钟 TTL 足够新鲜。
+# uvicorn 单进程部署（ecosystem.config.js 无 --workers），进程内缓存无多实例一致性问题。
+_JD_REPORT_CACHE: dict = {"value": None, "at": 0.0}
+_JD_REPORT_TTL_SECONDS = 300.0
+_jd_report_cache_lock = threading.Lock()
+
+
+def _get_global_jd_report_sync() -> str | None:
+    """同步读飞书（token 获取 + records/search 均为阻塞 requests）。
+
+    必须经 asyncio.to_thread 调用——曾在 async 端点里直连，3 次重试×15s 超时
+    会卡住整个 FastAPI 事件循环，拖慢所有并发请求（2026-09-23 慢因修复）。
+    """
     svc = _get_svc()
     token_getter = getattr(svc, "get_tenant_access_token", get_tenant_access_token) if svc else get_tenant_access_token
     token = token_getter()
@@ -137,6 +150,21 @@ async def get_global_jd_report() -> str | None:
     except Exception as e:
         logger.exception(f"[get_global_jd_report] 读取失败: {e}")
         return None
+
+
+async def get_global_jd_report() -> str | None:
+    """从飞书简历库读取『全局A级JD能力画像』字段值（进程内缓存 5 分钟 + to_thread 卸载阻塞 I/O）。"""
+    now = time.time()
+    with _jd_report_cache_lock:
+        if _JD_REPORT_CACHE["value"] is not None and now - _JD_REPORT_CACHE["at"] < _JD_REPORT_TTL_SECONDS:
+            return _JD_REPORT_CACHE["value"]
+
+    report = await asyncio.to_thread(_get_global_jd_report_sync)
+    if report:
+        with _jd_report_cache_lock:
+            _JD_REPORT_CACHE["value"] = report
+            _JD_REPORT_CACHE["at"] = time.time()
+    return report
 
 
 async def update_global_jd_report(report_text: str) -> bool:
@@ -176,6 +204,10 @@ async def update_global_jd_report(report_text: str) -> bool:
             logger.warning(f"[update_global_jd_report] 回写失败: {update_resp.json().get('msg')}")
             return False
         logger.info("[update_global_jd_report] ✅ 能力画像已回写飞书简历库")
+        # 回写成功即刷新进程内缓存，避免 TTL 内 get 到旧报告
+        with _jd_report_cache_lock:
+            _JD_REPORT_CACHE["value"] = report_text
+            _JD_REPORT_CACHE["at"] = time.time()
         return True
     except Exception as e:
         logger.exception(f"[update_global_jd_report] 回写异常: {e}")
