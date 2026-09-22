@@ -274,6 +274,72 @@ describe('PipelineStore - mergeJobsSnapshot 状态穿透与防乒乓测试', () 
     expect(isJobWaitingReview(updatedJob)).toBe(true)
     expect(isJobEvaluating(updatedJob)).toBe(false)
   })
+
+  it('07. 召回待初评岗位（淘汰卡 prev + 裸 running/scrape_node 快照）两跳轮询均不得被注入 delivering（防误锁「正在自动投递中」）', () => {
+    const store = usePipelineStore.getState()
+
+    // 首跳前的看板存量：岗位今日被 AI 排雷淘汰
+    store.mergeJobsSnapshot([
+      {
+        job_id: 'raw_3113',
+        job_name: 'AI大客户经理（AI产品高校方向）',
+        company_name: '广州无意识设计有限公司',
+        platform: 'boss',
+        status: 'rejected',
+        node: 'clean_rejected',
+        last_action_desc: '触发AI排雷规则淘汰',
+      }
+    ])
+
+    // 用户从飞书战报召回 → 后端快照下发裸 running（无 sub_status）
+    const recallSnapshot: PipelineJob[] = [
+      {
+        job_id: 'raw_3113',
+        job_name: 'AI大客户经理（AI产品高校方向）',
+        company_name: '广州无意识设计有限公司',
+        platform: 'boss',
+        status: 'running',
+        node: 'scrape_node',
+        last_action_desc: '入库待清洗',
+      } as PipelineJob
+    ]
+
+    // 首跳轮询
+    store.mergeJobsSnapshot(recallSnapshot)
+    const firstHop = usePipelineStore.getState().jobs['raw_3113']
+    expect(firstHop.status).toBe('running')
+    expect(firstHop.sub_status).not.toBe('delivering')
+
+    // 次跳轮询（12s 后，prev 已是 running 非终态）
+    store.mergeJobsSnapshot(recallSnapshot)
+    const secondHop = usePipelineStore.getState().jobs['raw_3113']
+    expect(secondHop.status).toBe('running')
+    expect(secondHop.node).toBe('scrape_node')
+    // 核心断言：两跳均不得出现 delivering（否则卡片误锁「正在自动投递中」并出现「终止投递」按钮）
+    expect(secondHop.sub_status).not.toBe('delivering')
+  })
+
+  it('08. 正向对照：真实投递在途卡片（delivery_node 裸 running 快照）两跳后仍保持 delivering 乐观锁定', () => {
+    const store = usePipelineStore.getState()
+
+    const deliveringSnapshot: PipelineJob[] = [
+      {
+        job_id: 'rec_delivery_1',
+        job_name: '解决方案专家',
+        platform: 'zhilian',
+        status: 'running',
+        node: 'delivery_node',
+      } as PipelineJob
+    ]
+
+    store.mergeJobsSnapshot(deliveringSnapshot)
+    store.mergeJobsSnapshot(deliveringSnapshot)
+
+    const job = usePipelineStore.getState().jobs['rec_delivery_1']
+    expect(job.status).toBe('running')
+    // 核心断言：投递在途节点的 delivering 注入不被收紧误伤
+    expect(job.sub_status).toBe('delivering')
+  })
 })
 
 

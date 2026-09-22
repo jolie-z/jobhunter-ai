@@ -368,7 +368,13 @@ export const usePipelineStore = create<PipelineStore>((set) => ({
               : (j.node || prev?.node)),
         sub_status: isSnapshotTerminal
           ? j.sub_status
-          : (isOptimisticRunning ? (prev?.sub_status || j.sub_status || "delivering") : (j.sub_status || prev?.sub_status)),
+          : (isOptimisticRunning
+              // delivering 兜底仅限投递在途节点：scrape_node 等评估/清洗类裸 running
+              // 注入 delivering 会把召回待初评等岗位误锁成「正在自动投递中」
+              ? (prev?.sub_status || j.sub_status ||
+                 ((j.node === "delivery_node" || j.node === "greeting_node" || j.node === "quick_greeting_node")
+                  ? "delivering" : undefined))
+              : (j.sub_status || prev?.sub_status)),
         review_type: prev?.review_type || j.review_type,
         reject_reason: prev?.reject_reason || j.reject_reason,
         reject_type: prev?.reject_type || j.reject_type,

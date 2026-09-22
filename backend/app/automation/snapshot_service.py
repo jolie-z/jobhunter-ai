@@ -37,6 +37,34 @@ def _get_raw_db_path() -> str:
     )
 
 
+# SQLite process_status → 快照卡片状态白名单映射。
+# 未知值兜底为 running+ai_eval_queued（评估排队），绝不输出裸 running——
+# 裸 running 会被前端合并层乐观注入 sub_status="delivering"，卡片误锁成「正在自动投递中」
+# （召回待初评/已确认淘汰/待投递遗留值曾中招）。
+_SQLITE_REJECTED_STATUSES = {"清洗淘汰", "ai清洗淘汰", "已确认淘汰"}
+
+
+def _map_sqlite_process_status(p_status: str) -> dict[str, str | None]:
+    """把 raw_jobs.process_status 映射为快照卡片的 {status, sub_status, last_action_desc}。"""
+    if p_status == "ai清洗淘汰":
+        return {"status": "rejected", "sub_status": None, "last_action_desc": "触发AI排雷规则淘汰"}
+    if p_status == "清洗淘汰":
+        return {"status": "rejected", "sub_status": None, "last_action_desc": "触发规则清洗淘汰"}
+    if p_status == "已确认淘汰":
+        return {"status": "rejected", "sub_status": None, "last_action_desc": "已确认淘汰"}
+    if p_status == "已存入数据":
+        return {"status": "scraped", "sub_status": None, "last_action_desc": "入库待清洗"}
+    if p_status == "召回待初评":
+        return {"status": "running", "sub_status": "ai_eval_queued", "last_action_desc": "♻️ 已召回，等待AI重新初评"}
+    if p_status == "待推送至飞书":
+        return {"status": "running", "sub_status": "ai_eval_queued", "last_action_desc": "已入库，待推送至飞书"}
+    if p_status == "已进行打分":
+        return {"status": "running", "sub_status": "ai_eval_queued", "last_action_desc": "AI打分完成，等待流转"}
+    if p_status == "待投递":
+        return {"status": "ready_to_deliver", "sub_status": None, "last_action_desc": "待投递"}
+    return {"status": "running", "sub_status": "ai_eval_queued", "last_action_desc": "入库待清洗"}
+
+
 def _triage_classify(error: str) -> str:
     """快照展示用：复用 L1 分诊对错误文本的分类结果。"""
     try:
@@ -229,7 +257,7 @@ async def build_jobs_snapshot() -> dict[str, Any]:
             sqlite_rows = await asyncio.to_thread(_fetch_sqlite_jobs)
             for r in sqlite_rows:
                 p_status = r.get("process_status") or ""
-                is_rejected = p_status in ("清洗淘汰", "ai清洗淘汰")
+                is_rejected = p_status in _SQLITE_REJECTED_STATUSES
                 is_ai_reject = p_status == "ai清洗淘汰"
                 is_synced = p_status == "已同步" or r.get("is_synced") == 1
 
@@ -240,7 +268,9 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                 if job_id_str in dismissed_ids:
                     continue
 
-                status = "rejected" if is_rejected else ("scraped" if p_status == "已存入数据" else "running")
+                mapped = _map_sqlite_process_status(p_status)
+                status = mapped["status"]
+                sub_status = mapped["sub_status"]
                 node = "clean_rejected" if is_rejected else "scrape_node"
                 link = r.get("job_link") or ""
                 if link:
@@ -251,6 +281,7 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                     "job_name": r.get("job_title") or "未知岗位",
                     "node": node,
                     "status": status,
+                    "sub_status": sub_status,
                     "platform": r.get("platform") or "",
                     "company_name": r.get("company_name") or "",
                     "salary": r.get("salary") or "",
@@ -266,7 +297,7 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                     "created_at": r.get("publish_date") or "",
                     "crawl_time": r.get("crawl_time") or r.get("publish_date") or "",
                     "last_action_time": r.get("crawl_time") or r.get("publish_date") or "",
-                    "last_action_desc": "触发AI排雷规则淘汰" if is_ai_reject else ("触发规则清洗淘汰" if is_rejected else "入库待清洗"),
+                    "last_action_desc": mapped["last_action_desc"],
                 })
         except Exception as e:
             logger.warning(f"jobs_snapshot 查询 SQLite 异常: {e}")
