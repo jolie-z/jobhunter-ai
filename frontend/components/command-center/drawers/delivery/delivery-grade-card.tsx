@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect } from "react"
 import { Filter, Info, CheckCircle2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
@@ -62,6 +63,14 @@ const GRADE_OPTIONS: GradeOption[] = [
 export function DeliveryGradeCard({ grades, onChangeGrades }: DeliveryGradeCardProps) {
   // 存量配置可能残留已下线的等级（如 E）：入口归一化，避免变成不可见又不可取消的幽灵勾选
   const validGrades = grades.filter((g) => GRADE_OPTIONS.some((o) => o.id === g))
+
+  // 挂载时发现存量脏等级就回写父级（后端评估早已不产出 E，保存后自然清洗）
+  useEffect(() => {
+    if (validGrades.length !== grades.length) {
+      onChangeGrades(validGrades)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅挂载时清洗一次，随依赖回写会与父级 setState 成环
+  }, [])
 
   const toggleGrade = (id: string) => {
     if (validGrades.includes(id)) {

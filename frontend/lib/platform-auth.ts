@@ -153,16 +153,18 @@ export async function launchPlatformEdge(
   }
   // 后端结构化错误（detail 为对象）：Edge 未安装等需要引导的场景
   if (data.detail && typeof data.detail === "object") {
-    return { ok: false, ...parseErrorDetail(data.detail) }
+    return { ok: false, ...parseEdgeErrorDetail(data.detail) }
   }
   return { ok: false, message: data.message || data.detail || "未知错误" }
 }
 
 /**
- * 结构化错误体的统一解析（detail 为对象：Edge 未安装等需要引导的场景）。
- * 仅收敛错误分支；成功形态各端点契约不同（扁平体 / 信封体），由调用方各自解析。
+ * 「Edge 未安装」结构化错误体的统一解析（detail 为对象）。
+ * 当前后端唯一结构化 code 是 edge_not_installed，故兜底文案为 Edge 专属；
+ * 未来新增结构化 code 时应在此按 code 分派。成功形态各端点契约不同（扁平体 / 信封体），
+ * 由调用方各自解析。
  */
-export function parseErrorDetail(
+export function parseEdgeErrorDetail(
   detail: unknown
 ): Pick<EdgeLaunchResult, "message" | "code" | "downloadUrl"> {
   if (detail && typeof detail === "object") {

@@ -8,7 +8,7 @@ import {
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { API_BASE } from "@/lib/api"
-import { EDGE_MISSING_MESSAGE, isEdgeMissing, parseErrorDetail } from "@/lib/platform-auth"
+import { isEdgeMissing, parseEdgeErrorDetail } from "@/lib/platform-auth"
 import { useEdgeLaunchGuard } from "@/hooks/use-edge-launch-guard"
 
 export interface PlatformSessionItem {
@@ -109,7 +109,7 @@ export function PlatformSessionBar({
         if (res.ok && data.code === 0) return { ok: true as const, message: "" }
         // 结构化错误：Edge 未安装（detail 为对象），交给守卫弹下载引导
         if (data.detail && typeof data.detail === "object") {
-          return { ok: false as const, ...parseErrorDetail(data.detail) }
+          return { ok: false as const, ...parseEdgeErrorDetail(data.detail) }
         }
         const detailMsg = typeof data.detail === "string" ? data.detail : ""
         return { ok: false as const, message: detailMsg || data.msg || "未知错误" }

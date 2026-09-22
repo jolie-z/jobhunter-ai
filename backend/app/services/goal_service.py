@@ -185,17 +185,9 @@ def get_current_goals() -> dict[str, Any] | None:
 
 
 def update_goals(params: dict[str, Any]) -> dict[str, Any] | None:
-    """更新目标参数（部分更新）。无目标行且有实际参数时按默认值自动建档（Q-M4-4 后端化），
-    保存接收群/保存时间表不再依赖先手动 /start；空参数保持旧行为（无行返回 None）。"""
-    if not params:
-        return get_current_goals()
+    """更新目标参数（部分更新）。无目标行且含可更新字段时按默认值自动建档（Q-M4-4 后端化），
+    保存接收群/保存时间表不再依赖先手动 /start；无可更新字段（含空参数）保持旧行为。"""
     ensure_table()
-    conn = _get_conn()
-    row = conn.execute("SELECT * FROM job_goals WHERE id = 1").fetchone()
-    if not row:
-        conn.close()
-        return start_goals(params)
-
     updatable_fields = [
         "daily_deliver_target", "daily_crawl_target", "weekly_interview_target",
         "a_grade_deadline_hours", "total_offer_target", "plan_days",
@@ -203,6 +195,15 @@ def update_goals(params: dict[str, Any]) -> dict[str, Any] | None:
         "report_enabled_daily", "report_enabled_weekly", "report_enabled_monthly",
         "feishu_receive_id",
     ]
+    # 自动建档门槛 = 过滤后的可更新字段非空：全未知字段（如 {"bogus": 1}）不得触发建档
+    has_effective = any(field in (params or {}) for field in updatable_fields)
+    if not has_effective:
+        return get_current_goals()
+    conn = _get_conn()
+    row = conn.execute("SELECT * FROM job_goals WHERE id = 1").fetchone()
+    if not row:
+        conn.close()
+        return start_goals(params)
 
     sets = []
     values = []

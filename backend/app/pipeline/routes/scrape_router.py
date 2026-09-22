@@ -145,6 +145,10 @@ def launch_platform_session_endpoint(body: LaunchPlatformBody):
         # 结构化错误：前端据 code=edge_not_installed 弹「下载 Edge」引导弹窗
         logger.warning(f"❌ [PLATFORM_SESSIONS] 本机未安装 Edge，platform={body.platform}")
         raise HTTPException(status_code=400, detail=edge_not_installed_detail())
+    except FileNotFoundError as e:
+        # Edge 之外的文件缺失（如 profile 目录/可执行权限异常），保留专属提示不并入泛化分支
+        logger.error(f"❌ [PLATFORM_SESSIONS] 唤起浏览器文件缺失: {e}")
+        raise HTTPException(status_code=400, detail=f"未找到 Edge 可执行文件或 profile 目录: {e}")
     except Exception as e:
         logger.error(f"❌ [PLATFORM_SESSIONS] 唤起浏览器失败: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"唤起浏览器失败: {e}")

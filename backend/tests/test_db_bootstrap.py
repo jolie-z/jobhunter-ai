@@ -34,8 +34,8 @@ EXPECTED_TABLES = {
 EXPECTED_TRIGGERS = {"trg_raw_jobs_insert_updated", "trg_raw_jobs_status_updated"}
 
 # 拥有模块 DDL 但合法不属于主库蓝本的表（分属 autopilot.db / 会话库等其它库）。
-# 模块表若既不在蓝本、又不在此白名单，说明主库新表漏配蓝本——正是立项要堵的
-# 「raw_jobs 类 no such table」故障（review R3-P1）。
+# 模块表若既不在蓝本、又不在此白名单，说明主库新表漏配蓝本——正是「no such table」
+# 类全新装配故障（引导只建蓝本里的表，漏配的表在新机上无人创建）。
 CROSS_DB_TABLES = {
     "automation_configs", "automation_logs", "pending_delivery_pool",
     "boss_approvals", "platform_status", "sessions",
@@ -147,7 +147,7 @@ def test_split_statements_tolerates_semicolon_in_comment():
 def test_bootstrap_script_statement_mix():
     # 蓝本真实脚本必须整脚本切开且类型分布正确（12 表 + 8 索引 + 2 触发器）：
     # 比纯总数更有分辨力——新增一张表少配索引、触发器被切碎都会在此报红。
-    # 剥离开头注释行再锚定 CREATE：兼容蓝本日后在语句前加独立注释（review R3-P2）
+    # 剥离开头注释行再锚定 CREATE：兼容蓝本日后在语句前加独立注释
     stmts = _split_statements(BOOTSTRAP_SCRIPT)
     kinds: dict[str, int] = {}
     for stmt in stmts:
@@ -155,14 +155,33 @@ def test_bootstrap_script_statement_mix():
         m = re.search(r"CREATE (?:UNIQUE )?(TABLE|INDEX|TRIGGER)", body, re.IGNORECASE)
         assert m, f"无法识别的语句类型: {stmt[:60]!r}"
         kinds[m.group(1).upper()] = kinds.get(m.group(1).upper(), 0) + 1
-    assert kinds == {"TABLE": 12, "INDEX": 8, "TRIGGER": 2}
+    # 表/触发器数从规格集合派生；索引无独立规格清单，蓝本演进时人工同步此数
+    assert kinds == {
+        "TABLE": len(EXPECTED_TABLES), "INDEX": 8, "TRIGGER": len(EXPECTED_TRIGGERS)
+    }
+
+
+def test_bootstrap_split_statements_are_executable():
+    # 切分结果必须逐条可被 sqlite3 直接执行：锁死「分号后尾随注释触发
+    # only-execute-one-statement」与触发器被切碎两类潜在翻车（实测 Python 3.12
+    # 尾随注释可执行，此用例将该实证固化为回归防线）
+    conn = sqlite3.connect(":memory:")
+    try:
+        for stmt in _split_statements(BOOTSTRAP_SCRIPT):
+            conn.execute(stmt)
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchone()[0]
+        assert remaining >= len(EXPECTED_TABLES)
+    finally:
+        conn.close()
 
 
 def _module_ddl_columns() -> dict[str, set[str]]:
     """从 app 源码提取各业务模块自带的 CREATE TABLE IF NOT EXISTS 列集（含函数内联与 DDL 常量）。
 
     必须排除 db_bootstrap.py 自身：蓝本脚本里的 CREATE TABLE 是「被测对象」，
-    混进扫描集会让纯蓝本表以「自己 ⊇ 自己」恒真通过（review R2-P1）。
+    混进扫描集会让纯蓝本表以「自己 ⊇ 自己」恒真通过，一致性检查形同虚设。
     只取「列名 类型」形态的行；表级约束（PRIMARY/FOREIGN/UNIQUE/CHECK/CONSTRAINT 等关键字
     开头）与引号/非标识符 token 一律跳过（后半段关键字仅为行首误吞降级，非 SQL 语法表）。
     已知局限：单行写法的 DDL 或注释里的圆括号可能导致漏解析或误报（误红方向，失败即人工
@@ -207,10 +226,10 @@ def test_bootstrap_columns_cover_module_ddl(tmp_path):
         }
     module_cols = _module_ddl_columns()
     # 自证扫描有效：真实模块 DDL（排除蓝本自身后）必须解析出这批关键表，
-    # 防止解析正则失效时用例静默退化为恒真（review R2-P1）
+    # 防止解析正则失效时用例静默退化为恒真
     assert {"job_goals", "token_log", "scrape_sessions", "raw_jobs", "evaluation_weights"} <= set(module_cols)
 
-    # 覆盖对账（review R3-P1）：模块表要么在蓝本（主库），要么命中跨库白名单；
+    # 覆盖对账：模块表要么在蓝本（主库），要么命中跨库白名单；
     # 两者皆非 = 主库新表漏配蓝本，正是「raw_jobs 类 no such table」的立项故障
     unaccounted = set(module_cols) - set(blueprint_cols) - CROSS_DB_TABLES
     assert not unaccounted, f"主库新表漏配蓝本（也不在跨库白名单）: {sorted(unaccounted)}"

@@ -268,8 +268,8 @@ def ensure_main_db_schema(db_path: str | None = None) -> list[str]:
         os.makedirs(parent, exist_ok=True)
 
     conn = sqlite3.connect(path, timeout=10.0)
-    # TODO(债): 逐条 10s busy timeout 在库被长事务持锁时最坏 22×10s 串行；
-    # 后续可收紧单条超时或加全局引导超时（review R2-P2，逐条容错设计保留）
+    # TODO(债): 单条语句 busy timeout 10s，库被长事务持锁时最坏逐条串行等待；
+    # 后续可收紧单条超时或加全局引导超时（逐条容错设计本身保留：旧窄表只跳过缺索引，不整体失败）
     skipped: list[str] = []
     try:
         # 与 goal_service._get_conn 同款：主库在线上本就以 WAL 运行，非本批新增行为

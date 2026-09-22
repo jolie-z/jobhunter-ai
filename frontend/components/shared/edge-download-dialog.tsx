@@ -19,10 +19,14 @@ interface EdgeDownloadDialogProps {
 }
 
 // 纵深防御：下载链接虽来自自家后端，仍只放行 Microsoft 官方域名的 https 页面
+// （endsWith 必须带点前缀，否则 evil-microsoft.com 这类同名后缀可绕过）
 function safeDownloadUrl(url: string): string {
   try {
     const u = new URL(url)
-    if (u.protocol === "https:" && u.hostname.endsWith("microsoft.com")) return url
+    const host = u.hostname
+    if (u.protocol === "https:" && (host === "microsoft.com" || host.endsWith(".microsoft.com"))) {
+      return url
+    }
   } catch {
     // 非法 URL 落到兜底
   }
