@@ -41,7 +41,7 @@ export function MassGreetingCard({
         onChangeMassGreeting(result.greeting)
         toast.success("AI 通用打招呼语模版生成成功！")
       } else {
-        toast.error(result.detail || "生成失败，请确认已上传启用简历与A级画像")
+        toast.error(result.detail || "生成失败：请先启用简历并生成全局岗位画像")
       }
     } catch {
       toast.error("网络异常，无法生成通用打招呼语")
@@ -82,7 +82,7 @@ export function MassGreetingCard({
               </button>
             </TooltipTrigger>
             <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed p-2.5">
-              在 C/B 级批量海投或快速流转阶段，若配置了通用话术，系统将直接复用，实现
+              在海投批量投递或快速流转阶段，若配置了通用话术，系统将直接复用，实现
               <strong className="text-violet-400"> 0 延迟与 0 Token 消耗</strong>；若留空，系统将根据岗位 JD 现场调用 LLM 实时生成。
             </TooltipContent>
           </Tooltip>
@@ -138,7 +138,7 @@ export function MassGreetingCard({
                 </button>
               </TooltipTrigger>
               <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed p-2.5">
-                结合当前启用的基准简历与全局 A 级岗位画像，调用破冰打招呼引擎一键生成高匹配度的通用开场白。
+                结合当前启用的基准简历与全局岗位画像，调用破冰打招呼引擎一键生成高匹配度的通用开场白。
               </TooltipContent>
             </Tooltip>
           </div>
@@ -170,8 +170,8 @@ export function MassGreetingCard({
 
       {/* 生效范围显式说明：避免「精投岗发出的是 AI 定制话术」被误判为通用语失效 */}
       <p className="text-[10px] leading-relaxed text-muted-foreground/70">
-        生效范围：仅海投轨（C/B 级）岗位直接复用此通用话术；精投轨（A/S
-        级）岗位由 AI 针对岗位 JD 实时生成专属开场白，不使用本配置。
+        生效范围：仅海投岗位直接复用此通用话术；精投岗位由 AI 针对岗位
+        JD 实时生成专属开场白，不使用本配置。
       </p>
     </div>
   )

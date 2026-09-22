@@ -14,6 +14,8 @@ import { Job51Tab } from "./51job-tab"
 import { ZhilianTab } from "./zhilian-tab"
 import { ResumeActionBar, PLATFORM_NAMES } from "./resume-action-bar"
 import { SchemaDiffDrawer, type SchemaDiffReport } from "@/components/ui/schema-diff-drawer"
+import { useEdgeLaunchGuard } from "@/hooks/use-edge-launch-guard"
+import { isEdgeMissing } from "@/lib/platform-auth"
 
 interface ResumeField {
   label: string
@@ -64,6 +66,9 @@ export default function ResumeEditorPage() {
       variant: type === "error" ? "destructive" : undefined,
     })
   }
+
+  // Edge 未安装守卫：唤起前探测，未装弹「下载 Edge」引导
+  const { guardLaunch, edgeDialog } = useEdgeLaunchGuard()
 
   // 探测各平台浏览器状态
   const checkPlatformStatus = async (showToastFeedback = false) => {
@@ -118,16 +123,21 @@ export default function ResumeEditorPage() {
   const launchBrowser = async (platform: string) => {
     setLaunchingPlatform(platform)
     try {
-      const res = await fetch(`${API_BASE}/api/platforms/launch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ platform }),
+      const result = await guardLaunch(async () => {
+        const res = await fetch(`${API_BASE}/api/platforms/launch`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ platform }),
+        })
+        const r = await res.json()
+        if (r.success) return { ok: true as const, message: r.message || "" }
+        // code=edge_not_installed（本机未装 Edge）时守卫会弹下载引导
+        return { ok: false as const, message: r.message || "启动失败", code: r.code, downloadUrl: r.download_url }
       })
-      const result = await res.json()
-      if (result.success) {
+      if (result.ok) {
         showToast(`正在启动 ${PLATFORM_NAMES[platform as keyof typeof PLATFORM_NAMES]} 浏览器...`, "info")
         setTimeout(checkPlatformStatus, 3000)
-      } else {
+      } else if (!isEdgeMissing(result)) {
         showToast(result.message, "error")
       }
     } catch (e) {
@@ -528,6 +538,7 @@ export default function ResumeEditorPage() {
           }}
         />
       )}
+      {edgeDialog}
     </div>
   )
 }

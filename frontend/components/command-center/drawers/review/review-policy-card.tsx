@@ -36,7 +36,7 @@ export function ReviewPolicyCard({
             </button>
           </TooltipTrigger>
           <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed p-2.5">
-            【海投拦截】针对 C-F 级海投岗位，若所属公司员工规模达到或超过此门槛人数，系统将自动拦截并挂起在【海投拦截】待审批中，防止误投知名大厂；【精投审批】A/B 级岗位则默认全部强制人工复核。
+            【海投拦截】针对海投岗位，若所属公司员工规模达到或超过此门槛人数，系统将自动拦截并挂起在【海投拦截】待审批中，防止误投知名大厂；【精投审批】精投岗位则默认全部强制人工复核。
           </TooltipContent>
         </Tooltip>
       </div>

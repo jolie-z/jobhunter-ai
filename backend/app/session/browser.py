@@ -23,13 +23,45 @@ _EDGE_CANDIDATES = [
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
 ]
 
+# 本机未装 Edge 时给用户的官方下载页（各唤起入口统一引用这份）
+EDGE_DOWNLOAD_URL = "https://www.microsoft.com/zh-cn/edge/download"
+
+# 统一用户文案：异常与结构化错误体共用，避免多处手抄漂移
+_EDGE_MISSING_MESSAGE = "未在本机找到 Microsoft Edge 浏览器，请先下载安装后重试。"
+
+
+class EdgeNotFoundError(RuntimeError):
+    """本机默认安装路径未找到 Microsoft Edge —— 需要引导用户下载安装，而非笼统报错。"""
+
+
+def edge_not_installed_detail() -> dict:
+    """「Edge 未安装」结构化错误体唯一来源：前端据 code=edge_not_installed 弹下载引导。"""
+    return {
+        "code": "edge_not_installed",
+        "message": _EDGE_MISSING_MESSAGE,
+        "download_url": EDGE_DOWNLOAD_URL,
+    }
+
 
 def find_edge_path() -> str:
-    """查找本机 Edge 可执行文件；找不到抛 RuntimeError。"""
+    """查找本机 Edge 可执行文件；找不到抛 EdgeNotFoundError。"""
     for path in _EDGE_CANDIDATES:
         if os.path.exists(path):
             return path
-    raise RuntimeError("未在默认路径找到 Microsoft Edge 浏览器，请确认已安装。")
+    raise EdgeNotFoundError(_EDGE_MISSING_MESSAGE)
+
+
+def get_edge_install_status() -> dict:
+    """Edge 安装探测（供前端唤起前预检 + 未安装时给出下载引导）。
+
+    复用 find_edge_path 的同一条扫描口径，避免两处候选列表逻辑漂移。
+    """
+    try:
+        find_edge_path()
+        installed = True
+    except EdgeNotFoundError:
+        installed = False
+    return {"installed": installed, "download_url": EDGE_DOWNLOAD_URL}
 
 
 def _launch_edge_daemon(command: list[str]) -> None:

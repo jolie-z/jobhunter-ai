@@ -11,7 +11,11 @@ import time
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from app.session.browser import launch_edge
+from app.session.browser import (
+    EdgeNotFoundError,
+    edge_not_installed_detail,
+    launch_edge,
+)
 from app.session.health_checker import probe_port
 from app.session.manager import session_manager
 from app.session.registry import PLATFORM_CONFIGS
@@ -131,6 +135,9 @@ def launch_platform_browser(request: dict = None):
     config = PLATFORM_CONFIGS[platform]
     try:
         result = launch_edge(config)
+    except EdgeNotFoundError:
+        # 结构化错误：前端据 code=edge_not_installed 弹「下载 Edge」引导弹窗
+        return JSONResponse(content={"success": False, **edge_not_installed_detail()})
     except RuntimeError as e:
         return JSONResponse(content={"success": False, "message": str(e)})
 

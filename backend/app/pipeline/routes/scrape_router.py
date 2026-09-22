@@ -17,6 +17,12 @@ from app.pipeline import (
     save_scrape_config,
 )
 from app.services.feishu_service import get_active_resume_from_feishu
+from app.session.browser import (
+    EdgeNotFoundError,
+    edge_not_installed_detail,
+    launch_edge,
+)
+from app.session.registry import resolve_platform
 
 logger = logging.getLogger("pipeline_scrape_router")
 logger.setLevel(logging.INFO)
@@ -127,8 +133,6 @@ async def get_platform_sessions_endpoint():
 def launch_platform_session_endpoint(body: LaunchPlatformBody):
     """唤起指定平台的 Edge 浏览器进行扫码/登录"""
     logger.info(f"🚀 [PLATFORM_SESSIONS] 收到唤起浏览器请求: platform={body.platform}")
-    from app.session.browser import launch_edge
-    from app.session.registry import resolve_platform
 
     config = resolve_platform(body.platform)
     if not config:
@@ -137,9 +141,10 @@ def launch_platform_session_endpoint(body: LaunchPlatformBody):
     try:
         res = launch_edge(config)
         logger.info(f"✅ [PLATFORM_SESSIONS] 成功唤起 {config.display_name} 浏览器: {res}")
-    except FileNotFoundError as e:
-        logger.error(f"❌ [PLATFORM_SESSIONS] 未找到 Edge 浏览器: {e}")
-        raise HTTPException(status_code=400, detail=f"未找到 Edge 浏览器，请先安装 Microsoft Edge: {e}")
+    except EdgeNotFoundError:
+        # 结构化错误：前端据 code=edge_not_installed 弹「下载 Edge」引导弹窗
+        logger.warning(f"❌ [PLATFORM_SESSIONS] 本机未安装 Edge，platform={body.platform}")
+        raise HTTPException(status_code=400, detail=edge_not_installed_detail())
     except Exception as e:
         logger.error(f"❌ [PLATFORM_SESSIONS] 唤起浏览器失败: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"唤起浏览器失败: {e}")

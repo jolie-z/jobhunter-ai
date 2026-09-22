@@ -8,7 +8,12 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from app.session.browser import launch_edge
+from app.session.browser import (
+    EdgeNotFoundError,
+    edge_not_installed_detail,
+    get_edge_install_status,
+    launch_edge,
+)
 from app.session.registry import PLATFORM_CONFIGS, resolve_platform
 
 logger = logging.getLogger(__name__)
@@ -32,6 +37,12 @@ async def list_auth_platforms():
     }
 
 
+@router.get("/edge-status")
+async def get_edge_status():
+    """本机 Edge 安装探测：唤起浏览器前预检，未安装时前端弹下载引导。"""
+    return {"status": "success", **get_edge_install_status()}
+
+
 @router.post("/{platform}/edge", responses=COMMON_RESPONSES)
 async def launch_platform_edge(platform: str):
     """唤起指定平台的专用 Edge 浏览器（支持别名，如 /xhs/edge → xiaohongshu）"""
@@ -40,5 +51,8 @@ async def launch_platform_edge(platform: str):
         raise HTTPException(status_code=404, detail=f"不支持的平台: {platform}")
     try:
         return launch_edge(config)
+    except EdgeNotFoundError:
+        # 结构化错误：前端据 code=edge_not_installed 弹「下载 Edge」引导弹窗
+        raise HTTPException(status_code=400, detail=edge_not_installed_detail())
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))

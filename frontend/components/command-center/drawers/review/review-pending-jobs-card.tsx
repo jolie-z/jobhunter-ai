@@ -78,7 +78,7 @@ export function ReviewPendingJobsCard({
   const [operatingId, setOperatingId] = useState<string | null>(null)
   const [batchOperating, setBatchOperating] = useState(false)
 
-  // 1. 分类：精投岗位 (A/B级) vs 大公司海投拦截 (C-F级)
+  // 1. 分类：精投岗位（按 grade A/B 或 is_custom 判定）vs 大公司海投拦截（其余等级）
   const customJobs = useMemo(
     () => jobs.filter((j) => (j.grade && ["A", "B"].includes(j.grade.toUpperCase())) || j.is_custom),
     [jobs]
@@ -191,7 +191,7 @@ export function ReviewPendingJobsCard({
             )}
           >
             <Sparkles className="h-3 w-3" />
-            <span>精投 (A/B级)</span>
+            <span>精投岗位</span>
             <span className="ml-0.5 rounded-full bg-emerald-500/10 px-1.5 py-0.2 text-[10px] font-mono font-medium">
               {customJobs.length}
             </span>
@@ -208,7 +208,7 @@ export function ReviewPendingJobsCard({
             )}
           >
             <Building2 className="h-3 w-3" />
-            <span>海投拦截 (C-F级)</span>
+            <span>海投拦截</span>
             <span className="ml-0.5 rounded-full bg-amber-500/10 px-1.5 py-0.2 text-[10px] font-mono font-medium">
               {massJobs.length}
             </span>
