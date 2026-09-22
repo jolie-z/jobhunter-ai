@@ -11,7 +11,6 @@ import {
   Minimize2,
   Copy,
   Check,
-  AlertCircle,
   Activity,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -208,15 +207,15 @@ function GlobalTerminalDrawerInner() {
 
   return (
     <>
-      {/* 1. 浮动收起态：全站右下角常驻微型毛玻璃呼吸胶囊 */}
+      {/* 1. 浮动收起态：贴右边缘的竖排呼吸小签（右下角，窄边不挡内容） */}
       {!isOpen && (
         <button
           onClick={() => setOpen(true)}
           data-terminal-drawer="true"
           className={cn(
-            "fixed bottom-4 right-6 z-40 print:hidden flex items-center gap-2.5 px-3.5 py-1.5 rounded-full select-none",
-            "bg-zinc-950/85 hover:bg-zinc-900/95 border border-zinc-800 shadow-xl shadow-black/25 backdrop-blur-md",
-            "text-zinc-200 text-xs font-medium font-mono transition-all duration-200 hover:scale-[1.03] active:scale-[0.98]"
+            "fixed bottom-4 right-0 z-40 print:hidden flex flex-col items-center gap-2 py-3 pl-1.5 pr-1 rounded-l-xl select-none",
+            "bg-zinc-950/85 hover:bg-zinc-900/95 border border-r-0 border-zinc-800 shadow-xl shadow-black/25 backdrop-blur-md",
+            "text-zinc-200 transition-all duration-200 hover:scale-[1.03] active:scale-[0.98] origin-bottom-right"
           )}
           title="点击展开白盒日志终端 (快捷键: ⌘J)"
         >
@@ -238,19 +237,22 @@ function GlobalTerminalDrawerInner() {
           </span>
 
           <Terminal className="h-3.5 w-3.5 text-zinc-400" />
-          <span className="text-[11px] tracking-wide text-zinc-300">白盒控制台</span>
+          <span className="[writing-mode:vertical-rl] text-[11px] tracking-[0.18em] font-medium font-mono text-zinc-300">
+            白盒控制台
+          </span>
 
-          {/* 错误红标或总行数 */}
-          {unreadErrors > 0 ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/20 border border-rose-500/40 px-1.5 py-0.2 text-[10px] text-rose-300">
-              <AlertCircle className="h-2.5 w-2.5" />
-              {unreadErrors} 异常
-            </span>
-          ) : (
-            <span className="rounded-full bg-zinc-800/80 px-1.5 py-0.2 text-[10px] text-zinc-400">
-              {lines.length} 行
-            </span>
-          )}
+          {/* 计数徽标：红色=未读异常数，灰色=日志总行数，语义靠 title 消歧 */}
+          <span
+            title={unreadErrors > 0 ? `${unreadErrors} 条未读异常` : `${lines.length} 行日志`}
+            className={cn(
+              "rounded-full px-1.5 py-0.5 text-[10px] font-mono",
+              unreadErrors > 0
+                ? "bg-rose-500/20 border border-rose-500/40 text-rose-300"
+                : "bg-zinc-800/80 text-zinc-400"
+            )}
+          >
+            {unreadErrors > 0 ? unreadErrors : lines.length}
+          </span>
 
           <kbd className="hidden sm:inline-block text-[9px] px-1 py-0.5 rounded bg-zinc-800/90 text-zinc-400 border border-zinc-700/50">
             ⌘J
@@ -258,53 +260,59 @@ function GlobalTerminalDrawerInner() {
         </button>
       )}
 
-      {/* 2. 展开态：停靠在全站右下角的高质感控制台抽屉 */}
+      {/* 2. 展开态：停靠右边缘、贴地右下角的竖版控制台面板（只占右侧竖条，不横铺遮挡） */}
       {isOpen && (
         <div
           data-terminal-drawer="true"
           className={cn(
-            "fixed bottom-0 right-6 z-50 print:hidden w-[640px] max-w-[calc(100vw-3rem)] rounded-t-2xl border border-zinc-800/90 bg-zinc-950/95 text-zinc-100 shadow-2xl backdrop-blur-xl transition-all duration-300 flex flex-col",
-            isExpanded ? "h-[85vh]" : "h-[420px]"
+            "fixed bottom-0 right-0 z-50 print:hidden w-[400px] max-w-[calc(100vw-1rem)] rounded-l-2xl border border-r-0 border-zinc-800/90 bg-zinc-950/95 text-zinc-100 shadow-2xl backdrop-blur-xl transition-all duration-300 flex flex-col",
+            isExpanded ? "h-[92vh]" : "h-[68vh]"
           )}
         >
-          {/* 终端顶栏 */}
+          {/* 终端顶栏：竖版面板收窄后拆两行——第一行标题态、第二行过滤+操作 */}
           <div
             onClick={toggleOpen}
-            className="flex h-11 items-center justify-between px-4 cursor-pointer select-none border-b border-zinc-800/80 bg-zinc-900/60 rounded-t-2xl hover:bg-zinc-900/90 transition-colors shrink-0"
+            className="cursor-pointer select-none border-b border-zinc-800/80 bg-zinc-900/60 rounded-tl-2xl hover:bg-zinc-900/90 transition-colors shrink-0"
           >
-            <div className="flex items-center gap-2.5">
-              <div className="flex items-center gap-1.5">
-                <span
-                  className={cn(
-                    "h-2 w-2 rounded-full transition-all",
-                    isHeartbeatActive ? "bg-emerald-400 animate-pulse" : "bg-zinc-600"
-                  )}
-                />
-                <Terminal className="h-3.5 w-3.5 text-zinc-400" />
+            <div className="flex h-11 items-center justify-between px-4">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={cn(
+                      "h-2 w-2 rounded-full transition-all",
+                      isHeartbeatActive ? "bg-emerald-400 animate-pulse" : "bg-zinc-600"
+                    )}
+                  />
+                  <Terminal className="h-3.5 w-3.5 text-zinc-400" />
+                </div>
+                <span className="text-xs font-mono font-medium text-zinc-200">白盒日志终端</span>
+                <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] font-mono text-zinc-400">
+                  {q ? `${filteredLines.length}/` : ""}
+                  {lines.length} 行
+                </span>
               </div>
-              <span className="text-xs font-mono font-medium text-zinc-200">白盒日志终端</span>
-              <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] font-mono text-zinc-400">
-                {q ? `${filteredLines.length}/` : ""}
-                {lines.length} 行
-              </span>
+
               {isHeartbeatActive && (
-                <span className="flex items-center gap-1 text-[10px] text-emerald-400/80 font-mono">
+                <span className="flex items-center gap-1 text-[10px] text-emerald-400/80 font-mono shrink-0">
                   <Activity className="h-3 w-3 animate-pulse" />
                   实时推流中
                 </span>
               )}
             </div>
 
-            <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+            <div
+              className="flex items-center gap-1.5 px-3 pb-2.5"
+              onClick={(e) => e.stopPropagation()}
+            >
               {/* 搜索过滤框 */}
-              <div className="relative">
+              <div className="relative flex-1 min-w-0">
                 <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-zinc-500" />
                 <input
                   type="text"
                   placeholder="过滤日志…"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  className="h-6 w-32 rounded bg-zinc-800/80 pl-6 pr-2 text-[10px] text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-600"
+                  className="h-6 w-full rounded bg-zinc-800/80 pl-6 pr-2 text-[10px] text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-600"
                 />
               </div>
 
