@@ -67,7 +67,7 @@ jobhunter-ai/
 
 - Python 3.10+（推荐 [uv](https://docs.astral.sh/uv/)）
 - Node.js 18+
-- Chrome / Edge 浏览器（爬虫登录态依赖）
+- **Microsoft Edge 浏览器（必需）**：四大平台的岗位抓取与自动投递均通过 CDP 接管真实 Edge（持久化 Profile + 登录态）；未安装 Edge 时，岗位抓取与自动投递无法运行
 
 ### 第 0 步：飞书准备（先拿凭证，再谈启动）
 
@@ -169,3 +169,11 @@ python scripts/test_config_validation.py all
 ## 📄 License
 
 本项目基于 [GPL-3.0](./LICENSE) 协议开源。随附的第三方资产按其各自协议提供（如 [Noto Sans SC](https://fonts.google.com/noto) 字体，SIL Open Font License）。
+
+## 🙏 参考项目
+
+本项目参考了以下项目，感谢原作者的分享：
+
+- [wanyichen06/LLMInternSkill](https://github.com/wanyichen06/LLMInternSkill)
+- [lan1177/interview-prep](https://github.com/lan1177/interview-prep)
+- [santifer/career-ops](https://github.com/santifer/career-ops)
