@@ -278,7 +278,6 @@ async def send_pipeline_master_card(
         other_cnt = 0
         ab_record_ids: list[str] = []
         mass_record_ids: list[str] = []
-        df_record_ids: list[str] = []
 
         for j in job_results:
             g = str(j.get("grade") or "D").upper()
@@ -298,12 +297,11 @@ async def send_pipeline_master_card(
             else:
                 grade_counts["D/F"] = grade_counts.get("D/F", 0) + 1
                 other_cnt += 1
-                if rid:
-                    df_record_ids.append(rid)
 
-        # 淘汰岗位：优先保留阶段 4 初评 AI 淘汰 ID (feishu record_id)，再追加阶段 2 清洗淘汰 ID (rowid)
-        # 确保高价值误杀候选不被大量硬清洗淘汰挤出前 20 截断窗口
-        combined_rejected_ids = list(dict.fromkeys(df_record_ids + (rejected_ids or [])))
+        # 淘汰候选清单：仅收阶段 2 清洗/AI 排雷淘汰 ID（rowid），保序去重防截断窗口重复占位。
+        # 初评 D/F 级不并入——流水线把 D/F 走海投轨正常流转（待投递/复核/已投递），
+        # 并入会把活跃岗位误标成「淘汰:规则清洗拦截」，且召回已投递岗会污染状态。
+        combined_rejected_ids = list(dict.fromkeys(rejected_ids or []))
 
         card = build_master_pipeline_card(
             task_time=task_time_str,
