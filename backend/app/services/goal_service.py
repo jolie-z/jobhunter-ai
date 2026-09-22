@@ -203,7 +203,8 @@ def update_goals(params: dict[str, Any]) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM job_goals WHERE id = 1").fetchone()
     if not row:
         conn.close()
-        return start_goals(params)
+        # 建档与更新共用同一过滤口径：未知字段不带入建档
+        return start_goals({k: v for k, v in params.items() if k in updatable_fields})
 
     sets = []
     values = []

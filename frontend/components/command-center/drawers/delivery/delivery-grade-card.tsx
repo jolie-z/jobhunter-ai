@@ -60,15 +60,19 @@ const GRADE_OPTIONS: GradeOption[] = [
   },
 ]
 
+// 清洗后为空时的兜底默认集，与后端 automation_configs 默认 auto_deliver_grades 一致
+const DEFAULT_MASS_GRADES = ["C", "D", "F"]
+
 export function DeliveryGradeCard({ grades, onChangeGrades }: DeliveryGradeCardProps) {
   // 存量配置可能残留已下线的等级（如 E）：入口归一化，避免变成不可见又不可取消的幽灵勾选
   const validGrades = grades.filter((g) => GRADE_OPTIONS.some((o) => o.id === g))
 
-  // 挂载时发现存量脏等级就回写父级（后端评估早已不产出 E，保存后自然清洗）
+  // 挂载时发现存量脏等级就回写父级（后端评估早已不产出 E，保存后自然清洗）。
+  // 清洗后为空（存量配置全非法，如只剩 E）绝不能回写空集合——全空会导致所有岗位
+  // 挂人工审批，等于仅打开面板就静默停摆海投；此时回退到后端同款海投轨默认集。
   useEffect(() => {
-    if (validGrades.length !== grades.length) {
-      onChangeGrades(validGrades)
-    }
+    if (validGrades.length === grades.length) return
+    onChangeGrades(validGrades.length > 0 ? validGrades : DEFAULT_MASS_GRADES)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅挂载时清洗一次，随依赖回写会与父级 setState 成环
   }, [])
 

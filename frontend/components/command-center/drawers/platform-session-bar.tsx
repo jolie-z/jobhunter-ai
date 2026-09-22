@@ -108,9 +108,8 @@ export function PlatformSessionBar({
         const data = await res.json()
         if (res.ok && data.code === 0) return { ok: true as const, message: "" }
         // 结构化错误：Edge 未安装（detail 为对象），交给守卫弹下载引导
-        if (data.detail && typeof data.detail === "object") {
-          return { ok: false as const, ...parseEdgeErrorDetail(data.detail) }
-        }
+        const parsed = parseEdgeErrorDetail(data.detail)
+        if (parsed) return { ok: false as const, ...parsed }
         const detailMsg = typeof data.detail === "string" ? data.detail : ""
         return { ok: false as const, message: detailMsg || data.msg || "未知错误" }
       })

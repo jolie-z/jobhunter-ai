@@ -13,7 +13,10 @@ test_bootstrap_columns_cover_module_ddl：重叠表锁「蓝本列集 ⊇ 模块
 """
 import re
 import sqlite3
+from contextlib import closing
 from pathlib import Path
+
+import pytest
 
 from app.core.db_bootstrap import (
     BOOTSTRAP_SCRIPT,
@@ -43,7 +46,7 @@ CROSS_DB_TABLES = {
 
 
 def _object_names(db_path: str, types: tuple[str, ...]) -> set[str]:
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         marks = ",".join("?" * len(types))
         return {r[0] for r in conn.execute(
             f"SELECT name FROM sqlite_master WHERE type IN ({marks})", types)}
@@ -69,13 +72,14 @@ def test_ensure_main_db_schema_idempotent(tmp_path):
 def test_ensure_main_db_schema_preserves_existing_table(tmp_path):
     # 已有表（哪怕列更少）原样保留，引导绝不替换/重建
     db_path = str(tmp_path / "old.db")
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.execute("CREATE TABLE token_log (id TEXT PRIMARY KEY, action_name TEXT NOT NULL)")
         conn.execute("INSERT INTO token_log VALUES ('t1', 'eval')")
+        conn.commit()
 
     ensure_main_db_schema(db_path)
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         assert conn.execute("SELECT COUNT(*) FROM token_log").fetchone()[0] == 1
         cols = {r[1] for r in conn.execute("PRAGMA table_info(token_log)")}
         assert "cost_cny" not in cols  # 旧结构未被替换成蓝本新结构
@@ -84,11 +88,33 @@ def test_ensure_main_db_schema_preserves_existing_table(tmp_path):
 def test_raw_jobs_trigger_maintains_updated_at(tmp_path):
     db_path = str(tmp_path / "fresh.db")
     ensure_main_db_schema(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
             "INSERT INTO raw_jobs (job_link, crawl_time) VALUES ('u1', '2026-09-22 10:00:00')")
         row = conn.execute("SELECT updated_at FROM raw_jobs WHERE job_link = 'u1'").fetchone()
         assert row[0] == "2026-09-22 10:00:00"
+
+
+def test_narrow_raw_jobs_preserved_and_trigger_skipped(tmp_path):
+    # 历史窄 raw_jobs（缺 updated_at）：引导绝不 crash/替换重建，窄表数据原样保留。
+    # 实测行为锁定：SQLite 建触发器不校验体内列名——引用缺失列的触发器会「带病创建」，
+    # 对窄表的 INSERT 要到触发器执行时才报缺列。该存量迁移债已在 db_bootstrap TODO 挂账
+    # （schema diff 级修复另行立项），本用例防的是引导层 crash 与数据被替换。
+    db_path = str(tmp_path / "narrow.db")
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("CREATE TABLE raw_jobs (job_link TEXT PRIMARY KEY, crawl_time TEXT)")
+        conn.execute("INSERT INTO raw_jobs VALUES ('u1', '2026-09-22 10:00:00')")
+        conn.commit()
+
+    ensure_main_db_schema(db_path)  # 不得抛异常
+
+    with closing(sqlite3.connect(db_path)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_jobs").fetchone()[0] == 1
+        triggers = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
+        assert EXPECTED_TRIGGERS <= triggers  # 带病创建（SQLite 不预校验触发器体内列名）
+        with pytest.raises(sqlite3.OperationalError):
+            # 窄表 INSERT 在触发器执行时爆缺列——存量迁移债的实证形态，非引导层回归
+            conn.execute("INSERT INTO raw_jobs VALUES ('u2', '2026-09-23 09:00:00')")
 
 
 def test_update_goals_autocreates_row_when_missing(tmp_path, monkeypatch):
@@ -116,7 +142,7 @@ def test_update_goals_partial_keeps_other_fields(tmp_path, monkeypatch):
 
 
 def test_split_statements_keeps_trigger_body_intact():
-    # P1 回归守卫：触发器 BEGIN...END 体内的分号不得切碎语句
+    # 触发器 BEGIN...END 体内的分号不得切碎语句（切碎会导致表/触发器残缺）
     script = (
         "CREATE TABLE t (a TEXT);\n"
         "CREATE TRIGGER trg AFTER INSERT ON t FOR EACH ROW\n"
@@ -219,7 +245,7 @@ def test_bootstrap_columns_cover_module_ddl(tmp_path):
     # 就是「no such column」类新机故障。此用例锁死：蓝本列集 ⊇ 全部重叠表的模块列集。
     db_path = str(tmp_path / "fresh.db")
     ensure_main_db_schema(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         blueprint_cols = {
             row[0]: {r[1] for r in conn.execute(f"PRAGMA table_info({row[0]})")}
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -266,6 +292,6 @@ def test_resolve_main_db_path_main_project_only_when_exists(tmp_path, monkeypatc
 def test_goal_service_db_path_is_resolver_snapshot():
     # 单一真源：goal_service.DB_PATH 是 import 期 resolve_main_db_path() 的冻结快照。
     # 刻意不动环境变量——只要 import 与调用之间环境未变，两者按构造必然一致；
-    # 原「delenv 后再比对」写法会随进程启动时的环境变量红绿（review P2）。
+    # 不用「delenv 后再比对」的写法：那会随进程启动时的环境变量不同而红绿不定。
     # 默认回落路径本身已在上一用例用显式拼路径断言。
     assert goal_service.DB_PATH == resolve_main_db_path()

@@ -19,6 +19,7 @@ ensure_main_db_schema(db_path)，与业务模块共用同一个 import 期时机
 """
 import logging
 import os
+import re
 import sqlite3
 
 logger = logging.getLogger(__name__)
@@ -270,6 +271,9 @@ def ensure_main_db_schema(db_path: str | None = None) -> list[str]:
     conn = sqlite3.connect(path, timeout=10.0)
     # TODO(债): 单条语句 busy timeout 10s，库被长事务持锁时最坏逐条串行等待；
     # 后续可收紧单条超时或加全局引导超时（逐条容错设计本身保留：旧窄表只跳过缺索引，不整体失败）
+    # TODO(债): SQLite 不预校验触发器体内列名——历史窄表（如旧版懒建的 raw_jobs 缺
+    # updated_at）会让触发器「带病创建」，INSERT 到触发器执行时才爆缺列。
+    # 根治需 schema diff 级迁移（先补列再建触发器），见 tests/...narrow_raw_jobs 实证用例
     skipped: list[str] = []
     try:
         # 与 goal_service._get_conn 同款：主库在线上本就以 WAL 运行，非本批新增行为
@@ -279,7 +283,12 @@ def ensure_main_db_schema(db_path: str | None = None) -> list[str]:
             try:
                 conn.execute(stmt)
             except sqlite3.Error as e:
-                skipped.append(stmt.split("(")[0][:50])
+                # skipped 清单取对象名（触发器体内无圆括号，切前缀会带换行），便于定位
+                m = re.search(
+                    r"(?:TABLE|INDEX|TRIGGER)\s+(?:IF\s+NOT\s+EXISTS\s+)?[\"']?(\w+)",
+                    stmt, re.IGNORECASE,
+                )
+                skipped.append(m.group(1) if m else stmt[:50])
                 logger.warning(f"⚠️ [db_bootstrap] 语句跳过（{e}）: {stmt[:60]}...")
         conn.commit()
         after = _user_objects(conn)

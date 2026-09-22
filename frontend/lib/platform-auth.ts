@@ -97,7 +97,7 @@ export const FALLBACK_EDGE_DOWNLOAD_URL = "https://www.microsoft.com/zh-cn/edge/
 /** 结构化错误码：本机未安装 Microsoft Edge（与后端 edge_not_installed_detail 对应） */
 export const EDGE_NOT_INSTALLED = "edge_not_installed"
 
-/** Edge 未安装的统一前端文案（守卫拦截结果与兜底解析共用，禁止多处手抄） */
+/** Edge 未安装的统一前端展示文案（标题/兜底用；后端 message 含行动指引，二者语义不同层） */
 export const EDGE_MISSING_MESSAGE = "未检测到 Microsoft Edge 浏览器"
 
 /** 后端 /auth/edge-status 返回的本机 Edge 安装状态 */
@@ -152,32 +152,31 @@ export async function launchPlatformEdge(
     return { ok: true, message: data.message || "唤起成功" }
   }
   // 后端结构化错误（detail 为对象）：Edge 未安装等需要引导的场景
-  if (data.detail && typeof data.detail === "object") {
-    return { ok: false, ...parseEdgeErrorDetail(data.detail) }
+  const parsed = parseEdgeErrorDetail(data.detail)
+  if (parsed) {
+    return { ok: false, ...parsed }
   }
   return { ok: false, message: data.message || data.detail || "未知错误" }
 }
 
 /**
- * 「Edge 未安装」结构化错误体的统一解析（detail 为对象）。
- * 当前后端唯一结构化 code 是 edge_not_installed，故兜底文案为 Edge 专属；
- * 未来新增结构化 code 时应在此按 code 分派。成功形态各端点契约不同（扁平体 / 信封体），
- * 由调用方各自解析。
+ * 「Edge 未安装」结构化错误体的统一解析（含 object 判定，非对象返回 null 交回调用方
+ * 走各自的字符串 detail 兜底）。当前后端唯一结构化 code 是 edge_not_installed，故兜底
+ * 文案为 Edge 专属；未来新增结构化 code 时应在此按 code 分派。成功形态各端点契约不同
+ * （扁平体 / 信封体），由调用方各自解析。
  */
 export function parseEdgeErrorDetail(
   detail: unknown
-): Pick<EdgeLaunchResult, "message" | "code" | "downloadUrl"> {
-  if (detail && typeof detail === "object") {
-    const d = detail as Record<string, unknown>
-    return {
-      message: String(d.message || EDGE_MISSING_MESSAGE),
-      code: typeof d.code === "string" ? d.code : undefined,
-      downloadUrl: typeof d.download_url === "string" && d.download_url
-        ? d.download_url
-        : FALLBACK_EDGE_DOWNLOAD_URL,
-    }
+): Pick<EdgeLaunchResult, "message" | "code" | "downloadUrl"> | null {
+  if (!detail || typeof detail !== "object") return null
+  const d = detail as Record<string, unknown>
+  return {
+    message: String(d.message || EDGE_MISSING_MESSAGE),
+    code: typeof d.code === "string" ? d.code : undefined,
+    downloadUrl: typeof d.download_url === "string" && d.download_url
+      ? d.download_url
+      : FALLBACK_EDGE_DOWNLOAD_URL,
   }
-  return { message: EDGE_MISSING_MESSAGE, downloadUrl: FALLBACK_EDGE_DOWNLOAD_URL }
 }
 
 /** 该唤起失败是否已被守卫处理（弹了下载引导），调用方无需再 toast 报错 */
