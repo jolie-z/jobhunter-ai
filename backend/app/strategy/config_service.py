@@ -86,9 +86,64 @@ def _process_single_resume(r: dict) -> dict:
     }
 
 
+def _resume_status_is_active(status: Any) -> bool:
+    """兼容「启用」的三种飞书字段形态：单选字符串 / 字符串列表 / 富文本 [{text: 启用}] 列表。"""
+    if status == "启用":
+        return True
+    if isinstance(status, list):
+        for item in status:
+            if item == "启用" or (isinstance(item, dict) and item.get("text") == "启用"):
+                return True
+    return False
+
+
+async def _ensure_single_resume_active(
+    resumes: list[dict[str, Any]] | None = None,
+    only_record_id: str | None = None,
+) -> None:
+    """单份简历自动生效（新手指引第二步硬前提：库里必须有「已生效」简历）。
+
+    仅当简历库恰好一份简历且当前没有任何「启用」记录时，把它排他性启用；
+    多份简历仍由用户显式点「设为生效」，绝不擅自替用户挑底稿。
+    resumes 不传时自行拉取一次（用于保存后/体检接口的自愈入口）；
+    传入时若命中自愈，会把该记录的「当前状态」就地改写为启用，调用方随后
+    process 出的列表即为生效后的最新状态，同一次响应无需二次刷新。
+    only_record_id：保存链路传入刚创建的 record_id；若拉到的全量列表里唯一记录
+    与之不符（读后写延迟下的陈旧视图），宁可跳过自愈也不把别的简历错设为生效。
+    自愈语义：幂等，任何失败（含自行拉取失败）只告警不抛，绝不影响已成功的
+    创建/读取主流程。
+    """
+    try:
+        if resumes is None:
+            resumes = await feishu_client.fetch_bitable_records(settings.FEISHU_TABLE_ID_RESUMES)
+        if len(resumes) != 1:
+            return
+        record = resumes[0] or {}
+        record_id = record.get("record_id")
+        if only_record_id and record_id != only_record_id:
+            logger.info(f"[简历库] 自愈目标不匹配（陈旧视图），跳过 expected={only_record_id} got={record_id}")
+            return
+        if not record_id or _resume_status_is_active((record.get("fields") or {}).get("当前状态")):
+            # 已有生效简历：状态未变，这里不做失效（读路径不该每次清缓存）；
+            # setup-status 自愈钩子在调用本函数后会自行失效再重判
+            return
+        logger.info(f"[简历库] 仅一份简历且未生效，自动设为生效 record={record_id}")
+        await asyncio.to_thread(activate_target_resume, record_id)
+        # 就地改写：让本次响应直接呈现生效状态（读取自愈路径免二次刷新）
+        fields = record.get("fields") or {}
+        record["fields"] = fields
+        fields["当前状态"] = "启用"
+        _invalidate_active_resume_meta_cache()
+    except Exception as e:
+        logger.warning(f"[简历库] 单份简历自动生效失败（忽略，不阻塞主流程）: {e}")
+
+
 async def get_all_strategy_configs() -> dict[str, list[dict[str, Any]]]:
     """拉取简历配置并进行清洗"""
     resumes = await feishu_client.fetch_bitable_records(settings.FEISHU_TABLE_ID_RESUMES)
+    # 单份简历自动生效自愈：新用户上传第一份简历保存后无需手动点「设为生效」。
+    # 先自愈再清洗：命中时 resumes[0] 已被就地改为启用，同一次响应即为最新状态
+    await _ensure_single_resume_active(resumes)
     resume_list = [_process_single_resume(r) for r in resumes]
     return {"resumes": resume_list}
 
@@ -167,6 +222,24 @@ def activate_target_resume(target_record_id: str) -> None:
         )
         if de.status_code != 200 or de.json().get("code") != 0:
             logger.error(f"停用旧生效简历失败 record={rid}: {de.text[:200]}")
+
+    _invalidate_active_resume_meta_cache()
+
+
+def _invalidate_active_resume_meta_cache() -> None:
+    """失效指挥中心 60s 活跃简历缓存的统一入口。
+
+    手动「设为生效」与自动生效共用此咽喉点，保证新手指引 setup-status 第二步、
+    config_status 改写判定等消费方下一次读取立刻看到最新生效简历，而非等 60s TTL。
+    懒加载 + 告警兜底：pipeline 路由模块不可用时绝不影响切换主流程，但留下日志可查。
+    """
+    try:
+        from app.pipeline.routes.feishu_status_router import (
+            invalidate_active_resume_meta_cache,
+        )
+        invalidate_active_resume_meta_cache()
+    except Exception as e:
+        logger.warning(f"[简历库] 活跃简历缓存失效失败（不阻塞主流程）: {e}")
 
 
 def get_db_path() -> str:
@@ -300,7 +373,13 @@ async def save_strategy_config_service(payload: SaveConfigRequest) -> str:
 
         data = resp.json()
         if resp.status_code == 200 and data.get("code") == 0:
-            return data.get("data", {}).get("record", {}).get("record_id")
+            record_id = data.get("data", {}).get("record", {}).get("record_id")
+            # 新建简历后自愈：库里仅此一份时自动设为生效。自愈内部自拉取且全 try/except——
+            # 记录已创建成功，这里任何抖动都绝不把它变成「保存失败」（否则用户重试会产生重复简历）。
+            # only_record_id 锁定目标：防飞书读后写延迟下拉到旧列表、把别的简历错设为生效
+            if payload.table_type == "resume" and not payload.record_id:
+                await _ensure_single_resume_active(only_record_id=record_id)
+            return record_id
         raise ValueError(f"保存失败: {data.get('msg')}")
 
 

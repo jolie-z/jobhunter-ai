@@ -115,8 +115,8 @@ export function SetupGuideDialog({ open, onClose, onComplete }: SetupGuideDialog
     {
       id: "resume",
       icon: FileText,
-      title: "第二步 · 上传一份简历",
-      desc: "在 配置大盘 → 简历库 上传你的简历（PDF/Word），全链路的简历改写、投递都基于它。",
+      title: "第二步 · 准备生效简历",
+      desc: "在 配置大盘 → 简历库 上传简历（PDF/Word）。库里仅一份时会自动设为生效；多份时请对要用的那份点「设为生效」——改写与投递都基于生效中的简历。",
       done: status?.resume.done,
       actionLabel: "去简历库",
       onAction: () => { onClose(); goStrategySection("resume") },

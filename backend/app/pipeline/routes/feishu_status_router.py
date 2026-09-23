@@ -41,6 +41,16 @@ def _get_active_resume_meta_cached(ttl: float = 60.0):
     return value
 
 
+def invalidate_active_resume_meta_cache() -> None:
+    """主动失效活跃简历 60s 缓存。
+
+    简历生效状态被切换/自动生效后调用，让 setup-status（新手指引第二步）、
+    config_status（改写模块判定）等消费方下一次读取立刻看到新的生效简历，
+    而不是等最多 60s TTL 自然过期。
+    """
+    _ACTIVE_RESUME_META_CACHE["ts"] = 0.0
+
+
 class FeishuConfigBody(BaseModel):
     batch_limit: int | None = None
     enable_report: bool | None = None
