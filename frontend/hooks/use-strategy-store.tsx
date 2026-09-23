@@ -6,7 +6,22 @@ import { apiFetch } from '@/lib/api'
 import { STRATEGY_SET_SECTION_EVENT } from '@/lib/strategy-events'
 import { useResumeUpload, type ParseProgress } from '@/hooks/use-resume-upload'
 import { ConfigGateDialog } from '@/components/dashboard/config-gate-dialog'
-import { createDraftScheduler } from '@/lib/resume-draft'
+import {
+    RESUME_DRAFT_DEBOUNCE_MS,
+    RESUME_DRAFT_LOCAL_KEY,
+    createDraftScheduler,
+    clearResumeDraft,
+    readResumeDraft,
+    writeResumeDraft,
+} from '@/lib/resume-draft'
+import {
+    isTempResumeId,
+    makeTempResumeId,
+    mergeLocalResumes,
+    purgeExpiredResumeRegistry,
+    removeLocalResume,
+    upsertLocalResume,
+} from '@/lib/resume-draft-registry'
 
 // Markdown 解析/序列化纯函数与简历模块类型：实现下沉 lib/resume-blocks.ts（Q-M4-6 拆分），此处 re-export 保持兼容
 export { parseMarkdownToBlocks, serializeBlocksToMarkdown, DEFAULT_RESUME_MARKDOWN } from '@/lib/resume-blocks'
@@ -24,77 +39,12 @@ export type StrategyItem = {
     structured_json?: any;
 }
 
-// ========== 本机草稿（2026-09-23 简历库七项修复#4）==========
-// 简历编辑内容此前只存内存，F5/关页即丢。草稿按 record_id 隔离写 localStorage：
-// 写入=画布变更防抖 2s；恢复=进入简历库加载画布时（本机稿优先并提示）；清除=保存成功。
-// 边界：草稿仅存用户本机浏览器（明文，7 天过期自清）；落飞书仍只由「保存并同步」显式触发。
-const RESUME_DRAFT_KEY_PREFIX = "jobhunter:resume-draft:v1:"
-const RESUME_DRAFT_TTL_MS = 7 * 24 * 3600 * 1000
-// 新建简历保存前没有 record_id，用固定本地槽位
-const RESUME_DRAFT_LOCAL_KEY = "local-draft"
-
-type ResumeDraftPayload = { savedAt: number; structured: any }
-
-function readResumeDraft(recordKey: string): ResumeDraftPayload | null {
-    if (typeof window === "undefined" || !recordKey) return null
-    try {
-        const raw = window.localStorage.getItem(RESUME_DRAFT_KEY_PREFIX + recordKey)
-        if (!raw) return null
-        const parsed = JSON.parse(raw) as ResumeDraftPayload
-        if (!parsed?.savedAt || typeof parsed.structured !== "object" || Date.now() - parsed.savedAt > RESUME_DRAFT_TTL_MS) {
-            window.localStorage.removeItem(RESUME_DRAFT_KEY_PREFIX + recordKey)
-            return null
-        }
-        return parsed
-    } catch {
-        return null
-    }
-}
-
-function writeResumeDraft(recordKey: string, structured: any) {
-    if (typeof window === "undefined" || !recordKey || !structured) return
-    try {
-        const payload: ResumeDraftPayload = { savedAt: Date.now(), structured }
-        window.localStorage.setItem(RESUME_DRAFT_KEY_PREFIX + recordKey, JSON.stringify(payload))
-    } catch {
-        // 存储空间满等异常静默：草稿是尽力而为的兜底，不阻塞编辑主流程
-    }
-}
-
-function clearResumeDraft(recordKey: string) {
-    if (typeof window === "undefined" || !recordKey) return
-    try {
-        window.localStorage.removeItem(RESUME_DRAFT_KEY_PREFIX + recordKey)
-    } catch {
-        // 同上，静默
-    }
-}
-
-/** 启动时按前缀扫描清理全部过期草稿（含已被删除/改名的简历槽位，防简历全文永久残留本机）。 */
-function purgeExpiredResumeDrafts() {
-    if (typeof window === "undefined") return
-    try {
-        const now = Date.now()
-        const stale: string[] = []
-        for (let i = 0; i < window.localStorage.length; i++) {
-            const key = window.localStorage.key(i)
-            if (!key || !key.startsWith(RESUME_DRAFT_KEY_PREFIX)) continue
-            try {
-                const parsed = JSON.parse(window.localStorage.getItem(key) || "") as ResumeDraftPayload
-                if (!parsed?.savedAt || now - parsed.savedAt > RESUME_DRAFT_TTL_MS) stale.push(key)
-            } catch {
-                stale.push(key) // 解析失败的脏数据直接清
-            }
-        }
-        stale.forEach(key => window.localStorage.removeItem(key))
-    } catch {
-        // localStorage 不可用（隐私模式等）：草稿功能整体静默降级
-    }
-}
-
-// 草稿防抖排期器：per-owner 独立定时器 + 排期时绑定数据快照（时序竞态见 lib/resume-draft.test.ts）。
-// 模块级单例：writeResumeDraft 自带 SSR/window 守卫，Provider 卸载与 pagehide 统一走 flushAll。
-const resumeDraftScheduler = createDraftScheduler(writeResumeDraft, 2000)
+// ========== 本机草稿与未保存简历登记（2026-09-23 七项修复#4 + 刷新丢稿根治立项）==========
+// 草稿槽/防抖排期器/登记表/过期清理的实现均已下沉 lib/resume-draft.ts 与
+// lib/resume-draft-registry.ts（实现下沉收敛 store 体积，并供组件级测试直接驱动），此处仅接线：
+//   写入 = 画布变更防抖排期（subscribe）+ 登记表同步；恢复 = load effect 本机稿优先；
+//   清除 = 保存转正 / 记录删除；列表 = fetchConfig 合并本地未保存项（见 mergeLocalResumes）。
+const resumeDraftScheduler = createDraftScheduler(writeResumeDraft, RESUME_DRAFT_DEBOUNCE_MS)
 
 // ========== Context 定义 ==========
 type StrategyContextType = {
@@ -223,8 +173,8 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
     // editingItem 的 ref 镜像（草稿写入守卫用；sectionRef 复用下方既有声明）
     const editingItemRef = useRef<StrategyItem | null>(editingItem)
     useEffect(() => { editingItemRef.current = editingItem }, [editingItem])
-    // 进程启动时清理历史过期草稿（按前缀扫描，含已删除简历的残留槽位）
-    useEffect(() => { purgeExpiredResumeDrafts() }, [])
+    // 进程启动时原子清理过期草稿槽与登记表（含已删除简历的残留槽位、非 temp_ 垃圾行）
+    useEffect(() => { purgeExpiredResumeRegistry() }, [])
     // 关页/卸载时把所有待写草稿立即落盘（pagehide 不触发 React unmount，需单独监听）
     useEffect(() => {
         const onPageHide = () => resumeDraftScheduler.flushAll()
@@ -240,16 +190,21 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
         const unsub = useResumeV2Store.subscribe((state, prev) => {
             if (suppressDirtyRef.current) return
             if (state.resumeData !== prev.resumeData) {
-                // dirty 语义与全仓保持一致（无条件置位，R2 审查 H6：不得收窄）；
+                // dirty 语义与全仓保持一致（无条件置位，不得收窄）；
                 // 草稿写入另设守卫：仅简历库上下文且归属明确时落本机
                 isDirtyRef.current = true
                 if (sectionRef.current !== 'resume' || !editingItemRef.current) return
                 const draftOwner = v2OwnerRef.current
                 // 空归属（异常兜底）与历史 local-draft 固定槽位一律不落草稿
                 if (!draftOwner || draftOwner === RESUME_DRAFT_LOCAL_KEY) return
+                // id 与 name 在同一语句快照，登记表与草稿槽同步归属（防切库窗口串写）
+                const draftName = editingItemRef.current?.name || ""
                 // owner 与数据快照在排期时绑定，触发时零可变引用——切换/保存互不干扰
-                // （单槽定时器的跨记录串写见 agy code-review R3 P1，已改 per-owner 排期器）
+                // （草稿定时器串写问题已改 per-owner 排期器根治）
                 resumeDraftScheduler.schedule(draftOwner, state.resumeData)
+                // 空名窗口（editingItem 尚未带 name）跳过登记但草稿排期照旧——
+                // name 是未保存项刷新后唯一可辨识信息，不允许被空串覆写
+                if (draftName) upsertLocalResume(draftOwner, draftName)
             }
         })
         return unsub
@@ -298,10 +253,9 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
             }
             // 归属更新放在数据写入成功之后：v2OwnerRef 与 store 内容严格同源，
             // 即使本 try 意外抛错，ref 仍指旧归属，不会出现 (新owner, 旧数据) 排期组合
-            // （agy double-check R2 H1）
             v2OwnerRef.current = ownerKey
-            // 恢复的是与云端不一致的草稿 = 存在未保存修改，补记 dirty（R2 审查 H7：
-            // 否则 hasUnsavedChanges 拦截/未保存提示全程不亮，与「草稿=未保存」语义矛盾）
+            // 恢复的是与云端不一致的草稿 = 存在未保存修改，补记 dirty（否则
+            // hasUnsavedChanges 拦截/未保存提示全程不亮，与「草稿=未保存」语义矛盾）
             if (restoredDraft) isDirtyRef.current = true
         } finally {
             suppressDirtyRef.current = false
@@ -435,10 +389,13 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
                     avatar_url: r.avatar_url,
                     structured_json: r.structured_json
                 }))
-                setResumes(mappedResumes)
+                // 合并本地未保存简历（temp_ 项，刷新丢稿根治立项）：
+                // 云端优先展示、本地项 append；merge 内部带云端去重与全量异常兜底
+                const mergedResumes: StrategyItem[] = [...mappedResumes, ...mergeLocalResumes(mappedResumes)]
+                setResumes(mergedResumes)
 
                 if (currentEditingId) {
-                    const target = mappedResumes.find((i: any) => i.record_id === currentEditingId)
+                    const target = mergedResumes.find((i: any) => i.record_id === currentEditingId)
                     if (target) setEditingItem(prev => {
                         // 本地有未保存修改时保留本地稿（名称/内容/画布），只同步服务端状态类字段
                         // （如头像、生效状态），否则切换生效/上传头像后的刷新会把正在编辑的内容静默覆盖掉
@@ -498,6 +455,11 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
     const handleToggleResumeStatus = async (e: React.MouseEvent, item: StrategyItem) => {
         e.stopPropagation()
         if (!item.record_id || togglingResumeId) return
+        // temp_ 项尚未同步飞书，activate_resume 必然假失败（未保存项操作入口逐一排查覆盖）
+        if (isTempResumeId(item.record_id)) {
+            showToast('⚠️ 该简历尚未保存到飞书，请先点「保存并同步」')
+            return
+        }
         setTogglingResumeId(item.record_id)
         try {
             const res = await apiFetch(`/api/strategy/activate_resume`, {
@@ -512,15 +474,17 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
 
     const handleCreateNew = () => {
         if (isDirtyRef.current && !window.confirm('当前简历有未保存的修改，新建后将丢弃这些修改。确定继续吗？')) return
+        // temp_ 前缀 id：让新建简历拥有独立草稿槽——新建最容易整篇丢内容，
+        // 不应被排除在草稿机制外；保存链路本就把 temp_ 识别为新建（不传 record_id）
+        const newTempId = makeTempResumeId()
         setEditingItem({
             name: '新建简历版本',
             content: DEFAULT_RESUME_MARKDOWN,
             status: '停用',
-            // temp_ 前缀 id：让新建简历拥有独立草稿槽（agy double-check R2 H5——新建最容易
-            // 整篇丢内容，不应被排除在草稿机制外）；保存链路本就把 temp_ 识别为新建（不传 record_id）。
-            // 随机后缀防同一毫秒连发的 id 碰撞（agy double-check R3 H3'）
-            record_id: `temp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            record_id: newTempId,
         })
+        // 登记本地未保存项：刷新后侧边栏仍可见、可点开恢复（刷新丢稿根治立项）
+        upsertLocalResume(newTempId, '新建简历版本')
     }
 
     const handleDuplicate = (id: string) => {
@@ -529,7 +493,7 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
         const itemToCopy = resumes[itemIndex]
         if (!itemToCopy) return
 
-        const tempId = `temp_${Date.now()}`
+        const tempId = makeTempResumeId()
         const duplicatedItem = {
             ...itemToCopy,
             name: `${itemToCopy.name} - 副本`,
@@ -542,6 +506,13 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
             copy.splice(itemIndex + 1, 0, duplicatedItem)
             return copy
         })
+
+        // 刷新丢稿根治：副本登记入本地未保存列表 + 结构化内容同步写一次草稿槽——
+        // 复制后未编辑即刷新也能恢复源内容（agy plan-review R1 P0-3）
+        upsertLocalResume(tempId, duplicatedItem.name, itemToCopy.content)
+        if (itemToCopy.structured_json && typeof itemToCopy.structured_json === 'object') {
+            writeResumeDraft(tempId, itemToCopy.structured_json)
+        }
 
         setEditingItem(duplicatedItem)
         showToast('已为您创建副本，请修改后点击右上角「保存并同步」')
@@ -601,11 +572,12 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
                 showToast("✅ 保存飞书成功！")
                 const newRecordId = data.record_id || editingItem.record_id || null
                 isDirtyRef.current = false
-                // 保存成功：丢弃本记录待写的草稿定时器（云端已最新，不能再写回草稿槽）
-                // 并清空本机草稿；id 转正（temp_/无 id → 正式 record_id）时一并清旧槽
+                // 保存成功：丢弃本记录待写的草稿定时器（云端已最新，不能再写回草稿槽），
+                // 清空本机草稿；并从本地未保存登记表移除（转正后飞书列表自然含它）；
+                // 旧槽（temp_ 或无 id）已由上面 clearResumeDraft 覆盖
                 resumeDraftScheduler.discardOwner(editingItem.record_id || RESUME_DRAFT_LOCAL_KEY)
                 clearResumeDraft(editingItem.record_id || RESUME_DRAFT_LOCAL_KEY)
-                if (newRecordId && newRecordId !== editingItem.record_id) clearResumeDraft(editingItem.record_id || RESUME_DRAFT_LOCAL_KEY)
+                removeLocalResume(editingItem.record_id || RESUME_DRAFT_LOCAL_KEY)
                 setEditingItem(prev => prev ? { ...prev, record_id: newRecordId } : null)
                 fetchConfig(newRecordId)
                 return newRecordId
@@ -637,7 +609,12 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
 
         // temp_ 前缀 = 从未同步到飞书的本地副本（新建/克隆产生），直接本地删除即可，
         // 调云端 DELETE 必然 RecordIdNotFound 报「假失败」
-        if (item.record_id.startsWith('temp_')) return
+        if (isTempResumeId(item.record_id)) {
+            resumeDraftScheduler.discardOwner(item.record_id) // 取消在途排期，防复活刚清的槽（R1 P1-2）
+            removeLocalResume(item.record_id)
+            clearResumeDraft(item.record_id)
+            return
+        }
 
         try {
             const res = await apiFetch(`/api/strategy/delete`, {
