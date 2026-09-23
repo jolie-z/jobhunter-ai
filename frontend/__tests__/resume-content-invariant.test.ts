@@ -6,22 +6,26 @@
  */
 import { describe, it, expect } from "vitest"
 import { readFileSync } from "node:fs"
+import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
-// 路径锚定到本文件自身位置（import.meta.url），与进程 cwd、vitest worker 均无关——
+// 路径锚定到本文件自身位置（fileURLToPath(import.meta.url)），与进程 cwd、vitest worker 均无关。
+// ⚠️ 不要写成 new URL(`../${f}`, import.meta.url)：Vite 会把「new URL 模板串 + import.meta.url」
+// 静态转换为资源导入，模板变量在运行时丢失（解析成 __tests__/undefined，测试必红）。
 // 全量并发下曾现偶发红灯，根因未定位，以稳定路径锚定 + 定点断言消除不稳定向量；
 // 精确锁定四个内容渲染/工具栏文件（全目录扫描在全量并发下会误伤注释命中）
+const RENDER_ENTRY_DIR = join(dirname(fileURLToPath(import.meta.url)), "../components/dashboard/resume-builder")
 const RENDER_ENTRY_FILES = [
-    "components/dashboard/resume-builder/resume-modules-renderer.tsx",
-    "components/dashboard/resume-builder/experience-item.tsx",
-    "components/dashboard/resume-builder/resume-builder-toolbar.tsx",
-    "components/dashboard/resume-builder/index.tsx",
+    "resume-modules-renderer.tsx",
+    "experience-item.tsx",
+    "resume-builder-toolbar.tsx",
+    "index.tsx",
 ]
 
 describe("简历库 content 编辑入口不变量", () => {
     it("关键渲染/工具栏文件不存在 updateBlock / showRawMarkdown 接线", () => {
         const offenders = RENDER_ENTRY_FILES.filter(f => {
-            const src = readFileSync(fileURLToPath(new URL(`../${f}`, import.meta.url)), "utf-8")
+            const src = readFileSync(join(RENDER_ENTRY_DIR, f), "utf-8")
             return /\b(updateBlock|deleteBlock|addBlock|showRawMarkdown)\b/.test(src)
         })
         expect(offenders).toEqual([])

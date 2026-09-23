@@ -108,7 +108,7 @@ describe("损坏登记表自愈（含备份键回收）", () => {
     it("损坏备份键（.corrupt-*）由 purge 按 TTL 回收，防全文快照永久残留", () => {
         const stale = Date.now() - RESUME_DRAFT_TTL_MS - 1000
         localStorage.setItem(`${REGISTRY_KEY}.corrupt-${stale}`, "{old}")
-        localStorage.setItem(`${REGISTRY_KEY}.corrupt-${stale + 1000}`, "{newer}")
+        localStorage.setItem(`${REGISTRY_KEY}.corrupt-${stale + 500}`, "{newer}")
         purgeExpiredResumeRegistry()
         const remaining = Object.keys(localStorage).filter(k => k.startsWith(REGISTRY_KEY + ".corrupt-"))
         expect(remaining).toHaveLength(0) // 两份均超 TTL → 全删
