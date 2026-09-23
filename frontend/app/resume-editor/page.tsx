@@ -15,7 +15,6 @@ import { ZhilianTab } from "./zhilian-tab"
 import { ResumeActionBar, PLATFORM_NAMES } from "./resume-action-bar"
 import { SchemaDiffDrawer, type SchemaDiffReport } from "@/components/ui/schema-diff-drawer"
 import { useEdgeLaunchGuard } from "@/hooks/use-edge-launch-guard"
-import { isEdgeMissing } from "@/lib/platform-auth"
 
 interface ResumeField {
   label: string
@@ -137,7 +136,7 @@ export default function ResumeEditorPage() {
       if (result.ok) {
         showToast(`正在启动 ${PLATFORM_NAMES[platform as keyof typeof PLATFORM_NAMES]} 浏览器...`, "info")
         setTimeout(checkPlatformStatus, 3000)
-      } else if (!isEdgeMissing(result)) {
+      } else if (!result.handled) {
         showToast(result.message, "error")
       }
     } catch (e) {

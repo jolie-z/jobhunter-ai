@@ -253,39 +253,52 @@ def _split_statements(script: str) -> list[str]:
     return statements
 
 
+def _strip_leading_comments(stmt: str) -> str:
+    """剥离语句开头连续的 `--` 注释行（_split_statements 会把注释并入下一条语句）。"""
+    return re.sub(r"^(?:\s*--[^\n]*\n)+", "", stmt)
+
+
 def _pre_existing_table_columns(conn: sqlite3.Connection) -> dict[str, set[str]]:
-    """引导前已存在的表 → 当前列集（用于识别历史窄表）。"""
+    """引导前已存在的业务表 → 当前列集（用于识别历史窄表；排除 sqlite_% 内部对象）。"""
     return {
         row[0]: {c[1] for c in conn.execute(f'PRAGMA table_info("{row[0]}")')}
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )
     }
 
 
 def _trigger_target_table(stmt: str) -> str | None:
-    """从 CREATE TRIGGER DDL 里取目标表名（... ON <table>）。"""
-    m = re.search(r"\bON\s+[\"']?(\w+)", stmt, re.IGNORECASE)
+    """从 CREATE TRIGGER DDL 里取目标表名（... ON <table>，兼容 [table]/"table" 引用）。"""
+    m = re.search(r"\bON\s+[\[\"']?(\w+)", stmt, re.IGNORECASE)
     return m.group(1) if m else None
 
 
-def _derive_blueprint_table_columns() -> dict[str, set[str]]:
-    """从蓝本自身派生「表 → 列集」（:memory: 执行一次），供窄表触发器守卫比对。
+_blueprint_table_columns_cache: dict[str, set[str]] | None = None
 
-    自蓝本派生而非手抄：蓝本改列时守卫口径自动跟进，不产生第二份需要人工同步的清单。
+
+def _blueprint_table_columns() -> dict[str, set[str]]:
+    """从蓝本自身派生「表 → 列集」（首次使用时 :memory: 执行并缓存），供窄表触发器守卫比对。
+
+    惰性派生而非 import 期执行：蓝本 DDL 若有语法错误，只在真正引导时报错（main.py
+    的 try 有兜底），不会炸掉整个 app 的 import 链。自蓝本派生而非手抄：蓝本改列时
+    守卫口径自动跟进，不产生第二份需要人工同步的清单。
     """
-    mem = sqlite3.connect(":memory:")
-    try:
-        for stmt in _split_statements(BOOTSTRAP_SCRIPT):
-            mem.execute(stmt)
-        return {
-            row[0]: {c[1] for c in mem.execute(f'PRAGMA table_info("{row[0]}")')}
-            for row in mem.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        }
-    finally:
-        mem.close()
-
-
-# 蓝本列集（import 期派生一次；进程内蓝本为常量，无失效问题）
-BLUEPRINT_TABLE_COLUMNS = _derive_blueprint_table_columns()
+    global _blueprint_table_columns_cache
+    if _blueprint_table_columns_cache is None:
+        mem = sqlite3.connect(":memory:")
+        try:
+            for stmt in _split_statements(BOOTSTRAP_SCRIPT):
+                mem.execute(stmt)
+            _blueprint_table_columns_cache = {
+                row[0]: {c[1] for c in mem.execute(f'PRAGMA table_info("{row[0]}")')}
+                for row in mem.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                )
+            }
+        finally:
+            mem.close()
+    return _blueprint_table_columns_cache
 
 
 def ensure_main_db_schema(db_path: str | None = None) -> list[str]:
@@ -317,11 +330,12 @@ def ensure_main_db_schema(db_path: str | None = None) -> list[str]:
         conn.execute("PRAGMA journal_mode=WAL")
         before = _user_objects(conn)
         pre_existing_cols = _pre_existing_table_columns(conn)
+        blueprint_cols_by_table = _blueprint_table_columns()
         # 历史窄表（缺蓝本列）上若已有旧引导留下的触发器：SQLite 建触发器不校验体内列名，
         # 这些触发器会带病存在并把每次 INSERT 打挂——只告警不擅删（可能是用户自建）
         narrow_existing = {
             t for t, cols in pre_existing_cols.items()
-            if BLUEPRINT_TABLE_COLUMNS.get(t) and BLUEPRINT_TABLE_COLUMNS[t] - cols
+            if blueprint_cols_by_table.get(t) and blueprint_cols_by_table[t] - cols
         }
         if narrow_existing:
             for row in conn.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger'"):
@@ -334,14 +348,14 @@ def ensure_main_db_schema(db_path: str | None = None) -> list[str]:
         for stmt in _split_statements(BOOTSTRAP_SCRIPT):
             # 剥离前导注释行后再识别语句类型（_split_statements 会把注释并入下一条语句，
             # 直接 startswith 会在蓝本加注释行时静默漏判）
-            stmt_body = re.sub(r"^(?:\s*--[^\n]*\n)+", "", stmt)
+            stmt_body = _strip_leading_comments(stmt)
             # 触发器防带病创建：目标表在引导前已存在且缺蓝本列（历史窄表）→ 跳过，
             # 否则 SQLite 会照建不误、把写失败延迟到业务 INSERT 时才爆
             if stmt_body.upper().lstrip().startswith("CREATE TRIGGER"):
                 target = _trigger_target_table(stmt)
                 existing_cols = pre_existing_cols.get(target or "")
                 if existing_cols is not None:
-                    blueprint_cols = BLUEPRINT_TABLE_COLUMNS.get(target or "")
+                    blueprint_cols = blueprint_cols_by_table.get(target or "")
                     if blueprint_cols and blueprint_cols - existing_cols:
                         m = re.search(
                             r"TRIGGER\s+(?:IF\s+NOT\s+EXISTS\s+)?[\"']?(\w+)",

@@ -8,7 +8,7 @@ import {
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { API_BASE } from "@/lib/api"
-import { isEdgeMissing, parseEdgeErrorDetail } from "@/lib/platform-auth"
+import { parseEdgeErrorDetail } from "@/lib/platform-auth"
 import { useEdgeLaunchGuard } from "@/hooks/use-edge-launch-guard"
 
 export interface PlatformSessionItem {
@@ -117,8 +117,8 @@ export function PlatformSessionBar({
         toast.success(`已唤起 ${name} 专用浏览器，请完成扫码/登录`)
         if (refreshTimer.current) clearTimeout(refreshTimer.current)
         refreshTimer.current = setTimeout(fetchSessions, 2000)
-      } else if (!isEdgeMissing(result)) {
-        // Edge 未安装已在守卫里弹下载引导，不重复报错
+      } else if (!result.handled) {
+        // Edge 未安装已在守卫里弹下载引导（handled=true），不重复报错
         toast.error(`唤起失败: ${result.message}`)
       }
     } catch {

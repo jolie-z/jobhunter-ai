@@ -131,12 +131,14 @@ export async function fetchEdgeStatus(): Promise<EdgeInstallStatus> {
   return { installed: true, downloadUrl: FALLBACK_EDGE_DOWNLOAD_URL }
 }
 
-/** 唤起结果：code=edge_not_installed 时前端弹「下载 Edge」引导弹窗 */
+/** 唤起结果：handled=true 表示守卫已弹「下载 Edge」引导，调用方无需再 toast 报错 */
 export interface EdgeLaunchResult {
   ok: boolean
   message: string
   code?: string
   downloadUrl?: string
+  /** 结构化错误已被守卫消费（弹过下载引导） */
+  handled?: boolean
 }
 
 /**
@@ -158,7 +160,9 @@ export async function launchPlatformEdge(
   if (parsed) {
     return { ok: false, ...parsed }
   }
-  return { ok: false, message: data.message || data.detail || "未知错误" }
+  const fallbackMessage =
+    data.message || (typeof data.detail === "string" ? data.detail : "") || "未知错误"
+  return { ok: false, message: fallbackMessage }
 }
 
 /**
@@ -184,7 +188,9 @@ export function parseEdgeErrorDetail(
   }
 }
 
-/** 该唤起失败是否已被守卫处理（弹了下载引导），调用方无需再 toast 报错 */
+/** 该唤起失败是否已被守卫处理（弹了下载引导），调用方无需再 toast 报错。
+ * 优先用 guardLaunch 返回值上的 handled 字段（单一事实源），本函数保留给
+ * 未走守卫、直接调用 launchPlatformEdge 的场景。 */
 export function isEdgeMissing(result: EdgeLaunchResult): boolean {
   return result.code === EDGE_NOT_INSTALLED
 }

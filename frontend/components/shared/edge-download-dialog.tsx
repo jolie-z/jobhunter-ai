@@ -18,13 +18,15 @@ interface EdgeDownloadDialogProps {
   downloadUrl: string
 }
 
-// 纵深防御：下载链接虽来自自家后端，仍只放行 Microsoft 官方域名的 https 页面
-// （endsWith 必须带点前缀，否则 evil-microsoft.com 这类同名后缀可绕过）
+// 纵深防御：下载链接虽来自自家后端，仍只放行官方域名的 https 页面。
+// 允许域从兜底常量派生（单一真源）：后端改下载域时此处白名单随之更新，
+// 若新域与本域不符会安全回落到 FALLBACK（而非静默放行陌生域）
 function safeDownloadUrl(url: string): string {
+  const fallbackHost = new URL(FALLBACK_EDGE_DOWNLOAD_URL).hostname
   try {
     const u = new URL(url)
     const host = u.hostname
-    if (u.protocol === "https:" && (host === "microsoft.com" || host.endsWith(".microsoft.com"))) {
+    if (u.protocol === "https:" && (host === fallbackHost || host.endsWith(`.${fallbackHost}`))) {
       return url
     }
   } catch {

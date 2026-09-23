@@ -6,7 +6,6 @@ import { toast } from "sonner"
 import {
   fetchAuthStatus,
   fetchPlatformMeta,
-  isEdgeMissing,
   launchPlatformEdge,
   type AuthStatusMap,
   type PlatformMeta,
@@ -110,8 +109,8 @@ export function AuthMonitor({ onStatusChange }: AuthMonitorProps = {}) {
           setDialogPlatform(null)
         }
         checkStatus()
-      } else if (!isEdgeMissing(result)) {
-        // Edge 未安装已在守卫里弹下载引导，不重复报错
+      } else if (!result.handled) {
+        // Edge 未安装已在守卫里弹下载引导（handled=true），不重复报错
         toast.error(result.message)
       }
     } catch (error) {

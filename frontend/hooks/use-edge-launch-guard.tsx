@@ -38,11 +38,14 @@ export function useEdgeLaunchGuard() {
           message: EDGE_MISSING_MESSAGE,
           code: EDGE_NOT_INSTALLED,
           downloadUrl: status.downloadUrl,
+          handled: true,
         }
       }
       const result = await launch()
       if (!result.ok && result.code === EDGE_NOT_INSTALLED) {
         openMissing(result.downloadUrl)
+        // handled：本守卫已弹下载引导，调用方据此抑制重复 toast
+        return { ...result, handled: true }
       }
       return result
     },

@@ -17,9 +17,10 @@ from contextlib import closing
 from pathlib import Path
 
 from app.core.db_bootstrap import (
-    BLUEPRINT_TABLE_COLUMNS,
     BOOTSTRAP_SCRIPT,
+    _blueprint_table_columns,
     _split_statements,
+    _strip_leading_comments,
     ensure_main_db_schema,
     resolve_main_db_path,
 )
@@ -117,7 +118,7 @@ def test_narrow_table_trigger_backfills_after_column_added(tmp_path):
     # 窄表补齐缺失列后，下一次引导应自动补建触发器（守卫只挡「当前缺列」，不永久拉黑）
     db_path = str(tmp_path / "narrow_then_fixed.db")
     # 构造除 updated_at 外与蓝本同列的窄表
-    cols = sorted(BLUEPRINT_TABLE_COLUMNS["raw_jobs"] - {"updated_at"})
+    cols = sorted(_blueprint_table_columns()["raw_jobs"] - {"updated_at"})
     col_defs = ", ".join(f"{c} TEXT PRIMARY KEY" if c == "job_link" else f"{c} TEXT" for c in cols)
     with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(f"CREATE TABLE raw_jobs ({col_defs})")
@@ -190,19 +191,19 @@ def test_split_statements_tolerates_semicolon_in_comment():
 
 
 def test_bootstrap_script_statement_mix():
-    # 蓝本真实脚本必须整脚本切开且类型分布正确（12 表 + 8 索引 + 2 触发器）：
+    # 蓝本真实脚本必须整脚本切开且类型分布正确（表/索引/触发器）：
     # 比纯总数更有分辨力——新增一张表少配索引、触发器被切碎都会在此报红。
-    # 剥离开头注释行再锚定 CREATE：兼容蓝本日后在语句前加独立注释
+    # 表/触发器数从规格集合派生；索引数直接从蓝本正则计数——三处同源，无人肉清单。
     stmts = _split_statements(BOOTSTRAP_SCRIPT)
     kinds: dict[str, int] = {}
     for stmt in stmts:
-        body = re.sub(r"^(?:\s*--[^\n]*\n)+", "", stmt)
+        body = _strip_leading_comments(stmt)
         m = re.search(r"CREATE (?:UNIQUE )?(TABLE|INDEX|TRIGGER)", body, re.IGNORECASE)
         assert m, f"无法识别的语句类型: {stmt[:60]!r}"
         kinds[m.group(1).upper()] = kinds.get(m.group(1).upper(), 0) + 1
-    # 表/触发器数从规格集合派生；索引无独立规格清单，蓝本演进时人工同步此数
+    index_count = len(re.findall(r"CREATE\s+(?:UNIQUE\s+)?INDEX", BOOTSTRAP_SCRIPT, re.IGNORECASE))
     assert kinds == {
-        "TABLE": len(EXPECTED_TABLES), "INDEX": 8, "TRIGGER": len(EXPECTED_TRIGGERS)
+        "TABLE": len(EXPECTED_TABLES), "INDEX": index_count, "TRIGGER": len(EXPECTED_TRIGGERS)
     }
 
 

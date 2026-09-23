@@ -64,8 +64,11 @@ const GRADE_OPTIONS: GradeOption[] = [
 const DEFAULT_MASS_GRADES = ["C", "D", "F"]
 
 export function DeliveryGradeCard({ grades, onChangeGrades }: DeliveryGradeCardProps) {
-  // 存量配置可能残留已下线的等级（如 E）：入口归一化，避免变成不可见又不可取消的幽灵勾选
-  const validGrades = grades.filter((g) => GRADE_OPTIONS.some((o) => o.id === g))
+  // 存量配置可能残留已下线的等级（如 E）或重复项：入口归一化，
+  // 避免幽灵勾选与「长度>1 实际只有一种」的判定失真
+  const validGrades = Array.from(new Set(grades)).filter((g) =>
+    GRADE_OPTIONS.some((o) => o.id === g)
+  )
 
   // 清洗回写：首次拿到非空 grades 时执行一次（父级配置多为异步灌入，挂载时可能是 []，
   // 只看挂载会漏洗）。清洗后为空（存量配置全非法，如只剩 E）绝不可回写空集合——
