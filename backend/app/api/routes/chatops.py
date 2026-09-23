@@ -317,10 +317,10 @@ async def run_chatops_pusher(task_id: str, queue: asyncio.Queue):
     """推送飞书：复用 job_processor.step2_sync_feishu 的同步引擎（带防重复查重）。"""
     try:
         await queue.put('data: {"type": "info", "message": "📤 开始将清洗通过的岗位同步到飞书多维表格..."}\n\n')
-        from job_processor.step2_sync_feishu import sync_sqlite_to_feishu
+        from job_processor.step2_sync_feishu import sync_sqlite_to_feishu_async
         db_path = str(BASE_DIR / "data" / "job_hunter.db")
-        # 同步阻塞函数丢入线程池，避免卡死事件循环
-        await asyncio.to_thread(sync_sqlite_to_feishu, db_path, "raw_jobs", task_id)
+        # 同步阻塞函数丢入线程池，避免卡死事件循环（async 入口负责锚定主 loop 供线程内 SSE 回推）
+        await sync_sqlite_to_feishu_async(db_path, "raw_jobs", task_id)
         await queue.put('data: {"type": "success", "message": "✅ 飞书同步完毕！新岗位已推送到多维表格（自动查重）。"}\n\n')
     except Exception as e:
         await queue.put(f'data: {{"type": "error", "message": "🛑 飞书同步失败: {str(e)}"}}\n\n')

@@ -367,7 +367,7 @@ async def _run_unreject_and_evaluate(task_id: str, row_id: int | None = None, jo
         # 只锁定向推送这一小段；后续 AI 评估可能分钟级，不持锁，避免放行一个岗位锁死整个清洗面板。
         async with _global_clean_lock:
             # 锁内不可重置急刹 flag（否则会吞掉正在运行任务的终止信号）；同步推送期间尊重终止信号由 step2 内部 get_stop_flag 判定
-            synced_ids = await asyncio.to_thread(step2_sync_feishu.sync_sqlite_to_feishu, DB_PATH, "raw_jobs", task_id, 1, target_links=target_links)
+            synced_ids = await step2_sync_feishu.sync_sqlite_to_feishu_async(DB_PATH, "raw_jobs", task_id, 1, target_links=target_links)
 
         # 2. 精确获取该岗位的 feishu_record_id
         record_id = None
@@ -443,7 +443,7 @@ async def _run_global_pipeline(task_id: str, limit: int):
                 if task_id in task_queues:
                     await task_queues[task_id].put(f"data: {json.dumps(push_msg, ensure_ascii=False)}\n\n")
             else:
-                await asyncio.to_thread(step2_sync_feishu.sync_sqlite_to_feishu, DB_PATH, "raw_jobs", task_id, limit, target_links=passed_links)
+                await step2_sync_feishu.sync_sqlite_to_feishu_async(DB_PATH, "raw_jobs", task_id, limit, target_links=passed_links)
 
             print(f"✅ [Processor] 全平台漏斗式清洗完成, 任务ID: {task_id}")
         except Exception as e:
@@ -465,7 +465,7 @@ async def _run_sync_feishu_pipeline(task_id: str, limit: int):
             # 🌟 急刹 flag 顶层入口重置（step2 内部已禁止重置，此处为独立推送任务的唯一重置点）
             step1_rule_filter.set_stop_flag(False)
             print(f"🚀 [Processor] 开始执行存量岗位飞书独立推送, 任务ID: {task_id}, limit: {limit}")
-            await asyncio.to_thread(step2_sync_feishu.sync_sqlite_to_feishu, DB_PATH, "raw_jobs", task_id, limit)
+            await step2_sync_feishu.sync_sqlite_to_feishu_async(DB_PATH, "raw_jobs", task_id, limit)
             print(f"✅ [Processor] 存量岗位飞书推送完成, 任务ID: {task_id}")
         except Exception as e:
             print(f"❌ 飞书推送任务崩溃: {str(e)}")
@@ -526,7 +526,7 @@ async def _run_skip_ai_sync_pipeline(task_id: str, limit: int):
             print(f"🚀 [Processor] 开始免 AI 直推飞书, 任务ID: {task_id}, limit: {limit}")
             promoted_links = await step1_rule_filter._async_skip_ai_to_feishu(sse_task_id=task_id, limit=limit)
             if promoted_links:
-                await asyncio.to_thread(step2_sync_feishu.sync_sqlite_to_feishu, DB_PATH, "raw_jobs", task_id, limit, target_links=promoted_links)
+                await step2_sync_feishu.sync_sqlite_to_feishu_async(DB_PATH, "raw_jobs", task_id, limit, target_links=promoted_links)
             print(f"✅ [Processor] 免 AI 直推飞书完成, 任务ID: {task_id}")
         except Exception as e:
             print(f"❌ 免 AI 直推飞书崩溃: {str(e)}")

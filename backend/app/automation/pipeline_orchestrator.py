@@ -192,8 +192,7 @@ async def _execute_pipeline(
         # ===== 阶段 3: 飞书推送（只推送本轮采集的行）=====
         await pb.emit_stage(pipeline_task_id, "feishu_sync", "running")
         from job_processor import step2_sync_feishu
-        synced_ids = await asyncio.to_thread(
-            step2_sync_feishu.sync_sqlite_to_feishu,
+        synced_ids = await step2_sync_feishu.sync_sqlite_to_feishu_async(
             _get_raw_db_path(), "raw_jobs", pipeline_task_id, None, start_rowid
         )
         synced_ids = [rid for rid in (synced_ids or []) if isinstance(rid, str)]

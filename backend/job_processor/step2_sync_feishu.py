@@ -1,6 +1,7 @@
 import sys
 import os
 import asyncio
+import contextvars
 import sqlite3
 import requests
 import json
@@ -26,21 +27,25 @@ except ImportError:
 _UNKNOWN_ESCALATE_AFTER = 5
 
 # 🌟 主事件循环锚点：step2 是纯同步函数，被 asyncio.to_thread 拉到工作线程执行，
-# 线程内无 running loop，须借主 loop 的 call_soon_threadsafe 才能安全写 asyncio.Queue
-# （asyncio.Queue 非线程安全，直接 put_nowait 是依赖 GIL 的侥幸行为）。
-_main_loop = None
+# asyncio.Queue 非线程安全，工作线程必须经主 loop 的 call_soon_threadsafe 写入。
+# 锚定不用模块级全局变量（跨用例/跨任务易污染），改用 ContextVar：
+# sync_sqlite_to_feishu_async 在事件循环线程 set 当前 loop，asyncio.to_thread 内部
+# copy_context() 会把它透传给工作线程，线程内 get 即得宿主 loop，无全局状态。
+_ANCHORED_LOOP: "contextvars.ContextVar[asyncio.AbstractEventLoop | None]" = contextvars.ContextVar("step2_anchored_loop", default=None)
 
-def _get_main_loop():
-    global _main_loop
-    if _main_loop is None or _main_loop.is_closed():
-        try:
-            _main_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            _main_loop = asyncio.get_event_loop_policy().get_event_loop()
-    return _main_loop
+async def sync_sqlite_to_feishu_async(*args, **kwargs):
+    """sync_sqlite_to_feishu 的 async 入口：先把当前主 loop 锚进 ContextVar 再 to_thread。
+    所有从事件循环发起的飞书同步 MUST 走本入口——直接 to_thread 原函数的话，
+    工作线程内拿不到锚定 loop，SSE 进度消息会被丢弃（仅打印告警，不崩溃）。"""
+    token = _ANCHORED_LOOP.set(asyncio.get_running_loop())
+    try:
+        return await asyncio.to_thread(sync_sqlite_to_feishu, *args, **kwargs)
+    finally:
+        _ANCHORED_LOOP.reset(token)
 
 def _push_sse_threadsafe(task_id: str, msg: str):
-    """跨线程安全推送：主线程直接 put，工作线程经 call_soon_threadsafe 转交主 loop。"""
+    """跨线程安全推送：事件循环线程直写；工作线程经锚定 loop 的 call_soon_threadsafe 转交。
+    拿不到锚定 loop 时宁丢一条进度消息也不用非线程安全的跨线程直写（会碰坏 loop 内部状态）。"""
     if not task_id:
         return
     try:
@@ -49,12 +54,19 @@ def _push_sse_threadsafe(task_id: str, msg: str):
         if not q:
             return
         try:
-            asyncio.get_running_loop()
-            q.put_nowait(msg)  # 已在事件循环线程，直写安全
+            cur_loop = asyncio.get_running_loop()
         except RuntimeError:
-            _get_main_loop().call_soon_threadsafe(q.put_nowait, msg)
-    except Exception:
-        pass
+            cur_loop = None
+        anchored = _ANCHORED_LOOP.get()
+        if cur_loop is not None and (anchored is None or cur_loop is anchored):
+            q.put_nowait(msg)  # 就在 queue 宿主 loop 的线程上，直写安全
+            return
+        if anchored is not None and not anchored.is_closed():
+            anchored.call_soon_threadsafe(q.put_nowait, msg)
+            return
+        print(f"⚠️ [SSE] task={task_id} 无可用主事件循环，丢弃一条进度消息（入口须走 sync_sqlite_to_feishu_async）", flush=True)
+    except Exception as e:
+        print(f"⚠️ [SSE] task={task_id} 进度推送异常（不阻断主流程）: {type(e).__name__}: {e}", flush=True)
 
 def push_sse_message_sync(task_id: str, message: str, status="info"):
     if not task_id: return
@@ -197,6 +209,10 @@ def sync_sqlite_to_feishu(db_path, table_name="jobs", sse_task_id=None, limit=No
     从 SQLite 读取满足条件的数据，并推送到飞书（带防重复同步机制）
     min_rowid>0 时只推送本轮采集的行（全自动链路语义：旧存量不进自动链）
     target_links 存在时优先精准推送指定岗位；target_links 为空列表时直接返回
+
+    ⚠️ 纯同步函数，设计上只在 to_thread 工作线程内执行。从事件循环发起必须走
+    sync_sqlite_to_feishu_async（负责锚定主 loop 供线程内 SSE 回推），
+    直接裸 to_thread 本函数会导致 SSE 进度消息全部丢弃（仅告警不崩）。
 
     注意：本函数绝不重置全局急刹 flag（set_stop_flag(False)）——那是顶层任务入口
     （processor.py 各 _run_*_pipeline）的职责。底层子步骤若擅自重置，会吞掉用户在
