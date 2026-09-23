@@ -5,7 +5,7 @@ import { useState, useRef, useCallback } from "react"
 import { useResumeV2Store } from "@/hooks/use-resume-v2-store"
 import { toast } from "@/hooks/use-toast"
 import { ToastAction } from "@/components/ui/toast"
-import { formatMarkdownPangu } from "../utils/resume-search-utils"
+import { formatMarkdownPangu, normalizeBulletLines } from "../utils/resume-search-utils"
 import type { ResumeDataV2 } from "@/types/resume"
 
 interface FormatTask {
@@ -74,7 +74,8 @@ export function useGlobalFormat() {
             : isString
             ? rawDesc.split("\n")
             : []
-          const formattedLines = lines.map((line: string) => formatMarkdownPangu(line))
+          // 盘古空格 → bullet 规范化：经历描述逐行补齐 '- ' 前缀（已在全局排版 fix 排版丑观感）
+          const formattedLines = normalizeBulletLines(lines.map((line: string) => formatMarkdownPangu(line)).join("\n")).split("\n")
           l1WorkList.push({ isString, lines: formattedLines })
           updateWorkExperience(i, {
             description: (isString ? formattedLines.join("\n") : formattedLines) as any,
@@ -92,7 +93,7 @@ export function useGlobalFormat() {
             : isString
             ? rawDesc.split("\n")
             : []
-          const formattedLines = lines.map((line: string) => formatMarkdownPangu(line))
+          const formattedLines = normalizeBulletLines(lines.map((line: string) => formatMarkdownPangu(line)).join("\n")).split("\n")
           l1ProjectList.push({ isString, lines: formattedLines })
           updateProject(i, {
             description: (isString ? formattedLines.join("\n") : formattedLines) as any,

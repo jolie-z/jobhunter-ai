@@ -37,6 +37,35 @@ export function formatMarkdownPangu(content: string): string {
   return lines.join("\n")
 }
 
+/**
+ * 经历描述 bullet 规范化（L1 本地排版第二步）：
+ * 经历/项目描述的行大多是纯文本（无列表前缀），markdown 渲染不出圆点，
+ * 是"排版丑"观感的主因之一。此处把已经"一句一行"的描述行统一补上 '- ' 前缀，
+ * 渲染层（编辑器 ReactMarkdown 与打印模板 CSS）即出现标准 bullet point。
+ *
+ * 保守规则（只补不删、不动结构）：
+ * - 空行保留（加粗小标题上下空行的既定排版约定不受影响）；
+ * - 已是列表项（- / * / 1.）、加粗小标题（**x** 或 "标题：" 独行）、引用、代码、表格行不动；
+ * - 连续纯文本行视为要点逐行补齐，避免半列表半纯文本的参差观感。
+ */
+export function normalizeBulletLines(content: string): string {
+  if (!content) return ""
+  return content
+    .split("\n")
+    .map(line => {
+      const trimmed = line.trim()
+      if (trimmed === "") return line // 空行原样
+      // 加粗小标题独行必须先于星号列表判定（** 开头会被 [\-*+] 分支误吞）；
+      // 仅加粗标记包裹整行（后跟冒号/空格/结尾）才算小标题，加粗起头接正文的行要补符
+      if (/^\*\*.+\*\*(:|：)?\s*$/.test(trimmed)) return line
+      if (/^(\s*[-+]|\s*\*(?!\*)|\s*\d+[.、)]|\s*>|\s*```|\s*\||\s*#+\s)/.test(line)) return line // 列表(-/*/1.)/引用/代码/表格/markdown 标题
+      // 短"标题："行（如 技术栈：…）：仅当冒号前无加粗标记时豁免——加粗起头的是正文要点行，要补符
+      if (!/^\*\*/.test(trimmed) && /^[^：:]{2,12}[：:]\s*\S/.test(trimmed) && trimmed.length <= 60) return line
+      return `- ${trimmed}`
+    })
+    .join("\n")
+}
+
 export interface MatchLocation {
   matchIndex: number
   path: string

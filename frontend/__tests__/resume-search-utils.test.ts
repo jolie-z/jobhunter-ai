@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import {
   formatMarkdownPangu,
+  normalizeBulletLines,
   searchResumeMatches,
   replaceResumeText,
 } from "../components/dashboard/features/v2-resume-editor/utils/resume-search-utils"
@@ -76,6 +77,43 @@ describe("resume-search-utils", () => {
       const raw = "- 负责技术选型——微服务化架构。\n- 优化数据库索引；"
       const formatted = formatMarkdownPangu(raw)
       expect(formatted).toBe("- 负责技术选型 — 微服务化架构\n- 优化数据库索引")
+    })
+  })
+
+  describe("normalizeBulletLines", () => {
+    it("should prefix plain description lines with '- '", () => {
+      const raw = "负责核心微服务架构搭建\n带领 3 人小组完成交付"
+      expect(normalizeBulletLines(raw)).toBe(
+        "- 负责核心微服务架构搭建\n- 带领 3 人小组完成交付"
+      )
+    })
+
+    it("should keep existing list items, bold subtitles and blank lines untouched", () => {
+      const raw = "**技术团队负责人**\n\n- 原有要点\n纯文本要点\n\n1. 已有序号"
+      expect(normalizeBulletLines(raw)).toBe(
+        "**技术团队负责人**\n\n- 原有要点\n- 纯文本要点\n\n1. 已有序号"
+      )
+    })
+
+    it("should not prefix short '标题：' lines like tech stack", () => {
+      const raw = "核心技术栈：Python、RPA、LLM API\n负责 RPA 流程自动化开发"
+      expect(normalizeBulletLines(raw)).toBe(
+        "核心技术栈：Python、RPA、LLM API\n- 负责 RPA 流程自动化开发"
+      )
+    })
+
+    it("should still prefix body lines that merely start with bold text", () => {
+      // 加粗起头但后面跟正文的长行不是小标题，必须补符（R1 P1 正则锚点回归）；
+      // 加粗后跟空格再接正文的形态同样要补符（R2 P1：\s 提前命中回归）
+      const raw = "**主要职责**：负责微服务拆分与性能优化，支撑日均千万级请求\n**技术要点** 采用新架构\n- 已有要点"
+      expect(normalizeBulletLines(raw)).toBe(
+        "- **主要职责**：负责微服务拆分与性能优化，支撑日均千万级请求\n- **技术要点** 采用新架构\n- 已有要点"
+      )
+    })
+
+    it("should not prefix markdown heading lines", () => {
+      const raw = "## 子标题\n正文要点"
+      expect(normalizeBulletLines(raw)).toBe("## 子标题\n- 正文要点")
     })
   })
 
