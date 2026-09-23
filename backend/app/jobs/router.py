@@ -7,6 +7,7 @@ from app.jobs import action_service, service
 from app.jobs.schemas import (
     AIPolishRequest,
     BatchDeleteRequest,
+    CheckAiArtifactsRequest,
     JobImportConfirmRequest,
     JobImportImageRequest,
     JobImportParseRequest,
@@ -82,6 +83,50 @@ async def get_job_detail(job_id: str):
     except Exception as e:
         _log.error(f"❌ [get_job_detail] 获取岗位详情失败: job_id={job_id}, err={e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取岗位详情失败: {str(e)}")
+
+@router.post("/api/jobs/check-ai-artifacts")
+async def check_ai_artifacts(payload: CheckAiArtifactsRequest):
+    """批量检测岗位是否已存在 AI 产物（深度评估/简历改写/打招呼语）。
+
+    主页列表接口裁掉了大文本字段（record_normalizer.DETAIL_ONLY_FIELDS），
+    前端列表数据判断不了这三类产物，批量派发前按记录回源飞书补查，
+    供前端「重复发起二次确认」门禁使用（AI初评看综合评级，列表自带，不在此查）。
+    门禁属省 Token 的软确认：单条记录读取失败按无产物返回（全 False），不阻断派发。"""
+    import asyncio
+    import logging
+
+    from app.core.feishu_utils import extract_feishu_text
+    from app.services import feishu_service
+
+    logger = logging.getLogger(__name__)
+
+    # 与 executor._handle_deep_evaluate 回写的六字段同口径
+    DEEP_EVAL_FIELDS = (
+        "理想画像与能力信号", "核心能力词典", "简历逐行审计",
+        "高杠杆匹配点", "致命硬伤与毒点", "破局行动计划",
+    )
+    sem = asyncio.Semaphore(8)  # 礼貌限并发，避免大批量选中时打爆飞书 QPS
+
+    async def _check(raw_id: str) -> tuple[str, dict[str, bool]]:
+        rid = feishu_service.extract_record_id(raw_id)
+        _MISSING = {"has_deep_eval": False, "has_rewrite": False, "has_greeting": False}
+        try:
+            async with sem:
+                rec = await asyncio.to_thread(
+                    feishu_service.get_job_record_from_feishu, rid, feishu_service.TABLE_ID
+                )
+            fields = (rec or {}).get("fields", {})
+            return rid, {
+                "has_deep_eval": any(extract_feishu_text(fields.get(f, "")).strip() for f in DEEP_EVAL_FIELDS),
+                "has_rewrite": bool(extract_feishu_text(fields.get("AI改写JSON", "")).strip()),
+                "has_greeting": bool(extract_feishu_text(fields.get("打招呼语", "")).strip()),
+            }
+        except Exception as e:  # fail-open 契约自持：单条异常不拖垮整批（当前 get_job_record_from_feishu 自吞异常，此处防其未来变化）
+            logger.warning(f"⚠️ [check-ai-artifacts] 记录 {rid} 读取异常，按无产物处理: {e}")
+            return rid, dict(_MISSING)
+
+    pairs = await asyncio.gather(*(_check(rid) for rid in payload.record_ids))
+    return {"status": "success", "data": dict(pairs)}
 
 @router.post("/api/jobs/import/parse")
 @router.post("/import/parse")

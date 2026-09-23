@@ -220,3 +220,168 @@ describe("useBatchActions 质检修复回归", () => {
     expect(onRefreshJobs).toHaveBeenCalledWith(true, true) // 失败后静默硬刷新回滚
   })
 })
+
+describe("重复发起 AI 任务二次确认门禁", () => {
+  beforeEach(() => {
+    vi.spyOn(window, "confirm").mockReturnValue(true)
+    vi.spyOn(window, "alert").mockImplementation(() => {})
+  })
+
+  it("初评命中已有评级岗位：挂起派发弹门禁，确认后继续原批量", async () => {
+    const fetchMock = okFetch({ task_id: "t1" })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { hook } = renderBatchActions({
+      jobs: baseJobs,
+      selectedJobIds: ["BOSS直聘-rec2"], // grade="A"，已有初评产物
+    })
+
+    await act(async () => {
+      await hook.result.current.handleBatchEvaluate()
+    })
+
+    // 未派发，门禁弹窗打开且命中岗位正确
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(hook.result.current.rerunGateOpen).toBe(true)
+    expect(hook.result.current.rerunGateKind).toBe("evaluate")
+    expect(hook.result.current.rerunGateJobs.map((j: JobData) => j.id)).toEqual(["BOSS直聘-rec2"])
+
+    // 取消 → 不派发，选中集保留
+    act(() => {
+      hook.result.current.cancelRerunDispatch()
+    })
+    expect(hook.result.current.rerunGateOpen).toBe(false)
+
+    // 再次发起 → 确认 → 继续原批量派发
+    await act(async () => {
+      await hook.result.current.handleBatchEvaluate()
+    })
+    act(() => {
+      hook.result.current.confirmRerunDispatch()
+    })
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) => String(url).includes("batch-process"))
+      expect(call).toBeTruthy()
+    })
+    const payload = JSON.parse(fetchMock.mock.calls.find(([url]) => String(url).includes("batch-process"))![1].body)
+    expect(payload.task_type).toBe("evaluate")
+    expect(payload.job_ids).toEqual(["BOSS直聘-rec2"])
+  })
+
+  it("深评字段属列表裁剪大文本：回源 check-ai-artifacts 补查命中则弹门禁", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes("check-ai-artifacts")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ status: "success", data: { rec2: { has_deep_eval: true, has_rewrite: false, has_greeting: false } } }),
+        })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ task_id: "t9" }) })
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { hook } = renderBatchActions({
+      jobs: baseJobs,
+      selectedJobIds: ["BOSS直聘-rec2"], // 已过初评（grade=A），列表数据无深评字段
+    })
+
+    await act(async () => {
+      await hook.result.current.handleBatchDeepEvaluate()
+    })
+
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("check-ai-artifacts"))).toBe(true)
+    expect(hook.result.current.rerunGateOpen).toBe(true)
+    expect(hook.result.current.rerunGateKind).toBe("deep_evaluate")
+    // 确认前不派发 batch-process
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("batch-process"))).toBe(false)
+
+    act(() => {
+      hook.result.current.confirmRerunDispatch()
+    })
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) => String(url).includes("batch-process"))
+      expect(call).toBeTruthy()
+    })
+  })
+
+  it("深评补查无产物：不弹门禁直接派发", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes("check-ai-artifacts")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ status: "success", data: { rec2: { has_deep_eval: false, has_rewrite: false, has_greeting: false } } }),
+        })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ task_id: "t10" }) })
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { hook } = renderBatchActions({
+      jobs: baseJobs,
+      selectedJobIds: ["BOSS直聘-rec2"],
+    })
+
+    await act(async () => {
+      await hook.result.current.handleBatchDeepEvaluate()
+    })
+
+    expect(hook.result.current.rerunGateOpen).toBe(false)
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) => String(url).includes("batch-process"))
+      expect(call).toBeTruthy()
+    })
+  })
+
+  it("补查端点失败（软门禁）：退化为本地判断直接派发", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes("check-ai-artifacts")) {
+        return Promise.resolve({ ok: false, json: () => Promise.resolve({ detail: "boom" }) })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ task_id: "t11" }) })
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { hook } = renderBatchActions({
+      jobs: baseJobs,
+      selectedJobIds: ["BOSS直聘-rec2"], // 已过初评，改写门禁（B4/B6）放行
+    })
+
+    await act(async () => {
+      await hook.result.current.handleBatchRewrite()
+    })
+
+    expect(hook.result.current.rerunGateOpen).toBe(false)
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) => String(url).includes("batch-process"))
+      expect(call).toBeTruthy()
+    })
+    const payload = JSON.parse(fetchMock.mock.calls.find(([url]) => String(url).includes("batch-process"))![1].body)
+    expect(payload.task_type).toBe("rewrite")
+  })
+
+  it("海投/批准投递不经过重复产物门禁", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes("/api/automation/config")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { mass_apply_greeting: "您好" } }) })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ task_id: "t12" }) })
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { hook } = renderBatchActions({
+      jobs: baseJobs,
+      selectedJobIds: ["BOSS直聘-rec2"], // 已有初评产物，但海投不应触发门禁
+    })
+
+    await act(async () => {
+      await hook.result.current.handleBatchMassApply()
+    })
+
+    expect(hook.result.current.rerunGateOpen).toBe(false)
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("check-ai-artifacts"))).toBe(false)
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) => String(url).includes("batch-process"))
+      expect(call).toBeTruthy()
+    })
+  })
+})

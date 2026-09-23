@@ -141,6 +141,9 @@ class UpdateGreetingRequest(BaseModel):
 class BatchDeleteRequest(BaseModel):
     job_ids: list[str]
 
+class CheckAiArtifactsRequest(BaseModel):
+    record_ids: list[str] = Field(min_length=1, description="岗位记录 ID 列表（兼容「平台-recXXX」复合 ID）")
+
 class QAEvaluateRequest(BaseModel):
     job_id: str
     job_description: str

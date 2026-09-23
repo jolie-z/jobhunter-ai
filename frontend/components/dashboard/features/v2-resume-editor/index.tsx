@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Sparkles, Target, XCircle } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
@@ -20,6 +20,8 @@ import { WizardStatusPanel } from "./components/wizard-status-panel"
 import { runSkillRewrite, startAsyncSkillRewrite } from "@/hooks/use-skill-rewrite"
 import { useResumeV2Store } from "@/hooks/use-resume-v2-store"
 import { toast } from "@/hooks/use-toast"
+import { hasAiArtifact } from "@/lib/ai-artifacts"
+import { AiRerunConfirmModal } from "@/components/dashboard/ai-rerun-confirm-modal"
 
 export interface V2ResumeEditorProps {
   job?: JobData | null
@@ -65,6 +67,9 @@ export function V2ResumeEditor({
   const [isDiagnosing, setIsDiagnosing] = useState(false)
   const [diagnosisSuggestions, setDiagnosisSuggestions] = useState<any[]>([])
   const [isQAEvaluating, setIsQAEvaluating] = useState(false)
+  // 🌟 重复改写二次确认：该岗位已有「AI改写JSON」产物时，再次改写会覆盖并消耗 Token
+  const [rerunGateOpen, setRerunGateOpen] = useState(false)
+  const rerunSkillRef = useRef<string | undefined>(undefined)
 
   const handleQAEvaluate = async () => {
     if (!job?.id) {
@@ -130,9 +135,14 @@ export function V2ResumeEditor({
     } catch (err: any) { alert("诊断异常: " + err.message) } finally { setIsDiagnosing(false) }
   }
 
-  const handleSkillRewriteAndSave = async (overrideSkillId?: string) => {
+  const handleSkillRewriteAndSave = async (overrideSkillId?: string, force = false) => {
     if (!job?.id) {
       alert("请先选择一个岗位！")
+      return
+    }
+    if (!force && hasAiArtifact(job, "rewrite")) {
+      rerunSkillRef.current = overrideSkillId
+      setRerunGateOpen(true)
       return
     }
     const skillToUse = overrideSkillId || selectedSkill || undefined
@@ -181,6 +191,14 @@ export function V2ResumeEditor({
     } finally {
       setIsTestingSkill(false)
     }
+  }
+
+  // 🌟 弹窗确认重复改写：带原 skill 参数 force 继续
+  const confirmRerunRewrite = () => {
+    const skillId = rerunSkillRef.current
+    rerunSkillRef.current = undefined
+    setRerunGateOpen(false)
+    void handleSkillRewriteAndSave(skillId, true)
   }
 
   const handleLiveModalComplete = (data: { parsed_json: any; markdown: string; usage: any }) => {
@@ -398,6 +416,18 @@ export function V2ResumeEditor({
         onOpenStudio={() => {
           setLiveModalOpen(false)
           setArtifactsOpen(true)
+        }}
+      />
+
+      {/* 重复发起简历改写二次确认弹窗（该岗位已有 AI改写JSON 产物时） */}
+      <AiRerunConfirmModal
+        open={rerunGateOpen}
+        kind="rewrite"
+        existingJobs={job ? [job] : []}
+        onConfirm={confirmRerunRewrite}
+        onCancel={() => {
+          rerunSkillRef.current = undefined
+          setRerunGateOpen(false)
         }}
       />
     </div>

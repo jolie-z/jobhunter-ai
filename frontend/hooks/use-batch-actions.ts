@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import type { JobData } from "@/types/job"
 import { normalizePlatform } from "@/lib/job-data"
+import { hasAiArtifact, type AiArtifactKind } from "@/lib/ai-artifacts"
 import { API_BASE } from "@/lib/api"
 
 // 🌟 前端岗位 id 形如 "BOSS直聘-recXXX"（平台中文前缀 + 飞书记录 id），提取纯 record_id。
@@ -26,6 +27,13 @@ const isRiskyMassApplyStatus = (status: string) =>
   RISKY_MASS_APPLY_STATUSES.includes(status) ||
   status.includes("面试") ||
   status.toLowerCase().includes("offer")
+
+// 🌟 消耗 Token 的 AI 任务 → 对应产物类型（命中"已存在产物"时需二次确认）
+const AI_RERUN_TASK_KINDS: Record<"evaluate" | "deep_evaluate" | "rewrite", AiArtifactKind> = {
+  evaluate: "evaluate",
+  deep_evaluate: "deep_evaluate",
+  rewrite: "rewrite",
+}
 
 export interface UseBatchActionsOptions {
   jobs: JobData[]
@@ -80,6 +88,18 @@ export function useBatchActions({
     Array<{ job: JobData; missing: string[] }>
   >([])
 
+  // 🌟 重复发起 AI 任务二次确认弹窗状态（检测到已存在产物时挂起派发，确认后继续）
+  const [rerunGateOpen, setRerunGateOpen] = useState(false)
+  const [rerunGateKind, setRerunGateKind] = useState<AiArtifactKind | null>(null)
+  const [rerunGateJobs, setRerunGateJobs] = useState<JobData[]>([])
+  const [rerunGateTotal, setRerunGateTotal] = useState(0)
+  const pendingRerunRef = useRef<{
+    taskType: "evaluate" | "deep_evaluate" | "rewrite"
+    title: string
+    extraBody: Record<string, unknown>
+    jobIds: string[]
+  } | null>(null)
+
   // 🚀 只检查【当前选中的岗位】是否在运行（排除已中断状态），避免误锁死
   const isAnySelectedRunning = selectedJobIds.some(
     (id) => processingJobs[id] && processingJobs[id] !== "interrupted"
@@ -108,16 +128,51 @@ export function useBatchActions({
     [jobs]
   )
 
+  // 🌟 解析「已存在 AI 产物」的岗位：初评看列表自带的综合评级；深评/改写/打招呼语字段属
+  // 列表接口裁掉的详情大文本，需回源后端 check-ai-artifacts 按记录补查。
+  // 补查失败按无产物放行（软门禁，只省 Token 不阻断派发）。
+  const resolveRerunHits = useCallback(
+    async (targetJobIds: string[], kind: AiArtifactKind): Promise<JobData[]> => {
+      const selectedJobs = jobs.filter((j) => targetJobIds.includes(j.id))
+      const localHits = selectedJobs.filter((j) => hasAiArtifact(j, kind))
+      if (kind === "evaluate" || localHits.length >= selectedJobs.length) return localHits
+      try {
+        const res = await fetch(`${API_BASE}/api/jobs/check-ai-artifacts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ record_ids: targetJobIds }),
+        })
+        if (!res.ok) return localHits
+        const json = await res.json()
+        const flags = (json?.data || {}) as Record<
+          string,
+          { has_deep_eval?: boolean; has_rewrite?: boolean; has_greeting?: boolean }
+        >
+        return selectedJobs.filter((j) => {
+          if (hasAiArtifact(j, kind)) return true
+          const f = flags[toRecordId(j.id)]
+          if (!f) return false
+          if (kind === "deep_evaluate") return !!f.has_deep_eval
+          if (kind === "rewrite") return !!f.has_rewrite
+          return !!f.has_greeting
+        })
+      } catch (e) {
+        console.warn("AI 产物检测失败，跳过重复发起确认:", e)
+        return localHits
+      }
+    },
+    [jobs]
+  )
+
   // 🌟 统一的批量任务派发核心（无入口守卫，供内部流程复用）：
   // POST batch-process → 抛出 START_GLOBAL_TASK 事件
-  const runBatchDispatch = useCallback(
+  const proceedBatchDispatch = useCallback(
     async (
       taskType: "evaluate" | "deep_evaluate" | "rewrite" | "deliver" | "mass_apply" | "approve",
       title: string,
       extraBody: Record<string, unknown> = {},
-      overrideJobIds?: string[]
+      targetJobIds: string[]
     ) => {
-      const targetJobIds = sanitizeJobIds(overrideJobIds ?? selectedJobIds)
       if (targetJobIds.length === 0) return
 
       // B4/B6 门禁：深度评估与简历改写必须先跑过初步评估（有 A-F 评级）
@@ -179,8 +234,65 @@ export function useBatchActions({
         setProcessing(false)
       }
     },
-    [jobs, sanitizeJobIds, selectedJobIds, setProcessing, setSelectedJobIds]
+    [jobs, setProcessing, setSelectedJobIds]
   )
+
+  // 🌟 批量任务派发入口：AI 初评/深评/改写先过「已存在产物」二次确认门禁
+  const runBatchDispatch = useCallback(
+    async (
+      taskType: "evaluate" | "deep_evaluate" | "rewrite" | "deliver" | "mass_apply" | "approve",
+      title: string,
+      extraBody: Record<string, unknown> = {},
+      overrideJobIds?: string[]
+    ) => {
+      const targetJobIds = sanitizeJobIds(overrideJobIds ?? selectedJobIds)
+      if (targetJobIds.length === 0) return
+
+      const rerunTaskType =
+        taskType === "evaluate" || taskType === "deep_evaluate" || taskType === "rewrite"
+          ? taskType
+          : null
+      if (rerunTaskType) {
+        // 🌟 先同步置位 processing（B-10 同款 ref 守卫）：resolveRerunHits 含 await，
+        // 不先置位的话派发前的补查窗口内双击会绕过 dispatchBatchTask 的同步守卫重复派发；
+        // 弹窗打开后由 Dialog 遮罩挡交互 + confirmRerunDispatch 内再查 ref 兜底
+        setProcessing(true)
+        try {
+          const hitJobs = await resolveRerunHits(targetJobIds, AI_RERUN_TASK_KINDS[rerunTaskType])
+          if (hitJobs.length > 0) {
+            // 挂起本次派发，弹窗确认后由 confirmRerunDispatch 继续
+            pendingRerunRef.current = { taskType: rerunTaskType, title, extraBody, jobIds: targetJobIds }
+            setRerunGateKind(AI_RERUN_TASK_KINDS[rerunTaskType])
+            setRerunGateJobs(hitJobs)
+            setRerunGateTotal(targetJobIds.length)
+            setRerunGateOpen(true)
+            return
+          }
+        } finally {
+          // 无命中 → 交给 proceedBatchDispatch 重新置位；有命中 → 弹窗期不锁浮条
+          setProcessing(false)
+        }
+      }
+
+      await proceedBatchDispatch(taskType, title, extraBody, targetJobIds)
+    },
+    [proceedBatchDispatch, resolveRerunHits, sanitizeJobIds, selectedJobIds, setProcessing]
+  )
+
+  // 🌟 确认重复发起：关闭弹窗，继续先前挂起的派发流程
+  const confirmRerunDispatch = useCallback(() => {
+    const pending = pendingRerunRef.current
+    pendingRerunRef.current = null
+    setRerunGateOpen(false)
+    if (!pending || isProcessingRef.current) return
+    void proceedBatchDispatch(pending.taskType, pending.title, pending.extraBody, pending.jobIds)
+  }, [proceedBatchDispatch])
+
+  // 🌟 取消重复发起：丢弃挂起的派发，保留当前选中集
+  const cancelRerunDispatch = useCallback(() => {
+    pendingRerunRef.current = null
+    setRerunGateOpen(false)
+  }, [])
 
   // 🌟 B-10：对外入口带同步守卫，防止确认弹窗期间/渲染间隙双击重复派发
   const dispatchBatchTask = useCallback(
@@ -499,6 +611,12 @@ export function useBatchActions({
     approveModalReadyJobs,
     approveModalNotReadyJobs,
     confirmBatchApproveStream,
+    rerunGateOpen,
+    rerunGateKind,
+    rerunGateJobs,
+    rerunGateTotal,
+    confirmRerunDispatch,
+    cancelRerunDispatch,
     dispatchResumeTask,
     handleBatchDelete,
     handleFloatAction,

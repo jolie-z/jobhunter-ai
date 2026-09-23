@@ -8,6 +8,8 @@ import { Sparkles, Save, Copy, Brain, Loader2, Zap, Hand, RefreshCw, Check } fro
 import { parseAiRewriteAnnotations } from "@/lib/utils/resume-parser"
 import { toast } from "@/hooks/use-toast"
 import { mapApiItemToJob } from "@/lib/job-mapper"
+import { hasAiArtifact, type AiArtifactKind } from "@/lib/ai-artifacts"
+import { AiRerunConfirmModal } from "@/components/dashboard/ai-rerun-confirm-modal"
 import { AiGradeDashboard } from "./ai-grade-dashboard"
 import { EvaluationDimensionsCard } from "./evaluation-dimensions-card"
 import { ResumeAuditCard } from "./resume-audit-card"
@@ -34,6 +36,8 @@ export function AICopilotColumn({
   const [isSavingGreeting, setIsSavingGreeting] = useState(false)
   const [isEvaluating, setIsEvaluating] = useState(false)
   const [isDeepEvaluating, setIsDeepEvaluating] = useState(false)
+  // 🌟 重复发起二次确认：检测到该岗位已存在对应产物时记录动作类型，弹窗确认后继续
+  const [rerunGateKind, setRerunGateKind] = useState<AiArtifactKind | null>(null)
   const skillsText = useMemo(() => job?.skillReq || "暂无数据", [job?.skillReq])
   const rewriteAnnotations = useMemo(
     () => parseAiRewriteAnnotations(job?.aiRewriteJson || ""),
@@ -259,7 +263,11 @@ export function AICopilotColumn({
     }
   }
 
-  const handleTriggerEvaluation = async () => {
+  const handleTriggerEvaluation = async (force = false) => {
+    if (!force && hasAiArtifact(job, "evaluate")) {
+      setRerunGateKind("evaluate")
+      return
+    }
     try {
       setIsEvaluating(true)
       const response = await fetch(`${API_BASE}/api/tasks/batch-process`, {
@@ -291,7 +299,11 @@ export function AICopilotColumn({
     }
   }
 
-  const handleTriggerDeepEvaluation = async () => {
+  const handleTriggerDeepEvaluation = async (force = false) => {
+    if (!force && hasAiArtifact(job, "deep_evaluate")) {
+      setRerunGateKind("deep_evaluate")
+      return
+    }
     try {
       setIsDeepEvaluating(true)
       const response = await fetch(`${API_BASE}/api/tasks/batch-process`, {
@@ -324,7 +336,12 @@ export function AICopilotColumn({
   }
 
   const [isGeneratingGreeting, setIsGeneratingGreeting] = useState(false)
-  const handleGenerateGreeting = async () => {
+  const handleGenerateGreeting = async (force = false) => {
+    if (!job?.id) return
+    if (!force && hasAiArtifact(job, "greeting")) {
+      setRerunGateKind("greeting")
+      return
+    }
     setIsGeneratingGreeting(true)
     try {
       const response = await fetch(`${API_BASE}/api/strategy/generate_greeting_and_save`, {
@@ -371,6 +388,15 @@ export function AICopilotColumn({
     } finally {
       setIsGeneratingGreeting(false)
     }
+  }
+
+  // 🌟 弹窗确认重复发起：按记录的动作类型带 force 继续原流程
+  const confirmRerun = () => {
+    const kind = rerunGateKind
+    setRerunGateKind(null)
+    if (kind === "evaluate") void handleTriggerEvaluation(true)
+    else if (kind === "deep_evaluate") void handleTriggerDeepEvaluation(true)
+    else if (kind === "greeting") void handleGenerateGreeting(true)
   }
 
   const [isRefreshing, setIsRefreshing] = useState(false)
@@ -431,7 +457,7 @@ export function AICopilotColumn({
                   variant="ghost"
                   size="icon"
                   className="h-6 w-6 text-violet-500 hover:bg-violet-100/50 hover:text-violet-700 disabled:opacity-50"
-                  onClick={handleTriggerEvaluation}
+                  onClick={() => handleTriggerEvaluation()}
                   disabled={isEvaluating || !job.id}
                 >
                   {isEvaluating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Brain className="h-3.5 w-3.5" />}
@@ -448,7 +474,7 @@ export function AICopilotColumn({
                   variant="ghost"
                   size="icon"
                   className="h-6 w-6 text-indigo-500 hover:bg-indigo-100/50 hover:text-indigo-700 disabled:opacity-50"
-                  onClick={handleTriggerDeepEvaluation}
+                  onClick={() => handleTriggerDeepEvaluation()}
                   disabled={isDeepEvaluating || !job.id}
                 >
                   {isDeepEvaluating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
@@ -465,8 +491,8 @@ export function AICopilotColumn({
                   variant="ghost"
                   size="icon"
                   className="h-6 w-6 text-violet-500 hover:bg-violet-100/50 hover:text-violet-700 disabled:opacity-50"
-                  onClick={handleGenerateGreeting}
-                  disabled={isGeneratingGreeting}
+                  onClick={() => handleGenerateGreeting()}
+                  disabled={isGeneratingGreeting || !job.id}
                 >
                   {isGeneratingGreeting ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -927,6 +953,15 @@ export function AICopilotColumn({
           </AccordionItem>
         </Accordion>
       </div>
+
+      {/* 重复发起 AI 任务（初评/深评/打招呼语）二次确认弹窗 */}
+      <AiRerunConfirmModal
+        open={rerunGateKind !== null}
+        kind={rerunGateKind}
+        existingJobs={job ? [job] : []}
+        onConfirm={confirmRerun}
+        onCancel={() => setRerunGateKind(null)}
+      />
     </div>
   )
 }

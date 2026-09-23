@@ -17,6 +17,7 @@ import { useJobFilterStore, PAGE_SIZE_OPTIONS } from "@/store/job-filter-store"
 import { MissingMaterialsModal } from "@/components/dashboard/missing-materials-modal"
 import { GreetingConfigGateModal } from "@/components/dashboard/greeting-config-gate-modal"
 import { BatchApproveGateModal } from "@/components/dashboard/batch-approve-gate-modal"
+import { AiRerunConfirmModal } from "@/components/dashboard/ai-rerun-confirm-modal"
 import { useBatchActions } from "@/hooks/use-batch-actions"
 
 /* 对外 Props 契约 */
@@ -115,6 +116,12 @@ export function JobListView({
     approveModalReadyJobs,
     approveModalNotReadyJobs,
     confirmBatchApproveStream,
+    rerunGateOpen,
+    rerunGateKind,
+    rerunGateJobs,
+    rerunGateTotal,
+    confirmRerunDispatch,
+    cancelRerunDispatch,
     handleRefresh,
     dispatchBatchTask,
     handleApproveSingleJob,
@@ -496,6 +503,16 @@ export function JobListView({
         readyJobs={approveModalReadyJobs}
         notReadyJobs={approveModalNotReadyJobs}
         onConfirmApprove={confirmBatchApproveStream}
+      />
+
+      {/* 重复发起 AI 任务（初评/深评/改写）二次确认弹窗 */}
+      <AiRerunConfirmModal
+        open={rerunGateOpen}
+        kind={rerunGateKind}
+        existingJobs={rerunGateJobs}
+        totalCount={rerunGateTotal}
+        onConfirm={confirmRerunDispatch}
+        onCancel={cancelRerunDispatch}
       />
     </div>
   )
