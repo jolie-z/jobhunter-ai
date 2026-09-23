@@ -1,18 +1,18 @@
 // 文件路径: frontend/components/strategy-lab/global-nav.tsx
 "use client"
 
-import { Settings2, FileText, Filter, Heart, Home, MessageSquare, Rocket } from "lucide-react"
+import { Settings2, FileText, Home, MessageSquare, Rocket } from "lucide-react"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
 import type { SectionId } from "@/hooks/use-strategy-store"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { useSetupGuide } from "@/components/dashboard/setup-guide/setup-guide-provider"
 
+// 注：原「AI 初步评估偏好规则设置」入口已撤——与全链路指挥中心 AI 初评抽屉重复，该处为唯一配置入口
 const NAV_ITEMS: { id: SectionId; label: string; icon: typeof Settings2 }[] = [
     { id: "system", label: "系统底层配置", icon: Settings2 },
     { id: "feishu", label: "飞书集成中心", icon: MessageSquare },
     { id: "resume", label: "简历库", icon: FileText },
-    { id: "preferences", label: "AI 初步评估偏好规则设置", icon: Heart },
 ]
 
 export function GlobalNav({ active, onSelect }: { active: SectionId; onSelect: (id: SectionId) => void }) {

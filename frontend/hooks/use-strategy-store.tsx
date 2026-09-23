@@ -1,6 +1,8 @@
 "use client"
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react'
+import { RefreshCw, Save, FileWarning } from 'lucide-react'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useResumeV2Store, createEmptyResume } from '@/hooks/use-resume-v2-store'
 import { apiFetch } from '@/lib/api'
 import { STRATEGY_SET_SECTION_EVENT } from '@/lib/strategy-events'
@@ -94,6 +96,9 @@ type StrategyContextType = {
     /** 手动标记有未保存修改（如改名） */
     markDirty: () => void;
     handleDelete: (e: React.MouseEvent, item: StrategyItem) => Promise<void>;
+    /** 未保存修改拦截：有脏改动时弹「保存修改 / 放弃修改」双选框（保存=先保存再继续，放弃=丢弃继续，取消=中止）。
+     *  无脏改动时直接放行。resolve 值 = 用户是否选择继续（true）。 */
+    confirmUnsavedGuard: (scene: 'create' | 'duplicate' | 'switch') => Promise<boolean>;
 }
 
 const StrategyContext = createContext<StrategyContextType | undefined>(undefined)
@@ -114,7 +119,7 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
     // 🌟 自动解析 URL 中的 section / tab 参数（如 /strategy?section=feishu 即刻进入飞书集成中心）
     // 另监听 strategy:set-section 自定义事件：新手引导等组件在页内免刷新直达指定板块
     useEffect(() => {
-        const VALID_SECTIONS = ['feishu', 'resume', 'system', 'preferences']
+                const VALID_SECTIONS = ['feishu', 'resume', 'system'] // 'preferences' 已退役：深链归一回落 system
         const updateSectionFromUrl = () => {
             if (typeof window !== 'undefined') {
                 const params = new URLSearchParams(window.location.search)
@@ -170,9 +175,55 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
     const draftStashRef = useRef<{ item: StrategyItem } | null>(null)
     // 保存进行中锁（防双击双写，比 state 更及时）
     const savingRef = useRef(false)
+
+    // ========== 未保存修改拦截弹窗（保存/放弃/取消三选，window.confirm 退役）==========
+    // 用户口径：确认键默认语义应是「保存」，而非「丢弃」——故弹窗主按钮=保存修改（右）、
+    // 次按钮=放弃修改（左），另留 ESC/关闭=取消不动。resolve(true)=继续后续动作。
+    type UnsavedGuardScene = 'create' | 'duplicate' | 'switch'
+    const [unsavedGuard, setUnsavedGuard] = useState<{ scene: UnsavedGuardScene; resolve: (ok: boolean) => void } | null>(null)
+    const [guardSaving, setGuardSaving] = useState(false)
+    const confirmUnsavedGuard = useCallback(async (scene: UnsavedGuardScene): Promise<boolean> => {
+        if (!isDirtyRef.current) return true // 无脏改动直接放行
+        return new Promise<boolean>((resolve) => {
+            // 理论上不会并发（按钮点击后弹窗模态），防御性兜底：后到者先取消前者
+            setUnsavedGuard(prev => { prev?.resolve(false); return { scene, resolve } })
+        })
+    }, [])
+    const resolveGuard = useCallback(async (choice: 'save' | 'discard' | 'cancel') => {
+        const current = unsavedGuard
+        if (!current) return
+        if (choice === 'cancel') {
+            setUnsavedGuard(null)
+            current.resolve(false)
+            return
+        }
+        if (choice === 'save') {
+            setGuardSaving(true)
+            try {
+                const savedId = await handleSave()
+                if (!savedId) { setGuardSaving(false); return } // 保存失败（已有 alert），留在弹窗让用户重选
+                // handleSave 成功路径自身已置 isDirtyRef=false、内部 await fetchConfig()
+                // （内含 resumesRef 同步刷新），保存后的最新列表在此处已可读
+            } finally {
+                setGuardSaving(false)
+            }
+        }
+        if (choice === 'discard') {
+            // 放弃 = 丢弃当前未保存修改（内容仍在本机草稿槽，切回时可恢复），脏标记必须同步
+            // 复位，否则 hasUnsavedChanges/confirmUnsavedGuard 永远拦截，用户陷入弹窗死循环
+            isDirtyRef.current = false
+        }
+        setUnsavedGuard(null)
+        current.resolve(true)
+        // handleSave 为稳定引用（每渲染重建但内部仅依赖 ref/state），此处不列入依赖防弹窗期间重挂
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [unsavedGuard])
     // editingItem 的 ref 镜像（草稿写入守卫用；sectionRef 复用下方既有声明）
     const editingItemRef = useRef<StrategyItem | null>(editingItem)
     useEffect(() => { editingItemRef.current = editingItem }, [editingItem])
+    // resumes 的 ref 镜像：异步回调（拦截弹窗保存后继续）里读最新列表用，防闭包快照陈旧
+    const resumesRef = useRef<StrategyItem[]>(resumes)
+    useEffect(() => { resumesRef.current = resumes }, [resumes])
     // 进程启动时原子清理过期草稿槽与登记表（含已删除简历的残留槽位、非 temp_ 垃圾行）
     useEffect(() => { purgeExpiredResumeRegistry() }, [])
     // 关页/卸载时把所有待写草稿立即落盘（pagehide 不触发 React unmount，需单独监听）
@@ -393,6 +444,9 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
                 // 云端优先展示、本地项 append；merge 内部带云端去重与全量异常兜底
                 const mergedResumes: StrategyItem[] = [...mappedResumes, ...mergeLocalResumes(mappedResumes)]
                 setResumes(mergedResumes)
+                // 同步刷新 ref 镜像（不等 useEffect）：异步回调链（拦截弹窗保存→继续复制/切换）
+                // 恢复执行时读 resumesRef 拿到的就是刚 fetch 的最新列表
+                resumesRef.current = mergedResumes
 
                 if (currentEditingId) {
                     const target = mergedResumes.find((i: any) => i.record_id === currentEditingId)
@@ -473,49 +527,70 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
     }
 
     const handleCreateNew = () => {
-        if (isDirtyRef.current && !window.confirm('当前简历有未保存的修改，新建后将丢弃这些修改。确定继续吗？')) return
-        // temp_ 前缀 id：让新建简历拥有独立草稿槽——新建最容易整篇丢内容，
-        // 不应被排除在草稿机制外；保存链路本就把 temp_ 识别为新建（不传 record_id）
-        const newTempId = makeTempResumeId()
-        setEditingItem({
-            name: '新建简历版本',
-            content: DEFAULT_RESUME_MARKDOWN,
-            status: '停用',
-            record_id: newTempId,
+        void confirmUnsavedGuard('create').then((proceed) => {
+            if (!proceed) return
+            // temp_ 前缀 id：让新建简历拥有独立草稿槽——新建最容易整篇丢内容，
+            // 不应被排除在草稿机制外；保存链路本就把 temp_ 识别为新建（不传 record_id）
+            const newTempId = makeTempResumeId()
+            const newItem: StrategyItem = {
+                name: '新建简历版本',
+                content: DEFAULT_RESUME_MARKDOWN,
+                status: '停用',
+                record_id: newTempId,
+                structured_json: createEmptyResume(),
+            }
+            // 立即进入左侧「我的简历」列表（置顶）：用户能直观看到"真的新建了一份"。
+            // 数据本体仍只在本机（草稿槽/登记表），点「保存并同步」才落飞书简历表
+            setResumes(prev => [newItem, ...prev.filter(r => r.record_id !== newTempId)])
+            setEditingItem(newItem)
+            // 登记本地未保存项：刷新后侧边栏仍可见、可点开恢复（刷新丢稿根治立项）
+            upsertLocalResume(newTempId, '新建简历版本')
         })
-        // 登记本地未保存项：刷新后侧边栏仍可见、可点开恢复（刷新丢稿根治立项）
-        upsertLocalResume(newTempId, '新建简历版本')
     }
 
     const handleDuplicate = (id: string) => {
-        if (isDirtyRef.current && !window.confirm('当前有未保存的修改，复制后画布将切换到副本，未保存的修改会丢失。确定继续吗？')) return
-        const itemIndex = resumes.findIndex(r => r.record_id === id)
-        const itemToCopy = resumes[itemIndex]
-        if (!itemToCopy) return
+        void confirmUnsavedGuard('duplicate').then((proceed) => {
+            if (!proceed) return
+            // resumesRef 镜像最新列表：拦截弹窗选「保存修改」后 handleSave→fetchConfig 已刷新
+            // resumes，闭包里的旧快照会把保存前的陈旧内容复制进副本
+            let sourceId = id
+            let itemToCopy = resumesRef.current.find(r => r.record_id === sourceId)
+            // 弹窗里「保存修改」可能刚把 temp_ 草稿转正（旧 id 已不在列表）：
+            // 按 editingItem 的当前归属找（fetchConfig 已把 editingItem 指向转正后的真实记录）
+            if (!itemToCopy && editingItemRef.current?.name) {
+                itemToCopy = resumesRef.current.find(r => r.name === editingItemRef.current!.name)
+                if (itemToCopy) sourceId = itemToCopy.record_id || id
+            }
+            if (!itemToCopy) return
 
-        const tempId = makeTempResumeId()
-        const duplicatedItem = {
-            ...itemToCopy,
-            name: `${itemToCopy.name} - 副本`,
-            status: '停用',
-            record_id: tempId
-        }
+            const tempId = makeTempResumeId()
+            const duplicatedItem: StrategyItem = {
+                ...itemToCopy,
+                name: `${itemToCopy.name} - 副本`,
+                status: '停用',
+                record_id: tempId
+            }
 
-        setResumes(prev => {
-            const copy = [...prev]
-            copy.splice(itemIndex + 1, 0, duplicatedItem)
-            return copy
+            // 副本同样立即进入列表（插在源简历之后）：与新建一致的"看得见"体验；
+            // 用解析出的 sourceId 定位（id 可能已因 temp_ 转正而失效），找不到则插到最前
+            setResumes(prev => {
+                const copy = [...prev]
+                const srcIdx = copy.findIndex(r => r.record_id === sourceId)
+                if (srcIdx >= 0) copy.splice(srcIdx + 1, 0, duplicatedItem)
+                else copy.unshift(duplicatedItem)
+                return copy
+            })
+
+            // 刷新丢稿根治：副本登记入本地未保存列表 + 结构化内容同步写一次草稿槽——
+            // 复制后未编辑即刷新也能恢复源内容（agy plan-review R1 P0-3）
+            upsertLocalResume(tempId, duplicatedItem.name, itemToCopy.content)
+            if (itemToCopy.structured_json && typeof itemToCopy.structured_json === 'object') {
+                writeResumeDraft(tempId, itemToCopy.structured_json)
+            }
+
+            setEditingItem(duplicatedItem)
+            showToast('已为您创建副本，请修改后点击右上角「保存并同步」')
         })
-
-        // 刷新丢稿根治：副本登记入本地未保存列表 + 结构化内容同步写一次草稿槽——
-        // 复制后未编辑即刷新也能恢复源内容（agy plan-review R1 P0-3）
-        upsertLocalResume(tempId, duplicatedItem.name, itemToCopy.content)
-        if (itemToCopy.structured_json && typeof itemToCopy.structured_json === 'object') {
-            writeResumeDraft(tempId, itemToCopy.structured_json)
-        }
-
-        setEditingItem(duplicatedItem)
-        showToast('已为您创建副本，请修改后点击右上角「保存并同步」')
     }
 
     const handleSave = async (): Promise<string | null> => {
@@ -579,7 +654,9 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
                 clearResumeDraft(editingItem.record_id || RESUME_DRAFT_LOCAL_KEY)
                 removeLocalResume(editingItem.record_id || RESUME_DRAFT_LOCAL_KEY)
                 setEditingItem(prev => prev ? { ...prev, record_id: newRecordId } : null)
-                fetchConfig(newRecordId)
+                // 必须等待：resolveGuard('save') 在本函数返回后立即读 resumesRef，
+                // 不 await 则 ref 仍是旧列表，temp_ 转正场景下副本会找不到源记录
+                await fetchConfig(newRecordId)
                 return newRecordId
             } else {
                 alert("❌ 保存失败: " + (data.detail || `HTTP ${res.status}`))
@@ -637,6 +714,7 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
             clearUploadGate: () => setUploadGate(null),
             dismissParseError: () => setParseError(null),
             toastMsg, showToast, togglingResumeId, fetchConfig, handleToggleResumeStatus, handleCreateNew, handleDuplicate, handleSave, handleDelete,
+            confirmUnsavedGuard,
             hasUnsavedChanges: () => isDirtyRef.current,
             markDirty: () => { isDirtyRef.current = true }
         }}>
@@ -650,6 +728,44 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
                 missing={uploadGate ?? []}
                 onGoConfigure={() => { setUploadGate(null); setSection('system') }}
             />
+            {/* 未保存修改拦截：主按钮=保存修改（右，用户默认预期），次按钮=放弃修改（左） */}
+            <Dialog open={unsavedGuard !== null} onOpenChange={(open) => { if (!open && !guardSaving) resolveGuard('cancel') }}>
+                <DialogContent className="sm:max-w-md border-slate-200 bg-white">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-base font-bold text-slate-900">
+                            <FileWarning className="size-4 text-amber-500" />
+                            当前简历有未保存的修改
+                        </DialogTitle>
+                        <DialogDescription className="mt-1 text-[13px] leading-relaxed text-slate-600">
+                            {unsavedGuard?.scene === 'create' && '建议你先保存后再新建，否则这些修改将被丢弃。'}
+                            {unsavedGuard?.scene === 'duplicate' && '建议你先保存后再复制，否则这些修改将丢失（复制的是已保存内容）。'}
+                            {unsavedGuard?.scene === 'switch' && '建议你先保存后再切换，否则这些修改将丢失。'}
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="mt-2 flex items-center justify-end gap-2.5">
+                        <button
+                            type="button"
+                            disabled={guardSaving}
+                            onClick={() => resolveGuard('discard')}
+                            className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-50"
+                        >
+                            放弃修改
+                        </button>
+                        <button
+                            type="button"
+                            disabled={guardSaving}
+                            onClick={() => resolveGuard('save')}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-slate-700 disabled:opacity-60"
+                        >
+                            {guardSaving ? (
+                                <><RefreshCw className="size-3.5 animate-spin" />正在保存...</>
+                            ) : (
+                                <><Save className="size-3.5" />保存修改</>
+                            )}
+                        </button>
+                    </div>
+                </DialogContent>
+            </Dialog>
         </StrategyContext.Provider>
     )
 }

@@ -204,8 +204,9 @@ export function FeishuHub() {
   const tabs = [
     { id: "all", label: "完整全景", icon: LayoutGrid },
     { id: "connect", label: "通道连接", icon: Radio },
-    { id: "chatops", label: "ChatOps", icon: MessageSquare },
     { id: "report", label: "战报中心", icon: Bell },
+    // ChatOps 纯指令参考、无需配置，垫底收尾
+    { id: "chatops", label: "ChatOps", icon: MessageSquare },
   ] as const
 
   const handleSelectTab = (id: TabId) => {
@@ -286,14 +287,7 @@ export function FeishuHub() {
             </div>
           )}
 
-          {/* 模块 2: ChatOps 机器人指南与话术 */}
-          {(activeTab === "all" || activeTab === "chatops") && (
-            <div id="card-chatops" className="scroll-mt-6">
-              <ChatOpsGuideCard apiBase={API_BASE} />
-            </div>
-          )}
-
-          {/* 模块 3: 飞书战报中心 (调度 + 预览 + 发送一体化工作台) */}
+          {/* 模块 2: 飞书战报中心 (调度 + 预览 + 发送一体化工作台，需用户设置) */}
           {(activeTab === "all" || activeTab === "report") && (
             <div id="card-report" className="scroll-mt-6">
               <ReportStudioCard
@@ -305,6 +299,13 @@ export function FeishuHub() {
                 savingSchedule={savingSchedule}
                 savedSchedule={savedSchedule}
               />
+            </div>
+          )}
+
+          {/* 模块 3: ChatOps 机器人指南与话术（纯指令参考，垫底） */}
+          {(activeTab === "all" || activeTab === "chatops") && (
+            <div id="card-chatops" className="scroll-mt-6">
+              <ChatOpsGuideCard apiBase={API_BASE} />
             </div>
           )}
         </div>

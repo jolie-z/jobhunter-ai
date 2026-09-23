@@ -22,7 +22,7 @@ export function ResumeBuilder() {
     handleCreateNew,
     handleDuplicate,
     fetchConfig,
-    hasUnsavedChanges
+    confirmUnsavedGuard
   } = store
 
   const { resumeData, setResumeData } = useResumeV2Store()
@@ -62,9 +62,13 @@ export function ResumeBuilder() {
   ]
 
   const handleSelect = (id: string) => {
-    if (id !== activeId && hasUnsavedChanges() && !window.confirm('当前简历有未保存的修改，切换后将丢失。确定要切换吗？')) return
-    const item = resumes.find(r => r.record_id === id)
-    if (item) setEditingItem(item)
+    if (id === activeId) return
+    // 未保存拦截：有脏改动时弹「保存修改/放弃修改」双选框，替代旧 window.confirm
+    void store.confirmUnsavedGuard('switch').then((proceed) => {
+      if (!proceed) return
+      const item = resumes.find(r => r.record_id === id)
+      if (item) setEditingItem(item)
+    })
   }
 
   const handleRename = (id: string, name: string) => {

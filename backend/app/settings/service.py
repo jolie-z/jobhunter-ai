@@ -2,6 +2,8 @@ import asyncio
 import importlib
 import json
 import os
+import threading
+import time
 from typing import Any
 
 import common.config as _config_module
@@ -222,3 +224,81 @@ async def save_system_settings(payload: SettingsPayload) -> dict[str, Any]:
         "updated": sorted(updated_keys),
         "deleted": sorted(deleted_keys),
     }
+
+
+async def get_restart_blockers() -> dict[str, Any]:
+    """重启前占用检测：聚合批量任务 / 全链路流水线 / 平台爬虫三类运行态（零副作用）。
+
+    - 批量 AI 任务：GLOBAL_TASK_STATE.is_processing + task_status 中非终态批次；
+    - 全链路流水线：pipeline_broadcast._current_pipeline.running；
+    - 平台爬虫：crawlers._platform_running_tasks（含统一分发占位）。
+    """
+    blockers: list[str] = []
+
+    # 1) 批量 AI 任务（评估/改写/深评/投递/海投/审批）
+    try:
+        from app.tasks.state import GLOBAL_TASK_STATE, task_status
+        if GLOBAL_TASK_STATE.get("is_processing"):
+            tid = GLOBAL_TASK_STATE.get("current_task_id")
+            t = task_status.get(tid) or {}
+            blockers.append(f"批量任务正在执行（类型：{t.get('task_type', '未知')}，已完成 {t.get('completed', 0)}/{t.get('total', '?')}）")
+        else:
+            # is_processing 已复位但仍有登记中的批次（如定时投递登记后等待调度），同样拦截；
+            # list() 快照遍历防任务并发写 dict 时 RuntimeError
+            active = [
+                t for t in list(task_status.values())
+                if isinstance(t, dict) and t.get("status") in ("pending", "running")
+            ]
+            if active:
+                t = active[0]
+                blockers.append(f"批量任务尚未结束（类型：{t.get('task_type', '未知')}，状态：{t.get('status')}）")
+    except Exception:
+        pass
+
+    # 2) 全链路流水线（手动启动 / 定时发射）
+    try:
+        from app.automation.pipeline_broadcast import get_current_pipeline
+        if get_current_pipeline().get("running"):
+            blockers.append("全链路流水线正在执行")
+    except Exception:
+        pass
+
+    # 3) 平台爬虫任务
+    try:
+        from app.api.routes.crawlers import _platform_running_tasks
+        if _platform_running_tasks:
+            names = "、".join(sorted(p.upper() for p in _platform_running_tasks))
+            blockers.append(f"爬虫任务正在执行（平台：{names}）")
+    except Exception:
+        pass
+
+    return {"ok": len(blockers) == 0, "blockers": blockers}
+
+
+# 重启防重入标记：并发重启请求只允许第一个生成退出线程
+_restart_pending = threading.Event()
+
+
+def request_graceful_exit() -> bool:
+    """进程自我优雅退出，交由 PM2 autorestart 拉起。返回 False=已在重启中（防重入）。
+
+    uvicorn 收到 SIGTERM 后走 shutdown 流程（lifespan 收尾 → 关闭调度器/PDF 渲染器），
+    PM2 检测到进程退出后 500ms 内自动重启（restart_delay: 500）。
+    非守护态（前台裸跑 uvicorn）下信号同样生效，只是不会自动拉起。
+    """
+    import signal
+
+    os.write(1, "\n🔄 [restart] 收到重启请求，3 秒后优雅退出（由进程守护自动拉起）...\n".encode())
+
+    if not _restart_pending.is_set():
+        _restart_pending.set()
+    else:
+        return False  # 已有重启在途，忽略重复请求
+
+    def _exit():
+        # 给前端留出读取响应+轮询断连的间隙，避免响应未送达就被切断
+        time.sleep(3.0)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=_exit, daemon=True).start()
+    return True

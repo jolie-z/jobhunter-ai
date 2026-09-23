@@ -1,7 +1,7 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
-import { Save, RefreshCw, Check, BookOpen, Lightbulb, Trash2, Undo2, ArrowRight, Key, ServerOff } from "lucide-react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { Save, RefreshCw, Check, BookOpen, Lightbulb, Trash2, Undo2, ArrowRight, Key, ServerOff, Power, AlertTriangle } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -28,6 +28,11 @@ interface ConfigGroup {
   fields: FieldItem[]
 }
 
+// 语音识别组的配置 key（重启门控用）：任一发生变化保存后按钮才点亮
+const VOIP_RESTART_KEYS = new Set(["VOLC_ASR_APPID", "VOLC_ASR_TOKEN", "VOLC_ASR_RESOURCE_ID"])
+// 门控分组名（后端 CONFIG_GROUPS 同源字符串，与 VOIP_RESTART_KEYS 语义强耦合故同置顶层）
+const RESTART_GATED_GROUP = "语音识别 (火山引擎)"
+
 export function SystemConfig() {
   const { setSection } = useStrategyStore()
   const [groups, setGroups] = useState<ConfigGroup[]>([])
@@ -39,6 +44,118 @@ export function SystemConfig() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [activeTutorial, setActiveTutorial] = useState<Tutorial | null>(null)
+
+  // ── 一键重启后端（语音识别等少数配置需重启生效）────────────────────────
+  // 门控语义：按钮默认灰色禁用；仅当本页保存过「语音识别 (火山引擎)」分组的配置
+  // （发生 App ID/Token/Resource ID 变更，保存后内存标记 restartPendingVoip=true）
+  // 时才点亮。点按三段式：检验环境 → 重启中 → 已生效（进度文案直接落在按钮上）。
+  const RESTART_GATED_GROUP = "语音识别 (火山引擎)"
+  type RestartPhase = "idle" | "checking" | "restarting" | "done"
+  const [restartPhase, setRestartPhase] = useState<RestartPhase>("idle")
+  // 待重启标记：handleSave 检测到语音组 key 变更时置位（成功重启后复位）
+  const [restartPendingVoip, setRestartPendingVoip] = useState(false)
+  const [restartBlockers, setRestartBlockers] = useState<string[]>([])
+  const [restartError, setRestartError] = useState("")
+  // 组件卸载中断标志：探活轮询跨后端重启周期，卸载后必须停止，防僵尸轮询与无效 setState
+  const restartAbortRef = useRef(false)
+  const restartDoneTimerRef = useRef<number | null>(null)
+  useEffect(() => {
+    restartAbortRef.current = false
+    return () => {
+      restartAbortRef.current = true
+      if (restartDoneTimerRef.current !== null) window.clearTimeout(restartDoneTimerRef.current)
+    }
+  }, [])
+
+  const pollBackendAlive = async (): Promise<boolean> => {
+    try {
+      // apiFetch 携带后端基地址与统一错误处理：裸 fetch 相对路径在前后端分端口部署时会打到前端自身
+      const res = await apiFetch(`/api/settings/readiness`, { cache: "no-store" } as RequestInit)
+      return res.ok
+    } catch {
+      return false
+    }
+  }
+
+  const handleRestart = async () => {
+    if (!restartPendingVoip || restartPhase !== "idle") return
+    setRestartError("")
+    setRestartBlockers([])
+    // 阶段一：检验环境（占用检测；404 = 后端还是旧进程没有此接口，提示先升级重启一次）
+    setRestartPhase("checking")
+    let preflightOk = false
+    let backendStale = false
+    try {
+      const res = await apiFetch(`/api/settings/restart/preflight`)
+      if (res.status === 404) {
+        backendStale = true
+      } else if (!res.ok) {
+        // 服务端异常（500/502/403/422...）不是"任务占用"，误报会误导排障方向；
+        // detail 可能是字符串也可能是 FastAPI 校验错误对象数组，防御性取串
+        const err = await res.json().catch(() => ({}))
+        const detail = typeof err?.detail === "string" ? err.detail : "后端内部错误"
+        setRestartError(`环境检验失败（HTTP ${res.status}）：${detail}`)
+        setRestartPhase("idle")
+        return
+      } else {
+        const data = await res.json()
+        preflightOk = !!data.ok
+        if (!data.ok) setRestartBlockers(data.blockers || ["有任务正在执行"])
+      }
+    } catch {
+      setRestartError("无法连接后端，无法检验环境")
+      setRestartPhase("idle")
+      return
+    }
+    if (backendStale) {
+      setRestartError("当前后端是旧版本（无重启接口），本次请手动重启一次后端（此后即可一键重启）")
+      setRestartPhase("idle")
+      return
+    }
+    if (!preflightOk) {
+      setRestartPhase("idle")
+      return
+    }
+    // 阶段二：重启中（优雅退出由 PM2 自动拉起）
+    setRestartPhase("restarting")
+    try {
+      const res = await apiFetch(`/api/settings/restart`, { method: "POST" })
+      if (res.status === 409) {
+        const data = await res.json().catch(() => ({}))
+        setRestartBlockers(data.detail?.blockers || ["有任务正在执行"])
+        setRestartPhase("idle")
+        return
+      }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        setRestartError(data.detail?.message || data.detail || "重启指令发送失败")
+        setRestartPhase("idle")
+        return
+      }
+    } catch {
+      // 请求可能因后端退出而中断，属于预期：进入探活
+    }
+    // 等待端口下线 → 轮询探活（PM2 restart_delay 500ms + uvicorn 启动数秒）
+    await new Promise((r) => setTimeout(r, 4000))
+    const deadline = Date.now() + 90_000
+    while (Date.now() < deadline) {
+      if (restartAbortRef.current) return // 组件已卸载，停止轮询与状态更新
+      if (await pollBackendAlive()) {
+        // 阶段三：已生效（按钮保持点亮 4 秒展示文字，随后随标记复位一同回灰）
+        setRestartPhase("done")
+        restartDoneTimerRef.current = window.setTimeout(() => {
+          setRestartPendingVoip(false)
+          setRestartPhase("idle")
+        }, 4000)
+        fetchConfig()
+        return
+      }
+      await new Promise((r) => setTimeout(r, 2500))
+    }
+    if (restartAbortRef.current) return
+    setRestartError("等待超时：后端尚未恢复，请检查 PM2 进程状态（pm2 ls）后手动启动，或稍后刷新页面重试")
+    setRestartPhase("idle")
+  }
 
   const fetchConfig = useCallback(async () => {
     try {
@@ -73,6 +190,10 @@ export function SystemConfig() {
     const hasSettings = Object.keys(payload).length > 0
     if (!hasSettings && deleteKeys.length === 0) return
 
+    // 保存前先记下本次是否动了语音识别组（这些 key 需重启才生效）
+    const touchedVoipKeys = Object.keys(payload).some(k => VOIP_RESTART_KEYS.has(k))
+      || deleteKeys.some(k => VOIP_RESTART_KEYS.has(k))
+
     setSaving(true)
     setSaved(false)
     try {
@@ -86,6 +207,7 @@ export function SystemConfig() {
         setPendingClears({})
         setSaved(true)
         setTimeout(() => setSaved(false), 2500)
+        if (touchedVoipKeys) setRestartPendingVoip(true) // 语音组值已变更：点亮重启按钮
         fetchConfig()
       }
     } catch {
@@ -190,6 +312,31 @@ export function SystemConfig() {
                   >
                     <BookOpen className="size-3 text-slate-400" />
                     配置教程
+                  </button>
+                )}
+                {/* 语音识别组：一键重启按钮（门控）——仅在保存过该组配置（值变更）后点亮，
+                    其余时候灰色禁用；点击后按钮内直接走三段式进度文案 */}
+                {group.group === RESTART_GATED_GROUP && (
+                  <button
+                    type="button"
+                    onClick={handleRestart}
+                    disabled={!restartPendingVoip || (restartPhase !== "idle" && restartPhase !== "done")}
+                    className={
+                      restartPendingVoip
+                        ? "inline-flex min-w-[15rem] items-center justify-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700 shadow-xs transition-all hover:border-amber-300 hover:bg-amber-100 active:scale-[0.98] disabled:opacity-50 disabled:active:scale-100"
+                        : "inline-flex min-w-[15rem] items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-400 shadow-xs transition-all cursor-not-allowed"
+                    }
+                    title={
+                      restartPendingVoip
+                        ? "语音识别配置已变更，点击重启后端使其生效（自动检查任务占用）"
+                        : "语音识别配置未变更，无需重启。修改 App ID / Token 等字段并保存后，此按钮才会点亮"
+                    }
+                  >
+                    <Power className={`size-3 ${restartPhase === "checking" || restartPhase === "restarting" ? "animate-pulse" : ""}`} />
+                    {restartPhase === "checking" && "正在检验环境是否支持重启..."}
+                    {restartPhase === "restarting" && "重启中..."}
+                    {restartPhase === "done" && "重启完毕，已生效"}
+                    {restartPhase === "idle" && (restartPendingVoip ? "重启后端生效" : "重启后端生效（无需重启）")}
                   </button>
                 )}
               </div>
@@ -390,6 +537,48 @@ export function SystemConfig() {
           )}
         </button>
       </div>
+
+      {/* Restart Blockers/Error Dialog：有任务在跑，或重启流程出错（含后端旧版无接口），拦截并明示 */}
+      <Dialog open={(restartBlockers.length > 0 || !!restartError) && restartPhase === "idle"} onOpenChange={(open) => { if (!open) { setRestartBlockers([]); setRestartError("") } }}>
+        <DialogContent className="sm:max-w-md border-slate-200 bg-white">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base font-bold text-slate-900">
+              <AlertTriangle className="size-4 text-rose-500" />
+              {restartError ? "重启未完成" : "暂不能重启：有任务正在执行"}
+            </DialogTitle>
+            {restartError ? (
+              <DialogDescription className="mt-1 text-[13px] leading-relaxed text-slate-600">
+                {restartError}
+              </DialogDescription>
+            ) : (
+              <DialogDescription className="mt-1 text-[13px] leading-relaxed text-slate-600">
+                为避免任务中断丢失进度，请等以下任务全部结束后，再回到这里点击「重启后端生效」：
+              </DialogDescription>
+            )}
+          </DialogHeader>
+          {!restartError && (
+            <ul className="mt-2 space-y-1.5">
+              {restartBlockers.map((b, i) => (
+                <li key={i} className="flex items-start gap-2 rounded-lg bg-rose-50/60 px-3 py-2 text-xs text-rose-700">
+                  <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-rose-400" />
+                  {b}
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="mt-3 flex justify-end">
+            <button
+              type="button"
+              onClick={() => { setRestartBlockers([]); setRestartError("") }}
+              className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50"
+            >
+              我知道了
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* （重启进度直接展示在按钮文字上：检验环境 → 重启中 → 已生效，无独立弹窗） */}
 
       {/* Tutorial Dialog */}
       <Dialog open={!!activeTutorial} onOpenChange={(open) => !open && setActiveTutorial(null)}>

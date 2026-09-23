@@ -67,3 +67,36 @@ async def diagnose_llm() -> dict[str, Any]:
         return await _diagnose()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/restart/preflight")
+async def restart_preflight() -> dict[str, Any]:
+    """重启前占用检测：批量任务 / 全链路流水线 / 平台爬虫是否有正在执行的。"""
+    try:
+        return await service.get_restart_blockers()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/restart")
+async def restart_backend() -> dict[str, Any]:
+    """一键重启后端：占用复检 → 通过则优雅退出（SIGTERM），由 PM2 守护自动拉起。
+
+    有占用时返回 409 与阻塞项列表，前端提示用户等任务结束。
+    响应先落盘再退出（3 秒延迟），保证前端能收到确认。
+    """
+    try:
+        blockers = await service.get_restart_blockers()
+        if not blockers.get("ok"):
+            raise HTTPException(status_code=409, detail={
+                "message": "当前有任务正在执行，暂不能重启",
+                "blockers": blockers.get("blockers", []),
+            })
+        # 注意：request_graceful_exit 内部延迟 3 秒才发信号，本响应会正常返回；
+        # 防重入：已有重启在途时仅确认，不再叠加退出线程
+        service.request_graceful_exit()
+        return {"ok": True, "message": "重启指令已接受，后端即将退出并由进程守护自动拉起（约 10~20 秒）"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

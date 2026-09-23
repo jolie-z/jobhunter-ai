@@ -3,7 +3,6 @@
 import { StrategyStoreProvider, useStrategyStore } from "@/hooks/use-strategy-store"
 import { GlobalNav } from "@/components/dashboard/strategy-lab/global-nav"
 import { SystemConfig } from "@/components/dashboard/strategy-lab/system-config"
-import { PreferencesBoard } from "@/components/dashboard/preferences-board"
 import { ResumeBuilder } from "@/components/dashboard/resume-builder"
 import { FeishuHub } from "@/components/dashboard/feishu-hub"
 
@@ -39,16 +38,6 @@ function PageInner() {
 
           {section === "feishu" && (
             <FeishuHub />
-          )}
-
-          {/* 菜单：求职偏好与底线 — 使用旧版组件 */}
-          {section === "preferences" && (
-            <>
-              <SimpleHeader title="AI 初步评估参数与规则" subtitle="自定义初筛维度的权重、加分红线及自动化流转阀门" />
-              <div className="flex-1 overflow-y-auto">
-                <PreferencesBoard />
-              </div>
-            </>
           )}
         </main>
       )}
