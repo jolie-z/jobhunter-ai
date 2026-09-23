@@ -317,10 +317,27 @@ def ensure_main_db_schema(db_path: str | None = None) -> list[str]:
         conn.execute("PRAGMA journal_mode=WAL")
         before = _user_objects(conn)
         pre_existing_cols = _pre_existing_table_columns(conn)
+        # 历史窄表（缺蓝本列）上若已有旧引导留下的触发器：SQLite 建触发器不校验体内列名，
+        # 这些触发器会带病存在并把每次 INSERT 打挂——只告警不擅删（可能是用户自建）
+        narrow_existing = {
+            t for t, cols in pre_existing_cols.items()
+            if BLUEPRINT_TABLE_COLUMNS.get(t) and BLUEPRINT_TABLE_COLUMNS[t] - cols
+        }
+        if narrow_existing:
+            for row in conn.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger'"):
+                trg_target = _trigger_target_table(row[1] or "")
+                if trg_target in narrow_existing:
+                    logger.warning(
+                        f"⚠️ [db_bootstrap] 发现窄表 {trg_target} 上的存量触发器 {row[0]}，"
+                        f"其体内列可能缺失（INSERT 时才会暴露），请核对是否需要重建"
+                    )
         for stmt in _split_statements(BOOTSTRAP_SCRIPT):
+            # 剥离前导注释行后再识别语句类型（_split_statements 会把注释并入下一条语句，
+            # 直接 startswith 会在蓝本加注释行时静默漏判）
+            stmt_body = re.sub(r"^(?:\s*--[^\n]*\n)+", "", stmt)
             # 触发器防带病创建：目标表在引导前已存在且缺蓝本列（历史窄表）→ 跳过，
             # 否则 SQLite 会照建不误、把写失败延迟到业务 INSERT 时才爆
-            if stmt.upper().lstrip().startswith("CREATE TRIGGER"):
+            if stmt_body.upper().lstrip().startswith("CREATE TRIGGER"):
                 target = _trigger_target_table(stmt)
                 existing_cols = pre_existing_cols.get(target or "")
                 if existing_cols is not None:

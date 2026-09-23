@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 import { Filter, Info, CheckCircle2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
@@ -67,14 +67,18 @@ export function DeliveryGradeCard({ grades, onChangeGrades }: DeliveryGradeCardP
   // 存量配置可能残留已下线的等级（如 E）：入口归一化，避免变成不可见又不可取消的幽灵勾选
   const validGrades = grades.filter((g) => GRADE_OPTIONS.some((o) => o.id === g))
 
-  // 挂载时发现存量脏等级就回写父级（后端评估早已不产出 E，保存后自然清洗）。
-  // 清洗后为空（存量配置全非法，如只剩 E）绝不能回写空集合——全空会导致所有岗位
-  // 挂人工审批，等于仅打开面板就静默停摆海投；此时回退到后端同款海投轨默认集。
+  // 清洗回写：首次拿到非空 grades 时执行一次（父级配置多为异步灌入，挂载时可能是 []，
+  // 只看挂载会漏洗）。清洗后为空（存量配置全非法，如只剩 E）绝不可回写空集合——
+  // 全空=所有岗位挂人工审批，等于静默停摆海投；回退与后端默认一致的 ["C","D","F"]。
+  const cleanedRef = useRef(false)
   useEffect(() => {
-    if (validGrades.length === grades.length) return
-    onChangeGrades(validGrades.length > 0 ? validGrades : DEFAULT_MASS_GRADES)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅挂载时清洗一次，随依赖回写会与父级 setState 成环
-  }, [])
+    if (cleanedRef.current || grades.length === 0) return
+    cleanedRef.current = true
+    if (validGrades.length !== grades.length) {
+      onChangeGrades(validGrades.length > 0 ? validGrades : DEFAULT_MASS_GRADES)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅首次非空灌入时清洗一次，随依赖回写会与父级 setState 成环
+  }, [grades])
 
   const toggleGrade = (id: string) => {
     if (validGrades.includes(id)) {
