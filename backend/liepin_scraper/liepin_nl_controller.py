@@ -38,7 +38,7 @@ client = make_tracked_client(OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE
 GLOBAL_STOP_FLAG = False
 
 def set_stop_flag(value: bool):
-    """外部（例如 FastAPI 路由）调用此函数拉起 / 释放猞聘急刹车。"""
+    """外部（例如 FastAPI 路由）调用此函数拉起 / 释放猎聘急刹车。"""
     global GLOBAL_STOP_FLAG
     GLOBAL_STOP_FLAG = bool(value)
     print(f"🌟 [liepin set_stop_flag] GLOBAL_STOP_FLAG → {GLOBAL_STOP_FLAG}")
@@ -94,7 +94,7 @@ def countdown_sleep(seconds):
     for i in range(seconds, 0, -1):
         # 🌟 急刹车检查：休眠期间随时可以被飞书指令中断
         if GLOBAL_STOP_FLAG:
-            print("\n   🛑 [猞聘急刹车触发] 休眠被提前中断，跳过后续休眠。")
+            print("\n   🛑 [猎聘急刹车触发] 休眠被提前中断，跳过后续休眠。")
             return
         if i % 30 == 0 or i <= 5:
             print(f"   ⏳ [防风控潜行中] 还剩 {i} 秒...", end='\r', flush=True)
@@ -165,7 +165,7 @@ def run_task(keyword, city, start_page, target_jobs, salary, sse_task_id=None, l
     while total_inserted < target_jobs:
         # 🌟 主循环（翻页循环）首部急刹车检查
         if GLOBAL_STOP_FLAG:
-            print("🛑 [猞聘急刹车触发] 收到全局中断信号，立即终止当前翻页循环！")
+            print("🛑 [猎聘急刹车触发] 收到全局中断信号，立即终止当前翻页循环！")
             break
         print(f"\n{'=' * 60}")
         print(f"🎯 进度: 已入库 {total_inserted}/{target_jobs} 个 | 正在执行: 第 {current_page} 页")
@@ -193,11 +193,11 @@ def run_task(keyword, city, start_page, target_jobs, salary, sse_task_id=None, l
 
         # 🌟 本页结束后再检一次急刹车，避免继续进入 countdown_sleep
         if GLOBAL_STOP_FLAG:
-            print("🛑 [猞聘急刹车触发] 当前页处理完毕，根据中断信号退出翻页循环。")
+            print("🛑 [猎聘急刹车触发] 当前页处理完毕，根据中断信号退出翻页循环。")
             total_inserted = real_time_inserted
             break
         
-        # 针对猞聘特殊的 99 安全熔断拦截
+        # 针对猎聘特殊的 99 安全熔断拦截
         if process.returncode == 99:
             print("\n🚨 检测到子进程返回 99 错误码，触发风控熔断，停止任务！")
             total_inserted = real_time_inserted
@@ -206,7 +206,7 @@ def run_task(keyword, city, start_page, target_jobs, salary, sse_task_id=None, l
         total_inserted = real_time_inserted
         
         if hit_bottom:
-            print("\n>> ⚠️ 触发中断：猞聘未返回数据，可能是到底部或遇到滑块验证码。")
+            print("\n>> ⚠️ 触发中断：猎聘未返回数据，可能是到底部或遇到滑块验证码。")
             break
             
         if total_inserted >= target_jobs:
@@ -265,12 +265,12 @@ def main():
         except Exception as e:
             print(f"!! 异常: {e}")
 
-# ==================== 🤖 飞书聊天框接入：猞聘抓取专属控制层 ====================
+# ==================== 🤖 飞书聊天框接入：猎聘抓取专属控制层 ====================
 
 from app.services.feishu_service import send_feishu_message
 
 def run_scraping_task(keyword: str, city: str, salary: str, start_page: int = 1, target_jobs: int = 40, sse_task_id: str = None, loop=None) -> int:
-    """猞聘简化版抓取入口：从 start_page 起抓到目标入库数 target_jobs。
+    """猎聘简化版抓取入口：从 start_page 起抓到目标入库数 target_jobs。
 
     薄包装层，与 CLI 用的 run_task 共享同一份底层执行逻辑（while 循环 + Popen），
     返回 total_inserted（本次累计入库数），方便异步入口回报飞书。
@@ -290,7 +290,7 @@ async def _notify_feishu_liepin(chat_id: str, message: str):
 
 async def process_liepin_scraping_request(chat_id: str, city: str, keyword: str, salary: str, start_page: int = 1, target_jobs: int = 40, sse_task_id: str = None):
     print(f"\n{'='*50}")
-    print(f"🕵️ [DEBUG] 飞书请求已进入猞聘执行中枢！参数: 城市={city}, 岗位={keyword}, 薪资={salary}, start_page={start_page}, target_jobs={target_jobs}")
+    print(f"🕵️ [DEBUG] 飞书请求已进入猎聘执行中枢！参数: 城市={city}, 岗位={keyword}, 薪资={salary}, start_page={start_page}, target_jobs={target_jobs}")
 
     # 🌟 重置急刹车（避免上一轮残留的 True 干扰本轮）
     set_stop_flag(False)
@@ -325,10 +325,10 @@ async def process_liepin_scraping_request(chat_id: str, city: str, keyword: str,
                 msg = 'data: {"type": "start", "message": "✅ 收到指令！正在启动 [猎聘] 爬虫引擎..."}\n\n'
                 await task_queues[sse_task_id].put(msg)
 
-        # 猞聘特有：检查 Cookie 文件是否已存在
+        # 猎聘特有：检查 Cookie 文件是否已存在
         cookie_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'liepin_cookies.json')
         if not os.path.exists(cookie_file):
-            print(f"⚠️ 猞聘 Cookie 文件不存在: {cookie_file}")
+            print(f"⚠️ 猎聘 Cookie 文件不存在: {cookie_file}")
             await _notify_feishu_liepin(
                 chat_id,
                 "❌ 缺少猎聘 Cookie，请先在本地终端运行 `liepin_cookie_harvester.py` 扫码登录！"
@@ -358,7 +358,7 @@ async def process_liepin_scraping_request(chat_id: str, city: str, keyword: str,
             run_scraping_task,
             keyword, city, salary, start_page, target_jobs, sse_task_id, loop
         )
-        print(f"🕵️ [DEBUG] 猞聘抓取逻辑执行完毕，返回入库数: {total_inserted}")
+        print(f"🕵️ [DEBUG] 猎聘抓取逻辑执行完毕，返回入库数: {total_inserted}")
 
         await _notify_feishu_liepin(
             chat_id,
@@ -370,7 +370,7 @@ async def process_liepin_scraping_request(chat_id: str, city: str, keyword: str,
                 msg = f'data: {{"type": "complete", "message": "🎉 猎聘抓取任务结束！本次共成功存入 {total_inserted} 个岗位"}}\n\n'
                 await task_queues[sse_task_id].put(msg)
     except Exception as e:
-        print(f"⚠️ 猞聘抓取异常: {e}")
+        print(f"⚠️ 猎聘抓取异常: {e}")
         import traceback
         traceback.print_exc()
         try:
