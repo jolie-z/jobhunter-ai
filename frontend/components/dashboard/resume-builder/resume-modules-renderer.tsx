@@ -11,7 +11,7 @@ import { MarkdownEditor } from "./markdown-editor"
 import { AiModuleSyncInline } from "./ai-module-sync-inline"
 import { useResumeV2Store } from "@/hooks/use-resume-v2-store"
 import {
-  Plus, Loader2, Wand2, Sparkles, Briefcase, FolderGit2, GraduationCap, Wrench, User
+  Plus, Loader2, Wand2, Sparkles, Briefcase, FolderGit2, GraduationCap, Wrench, User, AlertTriangle
 } from 'lucide-react'
 
 type ResumeModulesRendererProps = {
@@ -47,8 +47,34 @@ export function ResumeModulesRenderer({
     updateModuleTitle,
     updateWorkExperience,
     updateProject,
-    updateEducation
+    updateEducation,
+    confirmModule
   } = useResumeV2Store()
+
+  // 解析置信度（_meta.confidence）：low 模块显示「待确认」角标（与 v2-resume-editor 同款）
+  const confidenceMap = resumeData?._meta?.confidence ?? {}
+
+  const pendingBadge = (modKey: string) => {
+    if (confidenceMap[modKey] !== "low") return null
+    return (
+      <span
+        role="button"
+        tabIndex={0}
+        onClick={(e) => { e.stopPropagation(); confirmModule(modKey) }}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); confirmModule(modKey) } }}
+        title="AI 解析置信度低，建议对照原文核实；点击确认知悉"
+        className="cursor-pointer select-none inline-flex items-center gap-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300 px-1.5 py-px text-[10px] font-medium hover:bg-amber-200 transition-colors"
+      >
+        <AlertTriangle className="h-2.5 w-2.5" />
+        待确认
+      </span>
+    )
+  }
+
+  // 编辑失焦即视为「用户已确认」；confirmModule 内部幂等，非 low 模块零副作用
+  const confirmWrapProps = (modKey: string) => ({
+    onBlurCapture: () => confirmModule(modKey),
+  })
 
   const renderSyncButtons = (id: string, title: string, value: string, onChange: (val: string) => void) => (
     <div className="flex justify-end gap-2">
@@ -108,7 +134,8 @@ export function ResumeModulesRenderer({
 
           if (modKey === "summary") {
             return (
-              <ModuleCard key={modKey} id={anchorId} title={title} icon={<Sparkles className="h-4 w-4" />} {...commonProps}>
+              <div key={modKey} {...confirmWrapProps(modKey)}>
+              <ModuleCard key={modKey} id={anchorId} title={title} icon={<Sparkles className="h-4 w-4" />} headerTools={pendingBadge(modKey)} {...commonProps}>
                 <div className="flex flex-col gap-3">
                   <MarkdownEditor
                     value={resumeData?.summary || ""}
@@ -131,30 +158,37 @@ export function ResumeModulesRenderer({
                   )}
                 </div>
               </ModuleCard>
+              </div>
             );
           }
 
           if (modKey === "workExperience") {
             return (
-              <ModuleCard key={modKey} id={anchorId} title={title} icon={<Briefcase className="h-4 w-4" />} {...commonProps}>
+              <div key={modKey} {...confirmWrapProps(modKey)}>
+              <ModuleCard key={modKey} id={anchorId} title={title} icon={<Briefcase className="h-4 w-4" />} headerTools={pendingBadge(modKey)} {...commonProps}>
                 <ExperienceList type="workExperience" />
               </ModuleCard>
+              </div>
             );
           }
 
           if (modKey === "personalProjects") {
             return (
-              <ModuleCard key={modKey} id={anchorId} title={title} icon={<FolderGit2 className="h-4 w-4" />} {...commonProps}>
+              <div key={modKey} {...confirmWrapProps(modKey)}>
+              <ModuleCard key={modKey} id={anchorId} title={title} icon={<FolderGit2 className="h-4 w-4" />} headerTools={pendingBadge(modKey)} {...commonProps}>
                 <ExperienceList type="personalProjects" />
               </ModuleCard>
+              </div>
             );
           }
 
           if (modKey === "education") {
             return (
-              <ModuleCard key={modKey} id={anchorId} title={title} icon={<GraduationCap className="h-4 w-4" />} {...commonProps}>
+              <div key={modKey} {...confirmWrapProps(modKey)}>
+              <ModuleCard key={modKey} id={anchorId} title={title} icon={<GraduationCap className="h-4 w-4" />} headerTools={pendingBadge(modKey)} {...commonProps}>
                 <ExperienceList type="education" />
               </ModuleCard>
+              </div>
             );
           }
 
@@ -165,7 +199,8 @@ export function ResumeModulesRenderer({
             const overviewValue = resumeData?.additional?.skillOverview || "";
             const overviewOnChange = (val: string) => updateAdditional({ skillOverview: val });
             return (
-              <ModuleCard key={modKey} id={anchorId} title={title} icon={<Wrench className="h-4 w-4" />} {...commonProps}>
+              <div key={modKey} {...confirmWrapProps(modKey)}>
+              <ModuleCard key={modKey} id={anchorId} title={title} icon={<Wrench className="h-4 w-4" />} headerTools={pendingBadge(modKey)} {...commonProps}>
                 <div className="flex flex-col gap-3">
                   <div>
                     <div className="mb-1 text-[11px] font-medium text-muted-foreground">技能概述（描述性文字）</div>
@@ -200,14 +235,17 @@ export function ResumeModulesRenderer({
                   )}
                 </div>
               </ModuleCard>
+              </div>
             );
           }
 
           // 渲染完全自定义的模块
           return (
-            <ModuleCard key={modKey} id={anchorId} title={title} icon={<FolderGit2 className="h-4 w-4" />} {...commonProps}>
+            <div key={modKey} {...confirmWrapProps(modKey)}>
+            <ModuleCard key={modKey} id={anchorId} title={title} icon={<FolderGit2 className="h-4 w-4" />} headerTools={pendingBadge(modKey)} {...commonProps}>
               <ExperienceList type="custom" moduleKey={modKey} />
             </ModuleCard>
+            </div>
           );
         })}
 

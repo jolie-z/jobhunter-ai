@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { PendingSummaryBar } from "../features/v2-resume-editor/components/pending-summary-bar"
 import { useStrategyStore } from "@/hooks/use-strategy-store"
 import { useResumeV2Store } from "@/hooks/use-resume-v2-store"
 import { ResumeSidebar } from "./resume-sidebar"
@@ -111,12 +112,15 @@ export function ResumeBuilder() {
         {/* data-resume-canvas：查找替换高亮 hook（useEditorSearchHighlight）的画布容器标记，
             与编辑区 v2-resume-editor/index.tsx 同名约定（2026-09-23 七项修复#5） */}
         <main data-resume-canvas="true" className="flex-1 overflow-y-auto">
+          <div className="mx-auto flex max-w-4xl flex-col gap-4 px-4 py-4 sm:px-6 sm:py-6">
+          <PendingSummaryBar />
           <ResumeModulesRenderer
             formattingModuleId={actions.formattingModuleId}
             handleFormatMarkdown={actions.handleFormatMarkdown}
             activeSyncModuleId={activeSyncModuleId}
             setActiveSyncModuleId={setActiveSyncModuleId}
           />
+          </div>
         </main>
 
         {/* 🌟 模块导览条：悬停展开，点击平滑滚动到对应模块 */}

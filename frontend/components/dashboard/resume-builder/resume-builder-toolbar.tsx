@@ -5,6 +5,8 @@
 // store 状态直接内部消费（R1 审查 P2：避免 24 个扁平 props 的 Data Clumps）
 
 import { useState, useEffect } from "react"
+import { useResumeV2Store } from "@/hooks/use-resume-v2-store"
+import { OriginalTextTrigger } from "../features/v2-resume-editor/components/original-text-drawer"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { JdReportDialog } from "./jd-report-dialog"
@@ -94,10 +96,13 @@ export function ResumeBuilderToolbar(props: ResumeBuilderToolbarProps) {
     setIsEditingName(false)
   }
 
+  const snapshotId = useResumeV2Store((state) => state.resumeData?._meta?.snapshot_id)
+
   return (
     <header className="sticky top-0 z-20 shrink-0 border-b border-border bg-background/80 backdrop-blur-md">
       <div className="flex items-center justify-between gap-4 px-5 py-3.5">
         <div className="flex min-w-0 items-center gap-2 flex-1">
+          <OriginalTextTrigger snapshotId={snapshotId} />
           <FileText className="h-5 w-5 shrink-0 text-primary" />
           {isEditingName ? (
             <div className="flex items-center gap-1.5">
