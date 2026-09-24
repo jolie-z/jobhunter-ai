@@ -98,6 +98,20 @@ def test_generate_jd_report_success(
     assert mock_openai.return_value.chat.completions.create.call_count == 1
 
 
+@pytest.fixture(autouse=True)
+def _reset_jd_report_cache():
+    """进程内 5 分钟报告缓存在用例间重置：generate 用例回写成功会把 LLM mock 文本写入
+    _JD_REPORT_CACHE（update_global_jd_report 即缓存刷新），后续 get 用例会命中缓存短路、
+    触达不了自身 mock（顺序敏感假失败）。autouse 前后双清，不依赖用例执行顺序。"""
+    from app.strategy import jd_report_service
+
+    jd_report_service._JD_REPORT_CACHE["value"] = None
+    jd_report_service._JD_REPORT_CACHE["at"] = 0.0
+    yield
+    jd_report_service._JD_REPORT_CACHE["value"] = None
+    jd_report_service._JD_REPORT_CACHE["at"] = 0.0
+
+
 def test_get_jd_report_success(mock_feishu_token, mock_service_requests):
     mock_service_requests.post.return_value.json.return_value = {
         "code": 0,

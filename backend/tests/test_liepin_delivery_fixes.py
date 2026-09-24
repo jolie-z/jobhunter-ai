@@ -27,6 +27,7 @@ ENGINE_DIR = BACKEND_DIR / "liepin_scraper"
 if str(ENGINE_DIR) not in sys.path:
     sys.path.insert(0, str(ENGINE_DIR))
 try:
+    import engine_guard as eg
     import liepin_auto_delivery as lad
     import liepin_im_sender
     import liepin_resume_manager
@@ -137,6 +138,10 @@ def test_get_browser_page_rebuilds_dead_handle(monkeypatch):
     monkeypatch.setattr(liepin_session, "page", dead)
     monkeypatch.setattr(lad, "ChromiumPage", lambda opts: ctor_calls.append(opts) or fresh)
     monkeypatch.setattr(lad, "page", dead)
+    # 探活自愈重拉会过引擎守卫（engine_guard.verify_browser_identity → lsof 探测端口）。
+    # 容器/CI 精简环境可能无 lsof 二进制 → FileNotFoundError → fail-closed。本用例测的是
+    # "探活自愈重拉"而非守卫，精准 mock _lsof_pids 返回无占用（[]），守卫链路仍完整执行。
+    monkeypatch.setattr(eg, "_lsof_pids", lambda port: [])
 
     got = lad.get_browser_page()
 

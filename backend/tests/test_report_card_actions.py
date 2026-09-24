@@ -122,15 +122,21 @@ async def test_approve_all_mass_success():
 
 @pytest.mark.asyncio
 async def test_recall_selected_rejected_dual_flow():
-    """测试淘汰岗位误杀召回复活（验证具体数量 n 与流转至 AI 初评）"""
+    """测试淘汰岗位误杀召回复活（验证具体数量 n 与流转至 AI 初评）。
+
+    16cc0ee 召回三步链路后的真实语义：
+    - rec_101（有飞书记录）：守卫查实时跟进状态（白名单放行）→ 重置「新线索」→ 本地标「召回待初评」→ 进入自动复评；
+    - 102（纯本地 rowid、无 feishu_record_id 且无 job_link）：无法推送飞书复评 → 进失败名单，
+      本地状态不动（不再是旧语义的直接标「召回待初评」），卡片为「部分完成」。
+    """
     with tempfile.NamedTemporaryFile(suffix=".db") as tmp_db:
         db_path = tmp_db.name
         with sqlite3.connect(db_path) as conn:
             conn.execute(
-                "CREATE TABLE raw_jobs (rowid INTEGER PRIMARY KEY, feishu_record_id TEXT, process_status TEXT)"
+                "CREATE TABLE raw_jobs (rowid INTEGER PRIMARY KEY, feishu_record_id TEXT, process_status TEXT, job_link TEXT)"
             )
             conn.execute("INSERT INTO raw_jobs (rowid, feishu_record_id, process_status) VALUES (101, 'rec_101', '规则清洗淘汰')")
-            conn.execute("INSERT INTO raw_jobs (rowid, feishu_record_id, process_status) VALUES (102, '', 'AI排雷淘汰')")
+            conn.execute("INSERT INTO raw_jobs (rowid, feishu_record_id, process_status, job_link) VALUES (102, '', 'AI排雷淘汰', NULL)")
 
         chat_id = "oc_test_chat_123"
         action_value = {"action": "recall_selected_rejected"}
@@ -138,25 +144,30 @@ async def test_recall_selected_rejected_dual_flow():
 
         with patch("app.services.report_card_actions._get_raw_db_path", return_value=db_path), \
              patch("app.services.feishu_service.update_feishu_record", return_value=True) as mock_update, \
+             patch("app.services.feishu_service.get_job_record_from_feishu", return_value={"fields": {"跟进状态": "已淘汰"}}) as mock_record, \
              patch("app.services.report_card_actions.send_feishu_card", new_callable=AsyncMock) as mock_card, \
              patch("app.services.report_card_actions.mark_job_approved"):
 
             await handle_report_card_action(chat_id, action_value, selected_options=selected_options)
 
-            # 验证仅针对 rec_101 调用了飞书 API，且跟进状态重置为「新线索」（进入 AI 初评）
+            # 召回守卫 fail-closed：飞书路径先查实时跟进状态，白名单（新线索/已淘汰/空）才放行；
+            # 无凭证环境下守卫会拒召（update 0 次调用），故必须 mock 掉守卫的记录查询
+            mock_record.assert_called_once()
+            # 验证仅针对 rec_101（飞书路径）调用了飞书写 API；102 无链接走失败分支不调
             mock_update.assert_called_once_with("rec_101", {"跟进状态": "新线索"})
 
-            # 验证本地 SQLite 两条均更新为 '召回待初评'
+            # 验证本地 SQLite：rec_101 标「召回待初评」；102 无岗位链接无法复评，保持原淘汰态
             with sqlite3.connect(db_path) as conn:
                 st1 = conn.execute("SELECT process_status FROM raw_jobs WHERE feishu_record_id = 'rec_101'").fetchone()[0]
                 st2 = conn.execute("SELECT process_status FROM raw_jobs WHERE rowid = 102").fetchone()[0]
                 assert st1 == "召回待初评"
-                assert st2 == "召回待初评"
+                assert st2 == "AI排雷淘汰"
 
             assert mock_card.call_count == 1
             card = mock_card.call_args[0][1]
-            assert "选中的 2 个误杀岗位召回成功" in card["header"]["title"]["content"]
-            assert "AI 初评" in str(card)
+            assert "误杀召回部分完成 (成功 1 / 失败 1)" in card["header"]["title"]["content"]
+            # 目标队列字段由 build_action_result_card 渲染为「AI 初步评估（已跳过初筛）」
+            assert "AI 初步评估" in str(card)
 
 
 @pytest.mark.asyncio
