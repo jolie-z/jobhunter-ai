@@ -6,7 +6,16 @@ const eslintConfig = [
   ...coreWebVitals,
   ...typescript,
   {
-    ignores: [".next/**", "node_modules/**", "out/**", "next-env.d.ts"],
+    // public/vditor/** 是 vditor@4 自托管运行时资产（来源见 public/vditor/SOURCE.md），
+    // 518d5d0 用 git add -f 绕过 dist 忽略规则入库；eslint 不看 .gitignore，
+    // lute.min.js 这类压缩产物会刷出数千 error 挂掉 lint 门禁，必须在此忽略。
+    ignores: [
+      ".next/**",
+      "node_modules/**",
+      "out/**",
+      "next-env.d.ts",
+      "public/vditor/**",
+    ],
   },
   {
     rules: {
