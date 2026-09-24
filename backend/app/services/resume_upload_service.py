@@ -148,6 +148,17 @@ async def run_parse_pipeline(task_id: str, file_path: str, filename: str) -> Non
 
         personal_info, structured, cleaned_md = await _run_structuring(task_id, raw_markdown)
 
+        # 原文快照（底稿）：原文件字节已在内存（临时文件阅后即焚前），落盘留存 + 挂 _meta
+        # 失败只告警不阻塞解析主链路
+        try:
+            from app.services.resume_snapshot_service import save_snapshot
+
+            with open(file_path, "rb") as f:
+                source_bytes = f.read()
+            structured = save_snapshot(task_id, source_bytes, filename, raw_markdown, structured)
+        except Exception:
+            logger.exception(f"[File: resume_upload_service.py -> Func: run_parse_pipeline] 快照留存失败（忽略）{task_id}")
+
         await update_task(task_id, cleaned_markdown=cleaned_md)
 
         # 将脱敏提取出的个人信息，挂载回结构化 JSON 中，供前端 V2 Store 直接消费渲染
@@ -177,6 +188,15 @@ async def run_retry_pipeline(task_id: str, raw_markdown: str) -> None:
         # 双保险：retry_upload 入口已重置过一次，这里再兜底防重复入口漏带
         await update_task(task_id, progress_chars=0)
         personal_info, structured, cleaned_md = await _run_structuring(task_id, raw_markdown)
+
+        # 重试后覆盖快照的 parsed.json 与置信度（snapshot_id/task_id 不变，原件不重复拷贝），
+        # 保证修正回流的比对基准与最终保存的内容一致
+        try:
+            from app.services.resume_snapshot_service import update_snapshot_parsed
+
+            structured = update_snapshot_parsed(task_id, structured)
+        except Exception:
+            logger.exception(f"[File: resume_upload_service.py -> Func: run_retry_pipeline] 快照更新失败（忽略）{task_id}")
 
         await update_task(task_id, cleaned_markdown=cleaned_md)
         if isinstance(structured, dict):

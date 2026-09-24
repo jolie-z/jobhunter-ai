@@ -39,6 +39,7 @@ import { searchResumeMatches, replaceResumeText } from "../utils/resume-search-u
 import { useEditorSearchHighlight } from "../hooks/use-editor-search-highlight"
 import { SearchReplacePopover } from "./search-replace-popover"
 import { useResumeUndoRedo } from "../hooks/use-resume-undo-redo"
+import { OriginalTextTrigger } from "./original-text-drawer"
 
 export interface EditorToolbarProps {
   findText: string
@@ -369,6 +370,9 @@ export function EditorToolbar({
 
         {/* 3️⃣ AI 实验室收纳 + 4️⃣ 预览与导出岛 (右侧收尾区) */}
         <div className="flex items-center gap-0.5 shrink-0">
+          {/* 📄 对照原文（解析底稿抽屉；老简历无快照自动隐藏） */}
+          <OriginalTextTrigger snapshotId={resumeData?._meta?.snapshot_id} />
+
           {/* 🧠 更多 AI 工具 (下拉整合：靶心诊断、AI向导、QA评估) */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

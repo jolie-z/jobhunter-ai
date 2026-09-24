@@ -101,4 +101,14 @@ export interface ResumeDataV2 {
   moduleOrder: string[]
   moduleTitles: Record<string, string>
   customModules?: Record<string, ExperienceV2[]>
+  /**
+   * 解析元数据（非业务字段）：随「结构化数据」整体持久化到飞书
+   * snapshot_id=原文快照 ID（=上传 task_id）；confidence=各模块解析置信度；
+   * 前端 confirmModule 会把对应模块覆写为 "confirmed"（用户改过=人比机器准）
+   */
+  _meta?: {
+    snapshot_id?: string
+    confidence?: Record<string, string>
+    parsed_at?: string
+  }
 }

@@ -17,6 +17,8 @@ class SaveConfigRequest(BaseModel):
     table_type: str  # "resume"
     record_id: str | None = None
     fields: dict[str, Any]
+    # 原文快照 ID（= 上传 task_id）：保存时写飞书快照字段并记录修正回流；老简历/本地草稿无此值
+    snapshot_id: str | None = None
 
 class ToggleResumeStatusRequest(BaseModel):
     record_id: str

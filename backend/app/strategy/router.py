@@ -28,6 +28,9 @@ from app.strategy.routes.skill_agent_router import (
 from app.strategy.routes.skill_artifacts_router import (  # noqa: F401
     router as skill_artifacts_subrouter,
 )
+from app.strategy.routes.snapshot_router import (
+    router as snapshot_subrouter,  # noqa: F401
+)
 from app.strategy.routes.upload_router import router as upload_subrouter  # noqa: F401
 
 # 1. 导出所有 schemas
@@ -62,6 +65,7 @@ router = APIRouter(prefix="/api/strategy", tags=["Strategy Lab"])
 
 # 4. 挂载子路由
 router.include_router(rules_subrouter)
+router.include_router(snapshot_subrouter)
 router.include_router(upload_subrouter)
 router.include_router(render_subrouter)
 router.include_router(ai_subrouter)

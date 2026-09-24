@@ -2,7 +2,7 @@ import React, { useState } from "react"
 import { useResumeV2Store } from "@/hooks/use-resume-v2-store"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { Sparkles, Briefcase, FolderGit2, GraduationCap, Wrench, User, Scale, FileText, RotateCcw, Scissors, Trash2, Plus, Wand2 } from "lucide-react"
+import { Sparkles, Briefcase, FolderGit2, GraduationCap, Wrench, User, Scale, FileText, RotateCcw, Scissors, Trash2, Plus, Wand2, AlertTriangle } from "lucide-react"
 
 import { ModuleCard } from "@/components/dashboard/resume-builder/module-card"
 import { PersonalInfo } from "@/components/dashboard/resume-builder/personal-info"
@@ -57,8 +57,35 @@ export function EditorModuleRenderer({
     addCustomModule, updateModuleTitle,
     updateWorkExperience,
     archiveWorkExperience,
-    restoreWorkExperience, restoreProject
+    restoreWorkExperience, restoreProject,
+    confirmModule
   } = useResumeV2Store()
+
+  // 解析置信度（_meta.confidence）：low 模块显示「待确认」角标；confirmed/high 不显示
+  const confidenceMap = resumeData?._meta?.confidence ?? {}
+
+  // 「待确认」角标：可点击手动确认知悉（合法的短内容/缺失模块也能消标）
+  const pendingBadge = (modKey: string) => {
+    if (confidenceMap[modKey] !== "low") return null
+    return (
+      <span
+        role="button"
+        tabIndex={0}
+        onClick={(e) => { e.stopPropagation(); confirmModule(modKey) }}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); confirmModule(modKey) } }}
+        title="AI 解析置信度低，建议对照原文核实；点击确认知悉"
+        className="cursor-pointer select-none inline-flex items-center gap-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300 px-1.5 py-px text-[10px] font-medium hover:bg-amber-200 transition-colors"
+      >
+        <AlertTriangle className="h-2.5 w-2.5" />
+        待确认
+      </span>
+    )
+  }
+
+  // 编辑失焦即视为「用户已确认」：人比机器准，改过/碰过就消标（capture 捕获列表组件内部失焦）
+  const confirmWrapProps = (modKey: string) => ({
+    onBlurCapture: () => confirmModule(modKey),
+  })
 
   const [manualSyncOpen, setManualSyncOpen] = useState<Record<string, boolean>>({});
 
@@ -107,8 +134,8 @@ export function EditorModuleRenderer({
 
           if (modKey === "summary") {
             return (
-              <div data-section-id="summary" key={modKey}>
-                <ModuleCard id={modKey} title={title} icon={<Sparkles className="h-4 w-4" />} {...commonProps}>
+              <div data-section-id="summary" key={modKey} {...confirmWrapProps(modKey)}>
+                <ModuleCard id={modKey} title={title} icon={<Sparkles className="h-4 w-4" />} headerTools={pendingBadge(modKey)} {...commonProps}>
                 <div className="flex flex-col gap-3">
                   <MarkdownEditor
                     value={resumeData?.summary || ""}
@@ -159,14 +186,15 @@ export function EditorModuleRenderer({
 
           if (modKey === "workExperience") {
             return (
+              <div key={modKey} {...confirmWrapProps(modKey)}>
               <ModuleCard 
                 id={modKey} 
-                key={modKey} 
                 title={title} 
                 icon={<Briefcase className="h-4 w-4" />} 
                 headerTools={
                   <TooltipProvider delayDuration={200}>
                     <div className="flex items-center gap-1">
+                      {pendingBadge(modKey)}
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <Button variant="ghost" size="sm" onClick={() => setCompressOpen(true)} className="h-6 w-6 p-0 text-purple-600 hover:text-purple-700 hover:bg-purple-50/80 transition-all">
@@ -244,19 +272,21 @@ export function EditorModuleRenderer({
                 />
                 <ExperienceList type="workExperience" wizardStep={wizardStep} atsQueue={atsQueue} syncQueue={syncQueue} grillQueue={grillQueue} onWizardComplete={handleWizardComplete} />
               </ModuleCard>
+              </div>
             );
           }
 
           if (modKey === "personalProjects") {
             return (
+              <div key={modKey} {...confirmWrapProps(modKey)}>
               <ModuleCard 
                 id={modKey} 
-                key={modKey} 
                 title={title} 
                 icon={<FolderGit2 className="h-4 w-4" />} 
                 headerTools={
                   <TooltipProvider delayDuration={200}>
                     <div className="flex items-center gap-1">
+                      {pendingBadge(modKey)}
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <Button variant="ghost" size="sm" onClick={() => setPruneOpen(true)} className="h-6 w-6 p-0 text-red-600 hover:text-red-700 hover:bg-red-50/80 transition-all">
@@ -329,21 +359,24 @@ export function EditorModuleRenderer({
                 />
                 <ExperienceList type="personalProjects" wizardStep={wizardStep} atsQueue={atsQueue} syncQueue={syncQueue} grillQueue={grillQueue} onWizardComplete={handleWizardComplete} />
               </ModuleCard>
+              </div>
             );
           }
 
           if (modKey === "education") {
             return (
-              <ModuleCard id={modKey} key={modKey} title={title} icon={<GraduationCap className="h-4 w-4" />} {...commonProps}>
+              <div key={modKey} {...confirmWrapProps(modKey)}>
+              <ModuleCard id={modKey} title={title} icon={<GraduationCap className="h-4 w-4" />} headerTools={pendingBadge(modKey)} {...commonProps}>
                 <ExperienceList type="education" wizardStep={wizardStep} atsQueue={atsQueue} syncQueue={syncQueue} grillQueue={grillQueue} onWizardComplete={handleWizardComplete} />
               </ModuleCard>
+              </div>
             );
           }
 
           if (modKey === "additional") {
             return (
-              <div data-section-id="additional" key={modKey}>
-                <ModuleCard id={modKey} title={title} icon={<Wrench className="h-4 w-4" />} {...commonProps}>
+              <div data-section-id="additional" key={modKey} {...confirmWrapProps(modKey)}>
+                <ModuleCard id={modKey} title={title} icon={<Wrench className="h-4 w-4" />} headerTools={pendingBadge(modKey)} {...commonProps}>
                 <div className="flex flex-col gap-3">
                   <MarkdownEditor
                     value={resumeData?.additional?.technicalSkills?.join('\n') || ""}
@@ -393,9 +426,11 @@ export function EditorModuleRenderer({
           }
 
           return (
-            <ModuleCard id={modKey} key={modKey} title={title} icon={<FolderGit2 className="h-4 w-4" />} {...commonProps}>
+            <div key={modKey} {...confirmWrapProps(modKey)}>
+            <ModuleCard id={modKey} title={title} icon={<FolderGit2 className="h-4 w-4" />} headerTools={pendingBadge(modKey)} {...commonProps}>
               <ExperienceList type="custom" moduleKey={modKey} wizardStep={wizardStep} atsQueue={atsQueue} syncQueue={syncQueue} grillQueue={grillQueue} onWizardComplete={handleWizardComplete} />
             </ModuleCard>
+            </div>
           );
         })}
 

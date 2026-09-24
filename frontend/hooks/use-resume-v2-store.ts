@@ -53,6 +53,9 @@ interface ResumeV2State {
   addCustomModule: (title: string) => void
   updateModuleTitle: (moduleKey: string, newTitle: string) => void
 
+  // 用户确认（改过/点击角标）：该模块置信度覆写为 confirmed，前端「待确认」角标随之消失
+  confirmModule: (moduleKey: string) => void
+
   // Custom Module Items Management
   addCustomItem: (moduleKey: string, item: ExperienceV2) => void
   updateCustomItem: (moduleKey: string, index: number, item: Partial<ExperienceV2>) => void
@@ -115,6 +118,22 @@ const withKeys = <T extends { _key?: string }>(items?: (T | null | undefined)[])
 
 export const useResumeV2Store = create<ResumeV2State>((set) => ({
   resumeData: null,
+
+  confirmModule: (moduleKey) =>
+    set((state) => {
+      if (!state.resumeData) return state;
+      // 幂等卫语句：仅 low → confirmed 有意义。非 low（high/confirmed/无标记）时
+      // 绝不克隆 resumeData——否则模块内每次 blur 都触发整树重渲染 + 虚假脏标记
+      if (state.resumeData._meta?.confidence?.[moduleKey] !== "low") return state;
+      const confidence = { ...(state.resumeData._meta.confidence ?? {}) };
+      confidence[moduleKey] = "confirmed";
+      return {
+        resumeData: {
+          ...state.resumeData,
+          _meta: { ...state.resumeData._meta, confidence }
+        }
+      };
+    }),
 
   setResumeData: (data) => set({
     resumeData: data ? {

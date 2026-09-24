@@ -600,6 +600,7 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
         setSaving(true)
 
         let payloadFields: any = {};
+        let snapshotId: string | undefined = undefined;
         if (section === 'resume') {
             const blocks = parseMarkdownToBlocks(editingItem.content);
             const personalInfoBlock = blocks.find(b => b.title === '个人信息');
@@ -631,12 +632,15 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
                 "当前状态": editingItem.status,
                 "结构化数据": JSON.stringify(latestJsonToSave)
             };
+            snapshotId = (latestJsonToSave as { _meta?: { snapshot_id?: string } })?._meta?.snapshot_id;
         }
 
         const actualRecordId = editingItem.record_id?.startsWith('temp_') ? undefined : editingItem.record_id;
         const payload = {
             table_type: "resume", record_id: actualRecordId,
-            fields: payloadFields
+            fields: payloadFields,
+            // 原文快照 ID：后端据此写飞书快照字段并记录「初始解析 vs 本次保存」修正回流（老简历无此值）
+            snapshot_id: snapshotId
         }
         try {
             const res = await apiFetch(`/api/strategy/save`, {

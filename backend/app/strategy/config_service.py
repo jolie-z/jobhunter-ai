@@ -32,7 +32,20 @@ logger.setLevel(logging.INFO)
 PREFERENCE_TYPE_WHITELIST = {"核心加分", "职业愿景", "自动化阈值"}
 
 CONTENT_TYPE_JSON = "application/json"
-RESUME_SAVE_FIELD_WHITELIST = {"简历版本", "简历内容", "个人信息", "当前状态", "结构化数据"}
+# 原文快照两字段（自动建字段，见 resume_snapshot_service.ensure_resume_snapshot_fields）
+RESUME_SNAPSHOT_FIELD_ID = "原件快照ID"
+RESUME_SNAPSHOT_FIELD_FILE = "原件附件"
+RESUME_SAVE_FIELD_WHITELIST = {"简历版本", "简历内容", "个人信息", "当前状态", "结构化数据", RESUME_SNAPSHOT_FIELD_ID, RESUME_SNAPSHOT_FIELD_FILE}
+
+
+def _final_structured_for_corrections(fields: dict) -> dict:
+    """从保存 fields 里解出最终结构化 JSON，供修正回流比对；解析失败返回空 dict。"""
+    try:
+        raw = fields.get("结构化数据")
+        data = json.loads(raw) if isinstance(raw, str) else raw
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 
 def _get_svc():
@@ -363,6 +376,25 @@ async def save_strategy_config_service(payload: SaveConfigRequest) -> str:
         if not fields:
             raise ValueError("没有可保存的简历字段（字段名不在白名单内）")
 
+        # 原文快照（底稿）：解析任务留存的原件随简历记录绑定。
+        # 建字段/取附件 token/修正记录任何失败都只降级告警，绝不阻塞简历保存本体
+        if payload.snapshot_id:
+            try:
+                from app.services.resume_snapshot_service import (
+                    ensure_resume_snapshot_fields,
+                    ensure_snapshot_feishu_token,
+                )
+
+                # 建字段失败（权限/网络）时绝不写快照字段——未知字段会让飞书拒绝整条记录
+                if await ensure_resume_snapshot_fields():
+                    file_token = await ensure_snapshot_feishu_token(payload.snapshot_id)
+                    fields[RESUME_SNAPSHOT_FIELD_ID] = payload.snapshot_id
+                    # 附件字段写列表形态（与 render_router._update_record_attachments 同构）
+                    if file_token:
+                        fields[RESUME_SNAPSHOT_FIELD_FILE] = [{"file_token": file_token}]
+            except Exception:
+                logger.exception(f"快照字段写入准备失败（降级跳过）snapshot={payload.snapshot_id}")
+
     async with httpx.AsyncClient() as client:
         if payload.record_id:
             url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{settings.FEISHU_APP_TOKEN}/tables/{table_id}/records/{payload.record_id}"
@@ -379,6 +411,14 @@ async def save_strategy_config_service(payload: SaveConfigRequest) -> str:
             # only_record_id 锁定目标：防飞书读后写延迟下拉到旧列表、把别的简历错设为生效
             if payload.table_type == "resume" and not payload.record_id:
                 await _ensure_single_resume_active(only_record_id=record_id)
+            # 修正回流（错题本旁路）：对比初始解析与本次保存，差异模块落本地 SQLite
+            if payload.table_type == "resume" and payload.snapshot_id:
+                try:
+                    from app.services.resume_snapshot_service import record_corrections
+
+                    record_corrections(payload.snapshot_id, _final_structured_for_corrections(fields))
+                except Exception:
+                    logger.exception("修正回流记录失败（忽略）")
             return record_id
         raise ValueError(f"保存失败: {data.get('msg')}")
 

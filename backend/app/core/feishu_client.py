@@ -169,6 +169,34 @@ class FeishuClient:
         self._fields_cache[table_id] = (time.time() + 120, names)
         return names
 
+    async def create_bitable_field(self, table_id: str, field_name: str, field_type: int = 1) -> bool:
+        """创建多维表格字段（field_type: 1=多行文本 17=附件）。字段已存在时幂等返回 False。
+
+        供快照字段等自动建表场景；调用方需自行保证命名稳定，不做重命名/删除。
+        """
+        existing = await self.list_bitable_fields(table_id)
+        if field_name in existing:
+            return False
+
+        token = await self.get_tenant_access_token()
+        self._check_app_token()
+        url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/fields"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        payload = {"field_name": field_name, "type": field_type}
+
+        async with httpx.AsyncClient(timeout=self.timeout, trust_env=False) as client:
+            data = await self._execute_request_with_retry(client, "POST", url, "创建飞书字段", json=payload, headers=headers)
+            if data.get("code") != 0:
+                # 并发下他处已建出同名字段：视为已存在，幂等返回
+                msg = str(data.get("msg", ""))
+                if "exist" in msg.lower() or "duplicat" in msg.lower() or ".FieldName" in msg:
+                    return False
+                raise HTTPException(status_code=502, detail=f"创建飞书字段失败: {data.get('msg')}")
+
+        # 字段清单已变化，失效缓存让后续读取拿到新字段
+        self._fields_cache.pop(table_id, None)
+        return True
+
     async def search_bitable_records(self, table_id: str, field_names: list[str] | None = None) -> list[dict[str, Any]]:
         """按条件检索记录（POST /records/search）。field_names 指定只返回哪些字段（放 body），
         相比 GET /records 的全字段返回，可把大文本字段裁掉，大幅降低传输量。
