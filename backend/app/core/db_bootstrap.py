@@ -64,6 +64,17 @@ CREATE TABLE IF NOT EXISTS job_preferences (
     rule TEXT,
     status TEXT
 );
+CREATE TABLE IF NOT EXISTS resume_parse_corrections (
+  id TEXT PRIMARY KEY,
+  snapshot_id TEXT NOT NULL,
+  module_key TEXT NOT NULL,
+  initial_text TEXT,
+  corrected_text TEXT,
+  corrected_hash TEXT,
+  created_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_resume_corrections_dedup
+  ON resume_parse_corrections(snapshot_id, module_key, corrected_hash);
 CREATE TABLE IF NOT EXISTS job_strategies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     strategy_name TEXT NOT NULL,

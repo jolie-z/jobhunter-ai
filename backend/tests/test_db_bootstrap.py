@@ -32,7 +32,8 @@ DEFAULT_DB_PATH = str(BACKEND_ROOT / "data" / "job_hunter.db")
 EXPECTED_TABLES = {
     "custom_model_pricing", "evaluation_weights", "job_goals", "job_preferences",
     "job_strategies", "pipeline_keyword_history", "pipeline_latest_run",
-    "pipeline_scrape_config", "raw_jobs", "scrape_sessions", "token_log", "xhs_raw_posts",
+    "pipeline_scrape_config", "raw_jobs", "resume_parse_corrections",
+    "scrape_sessions", "token_log", "xhs_raw_posts",
 }
 EXPECTED_TRIGGERS = {"trg_raw_jobs_insert_updated", "trg_raw_jobs_status_updated"}
 
