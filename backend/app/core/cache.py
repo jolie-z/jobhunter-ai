@@ -166,8 +166,11 @@ class JobCache:
             jobs = payload.get("jobs")
             if isinstance(jobs, list) and jobs:
                 cls._data = jobs
-                cls._timestamp = float(payload.get("timestamp", 0))
-                print(f"⚡ 已从磁盘快照恢复岗位缓存 {len(jobs)} 条（快照时间 {_format_ts(cls._timestamp)}），将后台静默刷新")
+                # 快照只是「重启加速器」，不是权威数据：timestamp 归零让首个读请求必走
+                # stale 路径踢后台静默刷新（否则快照新鲜期内 get() 会把它当有效缓存长期返回，
+                # 坏快照无法自愈——2026-09-24 主页只剩 1 条空壳岗位事故的放大器）。
+                cls._timestamp = 0.0
+                print(f"⚡ 已从磁盘快照恢复岗位缓存 {len(jobs)} 条（快照时间 {_format_ts(float(payload.get('timestamp') or 0))}），首个读取将触发后台静默刷新")
         except Exception:
             # 快照损坏时静默放弃，走正常全量拉取
             pass

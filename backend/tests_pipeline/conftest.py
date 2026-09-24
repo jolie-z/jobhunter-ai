@@ -119,6 +119,23 @@ def _isolate_51job_upload_quota(tmp_path, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_job_cache_snapshot(tmp_path, monkeypatch):
+    """岗位列表缓存（JobCache）的磁盘快照重定向到临时目录，并清空测试进程内存态。
+
+    事故背景（2026-09-24）：test_m9_qa_fixes 的 kick_background_refresh 用例把 mock 数据
+    [{"record_id": "x"}] 经 JobCache.set() 持久化进生产 data/job_cache_snapshot.json，
+    后端重启后按快照恢复 1 条空壳岗位，主页列表只剩一条「未知公司/未知职位」。
+    凡触发 JobCache.set()/clear() 的用例都不得读写生产快照文件。
+    """
+    from app.core.cache import JobCache
+
+    monkeypatch.setattr(JobCache, "_snapshot_path", tmp_path / "job_cache_snapshot.json")
+    JobCache._reset_for_tests()
+    yield
+    JobCache._reset_for_tests()
+
+
 # ============ 测试密闭化：飞书出站边界全密封（2026-09-20 CI 红战役） ============
 #
 # 背景：部分管线用例未 mock 飞书触点，本地靠真实凭据"意外通过"（静默打生产 API），
