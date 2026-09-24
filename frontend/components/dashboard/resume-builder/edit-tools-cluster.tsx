@@ -1,14 +1,15 @@
 "use client"
 
-// 简历库编辑工具岛：加粗 + 查找替换 + 撤销/重做
+// 简历库编辑工具岛：撤销/重做 + 查找替换
 // 自「定制面板-简历编辑区」(v2-resume-editor) 迁移（2026-09-23 七项修复#5）：
-// - 加粗为纯 DOM 操作（零耦合，textarea/input 通用）
 // - 查找替换复用 SearchReplacePopover + resume-search-utils（数据层就是两区共用的 ResumeDataV2 store）
 // - 撤销/重做复用 useResumeUndoRedo（resumeKey 用简历库的 record_id）
 // 视图层唯一适配：锚点 id 命名（简历库模块卡为 module-anchor-{key}，编辑区为裸 key）
+// （加粗按钮已下线 2026-09-24：vditor 所见即所得后 activeElement 非 textarea/input，
+//  主路径本就不生效，加粗统一走各编辑器自带工具栏）
 
 import React, { useEffect, useMemo, useState } from "react"
-import { Bold, Redo2, Undo2 } from "lucide-react"
+import { Redo2, Undo2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip"
 import { toast } from "@/hooks/use-toast"
@@ -104,21 +105,6 @@ export function EditToolsCluster({ resumeKey }: { resumeKey?: string }) {
     })
   }
 
-  const handleBold = () => {
-    const el = document.activeElement as HTMLTextAreaElement | HTMLInputElement
-    if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT")) {
-      const start = el.selectionStart
-      const end = el.selectionEnd
-      if (start !== null && end !== null && start !== end) {
-        const val = el.value
-        const selectedText = val.substring(start, end)
-        const replacement = `**${selectedText}**`
-        el.setRangeText(replacement, start, end, "select")
-        el.dispatchEvent(new Event("input", { bubbles: true }))
-      }
-    }
-  }
-
   return (
     <TooltipProvider delayDuration={200}>
       <div className="flex items-center gap-0.5">
@@ -158,22 +144,6 @@ export function EditToolsCluster({ resumeKey }: { resumeKey?: string }) {
             </Button>
           </TooltipTrigger>
           <TooltipContent>重做修改 (⌘⇧Z / Ctrl+Y)</TooltipContent>
-        </Tooltip>
-
-        {/* 加粗 */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              size="icon"
-              variant="ghost"
-              className="h-8 w-7 rounded-lg text-muted-foreground hover:text-foreground hover:bg-background"
-              onClick={handleBold}
-              onMouseDown={(e) => e.preventDefault()}
-            >
-              <Bold className="size-3.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>加粗（选中文字后点击）</TooltipContent>
         </Tooltip>
 
         {/* 查找替换（自编辑区原样复用的受控组件） */}

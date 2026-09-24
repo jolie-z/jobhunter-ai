@@ -1,5 +1,9 @@
 "use client"
 
+// 定制面板-简历编辑区顶部工具栏
+// （顶部加粗按钮已下线 2026-09-24：vditor 所见即所得后 activeElement 非 textarea/input，
+//  主路径本就不生效，加粗统一走各编辑器自带工具栏；与简历库 edit-tools-cluster 同批）
+
 import React, { useState } from "react"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import {
@@ -12,7 +16,6 @@ import {
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import {
-  Bold,
   Undo2,
   Redo2,
   ChevronDown,
@@ -200,21 +203,6 @@ export function EditorToolbar({
       ),
     })
   }
-  const handleBold = () => {
-    const el = document.activeElement as HTMLTextAreaElement | HTMLInputElement
-    if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT")) {
-      const start = el.selectionStart
-      const end = el.selectionEnd
-      if (start !== null && end !== null && start !== end) {
-        const val = el.value
-        const selectedText = val.substring(start, end)
-        const replacement = `**${selectedText}**`
-        el.setRangeText(replacement, start, end, "select")
-        el.dispatchEvent(new Event("input", { bubbles: true }))
-      }
-    }
-  }
-
   return (
     <TooltipProvider delayDuration={200}>
       <div className="flex items-center justify-between border-b border-border/80 bg-card/95 backdrop-blur-md px-2 py-1.5 shadow-xs sticky top-0 z-20 gap-1 overflow-x-auto min-w-0">
@@ -258,21 +246,6 @@ export function EditorToolbar({
             <TooltipContent>重做全局修改 (⌘⇧Z / Ctrl+Y)</TooltipContent>
           </Tooltip>
 
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                size="icon"
-                variant="ghost"
-                className="size-7 text-slate-600 hover:text-slate-900 hover:bg-slate-100/80 rounded-md"
-                onClick={handleBold}
-                onMouseDown={(e) => e.preventDefault()}
-              >
-                <Bold className="size-3.5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>加粗 (**文本**)</TooltipContent>
-          </Tooltip>
-
           <SearchReplacePopover
             findText={findText}
             setFindText={setFindText}
@@ -308,7 +281,7 @@ export function EditorToolbar({
 
           <Separator orientation="vertical" className="mx-0.5 h-4 bg-slate-200" />
 
-          {/* 保存到飞书 (纯图标风格，与加粗/替换/排版彻底统一) */}
+          {/* 保存到飞书 (纯图标风格，与替换/排版彻底统一) */}
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
