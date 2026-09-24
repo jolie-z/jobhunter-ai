@@ -87,7 +87,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Separator } from "@/components/ui/separator"
 import { ScrollArea } from "@/components/ui/scroll-area" // 🚀 修复第2、4处：补充 shadcn 的 ScrollArea 组件
 import type { JobData } from "@/types/job"
-import { ResumeCanvasColumn } from "./resume-canvas/resume-canvas-column"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { parsePersonalInfo, PersonalInfo } from "@/lib/personal-info-parser"
@@ -282,8 +281,8 @@ export function JobDetailWorkspace({
   // 🌟 核心阀门重构：只用多Agent数据状态来决定是否进入新版排版
   const hasNewMultiAgentData = Boolean(job?.multiAgentRewrite && String(job.multiAgentRewrite).trim() !== "");
 
-  // 💡 注：不再需要 hasAnyAiData 和 hasOldAiData 变量，旧版组件 LegacyRawResumeEditor 内部的 useEffect 
-  // 已经能完美处理“AI改写JSON”的数据读取逻辑了。
+  // 💡 注：不再需要 hasAnyAiData 和 hasOldAiData 变量（旧版组件 LegacyRawResumeEditor 已删除，
+  // 其“AI改写JSON”数据读取逻辑已由现版编辑器接管）。
 
   const [selectedText, setSelectedText] = useState("")
   const [selectedSectionId, setSelectedSectionId] = useState<string | null>(null)
