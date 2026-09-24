@@ -45,10 +45,22 @@ def test_platform_sessions_endpoint(client, monkeypatch):
 
 # ─── 2. 唤起指定平台浏览器 ───
 def test_launch_platform_endpoint(client, monkeypatch):
-    monkeypatch.setattr(browser_mod, "launch_edge", lambda cfg: {"status": "success", "message": f"唤起 {cfg.port}"})
+    # 必须打路由模块自己的命名空间：scrape_router 顶层 `from ... import launch_edge`
+    # 在路由命名空间建立了局部名称引用绑定，patch browser_mod.launch_edge 打不中
+    # （Linux 无 Edge 时路由走真函数抛 EdgeNotFoundError → 400，CI 曾因此挂门禁；
+    # macOS 有真 Edge 侥幸绿）。另断言 mock 确被调用，杜绝环境巧合造成的假绿。
+    from app.pipeline.routes import scrape_router
+
+    def _fake_launch(cfg):
+        _fake_launch.called = True
+        return {"status": "success", "message": f"唤起 {cfg.port}"}
+
+    _fake_launch.called = False
+    monkeypatch.setattr(scrape_router, "launch_edge", _fake_launch)
 
     r = client.post("/api/pipeline/platform-sessions/launch", json={"platform": "boss"})
     assert r.status_code == 200
+    assert _fake_launch.called, "mock 未被路由调用——monkeypatch 又打错命名空间了"
     res = r.json()
     assert res["code"] == 0
     assert "已唤起" in res["msg"]
