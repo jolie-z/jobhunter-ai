@@ -4,7 +4,8 @@
 // 点击渲染区进入编辑后直接呈现加粗/列表/表格等最终效果，不再裸露 **、# 等
 // Markdown 标记（不要求用户懂 Markdown）；底层契约不变——进出的仍是 markdown
 // 纯文本，保存/导出/AI 改写链路零改动。
-// 高级用户可用工具栏「编辑模式」切到 IR/分屏源码；vditor 加载失败自动回退纯
+// 高级用户可用工具栏「编辑模式」切到分屏源码；vditor 加载失败自动回退纯
+// 文本 Textarea，绝不把编辑入口锁死（见 WysiwygSurface 的 8s 超时兜底）。
 // Textarea 源码编辑，保证任何时候都能改内容。
 
 import React, { useEffect, useRef, useState } from "react"
@@ -14,6 +15,7 @@ import type Vditor from "vditor"
 import "vditor/dist/index.css"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
+import { applyListStyle, LIST_STYLE_OPTIONS } from "./bullet-style"
 
 interface MarkdownEditorProps {
   value: string
@@ -37,13 +39,51 @@ function loadVditor(): Promise<typeof import("vditor")["default"]> {
   return vditorLoader
 }
 
-const RME_TOOLBAR = [
-  "undo", "redo", "|",
-  "headings", "bold", "italic", "strike", "|",
-  "list", "ordered-list", "check", "outdent", "indent", "|",
-  "quote", "code", "inline-code", "link", "table", "|",
-  "edit-mode",
-]
+// 工具栏按钮的极简中文悬停提示（原生 title，所有按钮统一走这份映射）
+const TOOLBAR_TITLES: Record<string, string> = {
+  undo: "撤销",
+  redo: "取消撤销",
+  headings: "标题",
+  bold: "加粗",
+  italic: "斜体",
+  strike: "删除线",
+  list: "圆点列表",
+  "ordered-list": "数字列表",
+  check: "任务列表",
+  "rme-outdent": "减少缩进",
+  "rme-indent": "增加缩进",
+  "rme-list-style": "列表符号",
+  link: "链接",
+  "rme-edit-mode": "编辑模式",
+}
+
+// 自定义按钮图标：与 vditor ant 图标一致的实心填充风格（14px 下线条图标过细看不清）
+const ICON_OUTDENT = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="11" y="4" width="10" height="2.6" rx="1.3"/><rect x="11" y="10.7" width="10" height="2.6" rx="1.3"/><rect x="11" y="17.4" width="10" height="2.6" rx="1.3"/><path d="M10 5.5 L4.5 12 L10 18.5 Z"/></svg>`
+const ICON_INDENT = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="4" width="10" height="2.6" rx="1.3"/><rect x="3" y="10.7" width="10" height="2.6" rx="1.3"/><rect x="3" y="17.4" width="10" height="2.6" rx="1.3"/><path d="M13 5.5 L18.5 12 L13 18.5 Z"/></svg>`
+const ICON_LIST_STYLE = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3.5" width="4.5" height="4.5" rx="1"/><circle cx="5.2" cy="12" r="2.4"/><path d="M5.2 16.2 L8 19 L5.2 21.8 L2.4 19 Z"/><rect x="11" y="4.4" width="10" height="2.4" rx="1.2" opacity="0.85"/><rect x="11" y="10.8" width="10" height="2.4" rx="1.2" opacity="0.85"/><rect x="11" y="17.2" width="10" height="2.4" rx="1.2" opacity="0.85"/></svg>`
+const ICON_EDIT_MODE = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H12v3.5a1.5 1.5 0 0 0 1.5 1.5H17v2h-2.5A3.5 3.5 0 0 1 11 5.5V4H6.5a.5.5 0 0 0-.5.5v15a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5V12h2v8a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 20Z"/><path d="M20.4 2.6a2 2 0 0 1 2.83 2.83l-7.53 7.52-3.2.87.87-3.2Z"/></svg>`
+
+interface ToolbarActions {
+  onIndentDir: (dir: "in" | "out") => void
+  onOpenListStyle: () => void
+  onOpenEditMode: () => void
+}
+
+// 引用/行内代码/代码块/表格按产品决策移除（简历场景 ATS 不友好，见 0923 工具栏批）；
+// 缩进两键自研（vditor 原生对普通段落无动作）、列表符号库与编辑模式为自研下拉
+function buildRmeToolbar({ onIndentDir, onOpenListStyle, onOpenEditMode }: ToolbarActions) {
+  return [
+    "undo", "redo", "|",
+    "headings", "bold", "italic", "strike", "|",
+    "list", "ordered-list", "check",
+    { name: "rme-outdent", icon: ICON_OUTDENT, tip: "减少缩进", click: () => onIndentDir("out") },
+    { name: "rme-indent", icon: ICON_INDENT, tip: "增加缩进", click: () => onIndentDir("in") },
+    { name: "rme-list-style", icon: ICON_LIST_STYLE, tip: "列表符号", click: () => onOpenListStyle() },
+    "|",
+    "link", "|",
+    { name: "rme-edit-mode", icon: ICON_EDIT_MODE, tip: "编辑模式", click: () => onOpenEditMode() },
+  ]
+}
 
 // 贴合卡片内联编辑观感的样式注入（每页一次），颜色走 shadcn 变量以适配明暗主题
 const RME_STYLE_ID = "rme-vditor-style"
@@ -101,6 +141,8 @@ const RME_CSS = `
 .rme-vditor .vditor-reset code { font-size: 0.9em; }
 .rme-vditor .vditor-reset table { font-size: 12px; }
 .rme-vditor .vditor-reset img { max-width: 100%; }
+/* 悬停提示统一走原生 title（TOOLBAR_TITLES），隐藏 vditor 自带 tooltip 防双显 */
+.rme-vditor .vditor-tooltip { display: none !important; }
 `
 
 function injectRmeStyle() {
@@ -156,8 +198,14 @@ type WysiwygSurfaceProps = {
   minHeight: string
 }
 
+function firstTextNode(el: HTMLElement): Text | null {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+  return walker.nextNode() as Text | null
+}
+
 function WysiwygSurface({ value, onChange, onExit, placeholder, className, minHeight }: WysiwygSurfaceProps) {
   const hostRef = useRef<HTMLDivElement>(null)
+  const wrapperRef = useRef<HTMLDivElement>(null)
   const instanceRef = useRef<Vditor | null>(null)
   const disposedRef = useRef(false)
   const lastEmittedRef = useRef(value)
@@ -167,6 +215,10 @@ function WysiwygSurface({ value, onChange, onExit, placeholder, className, minHe
   const [failed, setFailed] = useState(false)
   const readyRef = useRef(false)
   const failedRef = useRef(false)
+  // 自研下拉：列表符号库 / 编辑模式（所见即所得 ↔ 分屏预览）
+  const [menu, setMenu] = useState<"list-style" | "edit-mode" | null>(null)
+  const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; left: number }>({ left: 0 })
+  const [mode, setMode] = useState<"wysiwyg" | "sv">("wysiwyg")
 
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
@@ -215,9 +267,141 @@ function WysiwygSurface({ value, onChange, onExit, placeholder, className, minHe
     }
   }
 
-  // 初始化 Vditor（客户端 only）
+  // 工具栏自研变换：以编辑器当前内容为准（含 300ms 防抖内未落盘的输入）做整体替换，
+  // 并同步 lastEmittedRef 防外部值同步 effect 把旧值灌回来
+  const applyMarkdownTransform = (transform: (md: string) => string) => {
+    const vd = instanceRef.current
+    if (failedRef.current || !readyRef.current || !vd) return
+    const current = vd.getValue()
+    const next = transform(current)
+    setMenu(null)
+    if (next === current) return
+    try {
+      vd.setValue(next)
+    } catch {
+      return
+    }
+    lastEmittedRef.current = next
+    onChangeRef.current(next)
+  }
+
+  // 缩进：列表内派发原生 Tab/Shift+Tab 走 vditor 层级处理链；
+  // 普通段落以全角空格做首行缩进（可再用「减少缩进」回退）
+  const adjustIndent = (dir: "in" | "out") => {
+    const editable = hostRef.current?.querySelector<HTMLElement>(".vditor-wysiwyg [contenteditable]")
+    if (!editable) return // sv 源码模式下无富文本块，不处理
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0 || !sel.anchorNode || !editable.contains(sel.anchorNode)) return
+    // 从锚点就近定位所在列表项/段落块（li 的父级是 ul 而非 editable，不能按直接子级找）
+    const anchorEl: HTMLElement | null =
+      sel.anchorNode.nodeType === Node.ELEMENT_NODE
+        ? (sel.anchorNode as HTMLElement)
+        : sel.anchorNode.parentElement
+    if (!anchorEl || !editable.contains(anchorEl)) return
+    const li = anchorEl.closest("li")
+    if (li && editable.contains(li)) {
+      // vditor 的热键匹配依赖 event.code（synthetic 事件默认 code 为空，必须显式给）
+      editable.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", code: "Tab", bubbles: true, cancelable: true, shiftKey: dir === "out" })
+      )
+      scheduleCommit()
+      return
+    }
+    const block = anchorEl.closest<HTMLElement>("p, h1, h2, h3, h4, h5, h6")
+    if (!block || !editable.contains(block)) return
+    const textNode = firstTextNode(block)
+    if (!textNode) return
+    if (dir === "in") {
+      textNode.textContent = `　${textNode.textContent ?? ""}`
+    } else if (textNode.textContent?.startsWith("　") || textNode.textContent?.startsWith(" ")) {
+      textNode.textContent = textNode.textContent.slice(1)
+    } else {
+      return // 没有可回退的缩进
+    }
+    // 直接改 textContent 会使原 Range 失效：重置选区把光标放回块首
+    const freshRange = document.createRange()
+    freshRange.setStart(textNode, 0)
+    freshRange.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(freshRange)
+    // 通知 vditor DOM 已变化，走 input 链同步 markdown 并触发 onChange
+    editable.dispatchEvent(new InputEvent("input", { bubbles: true }))
+    scheduleCommit()
+  }
+
+  const openToolbarMenu = (which: "list-style" | "edit-mode", btnName: string) => {
+    const btn = hostRef.current?.querySelector<HTMLElement>(`.vditor-toolbar [data-type="${btnName}"]`)
+    if (btn) {
+      // fixed 定位直接用视口坐标：模块卡片 overflow-hidden 会裁掉 absolute 菜单（R2 用户反馈）。
+      // 按钮下方空间不足一屏菜单（约 350px）时向上弹出；用 bottom 定位贴合菜单实际高度，
+      // 避免按估写高度算 top 导致矮菜单（编辑模式仅 2 项）悬空
+      const btnRect = btn.getBoundingClientRect()
+      const MENU_MAX_H = 350
+      const flipUp = window.innerHeight - btnRect.bottom - 6 < MENU_MAX_H
+      setMenuPos({
+        top: flipUp ? undefined : btnRect.bottom + 6,
+        bottom: flipUp ? window.innerHeight - btnRect.top + 6 : undefined,
+        left: Math.max(8, Math.min(btnRect.left, window.innerWidth - 210)),
+      })
+    }
+    setMenu((prev) => (prev === which ? null : which))
+  }
+
+  // 复制富文本（分屏预览顶部的「复制」按钮）：HTML 版粘公众号/知乎等富文本编辑器，纯文本兜底
+  const copyRichText = async (btn?: Element | null) => {
+    const vd = instanceRef.current
+    if (!vd) return
+    let html = ""
+    try {
+      html = vd.getHTML()
+    } catch {
+      return
+    }
+    let plain = html
+    try {
+      plain = vd.getValue()
+    } catch {
+      // getHTML 成功而 getValue 失败几乎不可能，保底用 html
+    }
+    try {
+      if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+        try {
+          await navigator.clipboard.write([
+            new ClipboardItem({
+              "text/html": new Blob([html], { type: "text/html" }),
+              "text/plain": new Blob([plain], { type: "text/plain" }),
+            }),
+          ])
+        } catch {
+          // 权限拦截/不支持该 MIME 时降级纯文本
+          await navigator.clipboard.writeText(plain)
+        }
+      } else {
+        await navigator.clipboard.writeText(plain)
+      }
+    } catch {
+      return
+    }
+    if (btn) {
+      // 恢复文案必须硬编码：连击时若回读当前文字会把「已复制」存成 original 导致永久卡死
+      btn.textContent = "已复制"
+      setTimeout(() => {
+        btn.textContent = "复制"
+      }, 1200)
+    }
+  }
+
+  const switchMode = (next: "wysiwyg" | "sv") => {
+    setMenu(null)
+    commitNow() // 先把当前内容冲进 onChange，新实例以 lastEmittedRef 起稿
+    if (next !== mode) setMode(next)
+  }
+
+  // 初始化 Vditor（客户端 only）；mode 切换（所见即所得 ↔ 分屏预览）通过整实例重建完成
   useEffect(() => {
     disposedRef.current = false
+    readyRef.current = false
+    setReady(false)
     injectRmeStyle()
   // 兜底：vditor 异步初始化迟迟不完成（chunk 加载失败/内部卡死）时回退 Textarea，绝不把用户挡死。
   // 回退前必须销毁半初始化实例并置 failed 短路——否则外部 pointerdown 会经 commitNow()
@@ -251,7 +435,6 @@ function WysiwygSurface({ value, onChange, onExit, placeholder, className, minHe
           lang: "zh_CN",
           theme: isDark ? "dark" : "classic",
           icon: "ant",
-          mode: "wysiwyg",
           // 自托管 vditor 运行时资源（public/vditor/，含核心解析器 lute 与工具栏图标）：
           // 默认 jsdelivr CDN 在国内网络不稳定，lute 拉不到编辑器就起不来
           cdn: "/vditor",
@@ -259,7 +442,29 @@ function WysiwygSurface({ value, onChange, onExit, placeholder, className, minHe
           placeholder: placeholder || "",
           cache: { enable: false },
           undoDelay: 200,
-          toolbar: RME_TOOLBAR,
+          mode,
+          // 分屏预览顶部按钮：去掉 Desktop/Tablet/Mobile 与公众号/知乎专用复制，
+          // 合并为一个「复制」富文本按钮（用户 0924 反馈：前三个没用、后两个本质都是复制）
+          preview: {
+            actions: [
+              {
+                key: "rme-copy-rich",
+                text: "复制",
+                tooltip: "复制富文本，可直接粘贴到公众号/知乎等编辑器",
+                className: "rme-preview-copy",
+                click: (key) => {
+                  // 必须限定在本实例容器内查找：页面同时挂多个模块编辑器，全局查询会改到别人的按钮
+                  const btn = hostRef.current?.querySelector(`.vditor-preview__action [data-type="${key}"]`)
+                  void copyRichText(btn)
+                },
+              },
+            ],
+          },
+          toolbar: buildRmeToolbar({
+            onIndentDir: adjustIndent,
+            onOpenListStyle: () => openToolbarMenu("list-style", "rme-list-style"),
+            onOpenEditMode: () => openToolbarMenu("edit-mode", "rme-edit-mode"),
+          }),
           upload: {
             // 简历正文不收文件/图片：拦截上传与粘贴图片，避免 blob:url 垃圾写进 markdown。
             // vditor 4 源码：handler 存在即完全接管上传路径，返回 string 会以提示条展示，
@@ -309,9 +514,9 @@ function WysiwygSurface({ value, onChange, onExit, placeholder, className, minHe
       }
       instanceRef.current = null
     }
-    // 仅挂载时初始化一次；value/onChange 走 ref 与同步 effect
+    // mode 变化时整实例重建；value/onChange 走 ref 与同步 effect
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [mode])
 
   // 外部值同步：AI 改写/自动排版在非聚焦态更新内容时灌进编辑器；聚焦中不动防光标跳
   useEffect(() => {
@@ -329,19 +534,23 @@ function WysiwygSurface({ value, onChange, onExit, placeholder, className, minHe
     }
   }, [value, ready])
 
-  // 容器内的指针按下/焦点进入视为「还在编辑」取消失焦退出；容器外的指针按下
-  // （保存按钮/切换模块等）先同步冲刷未落盘输入——否则外部 onClick（如 handleSave）
-  // 会先于 200ms 延迟提交执行，父级拿到旧 value 丢尾部输入
+  // 容器（含编辑器与自研下拉菜单）内的指针按下/焦点进入视为「还在编辑」取消失焦退出；
+  // 容器外的指针按下（保存按钮/切换模块等）先同步冲刷未落盘输入并收起下拉——
+  // 否则外部 onClick（如 handleSave）会先于 200ms 延迟提交执行，父级拿到旧 value 丢尾部输入
   useEffect(() => {
     const onDocPointerDown = (e: PointerEvent) => {
-      if (hostRef.current?.contains(e.target as Node)) {
+      const target = e.target as Node
+      if (wrapperRef.current?.contains(target)) {
         cancelExit()
+        // 点编辑器正文区时收起工具栏下拉，避免菜单浮在内容上遮挡文本
+        if (target instanceof Element && target.closest(".vditor-reset")) setMenu(null)
       } else {
+        setMenu(null)
         commitNow()
       }
     }
     const onDocFocusIn = (e: FocusEvent) => {
-      if (hostRef.current?.contains(e.target as Node)) cancelExit()
+      if (wrapperRef.current?.contains(e.target as Node)) cancelExit()
     }
     document.addEventListener("pointerdown", onDocPointerDown, true)
     document.addEventListener("focusin", onDocFocusIn)
@@ -350,6 +559,29 @@ function WysiwygSurface({ value, onChange, onExit, placeholder, className, minHe
       document.removeEventListener("focusin", onDocFocusIn)
     }
   }, [])
+
+  // 悬停提示：给所有工具栏按钮挂极简中文 title（vditor 自带 tooltip 已用 CSS 隐藏）
+  useEffect(() => {
+    if (!ready) return
+    const host = hostRef.current
+    if (!host) return
+    host.querySelectorAll<HTMLElement>(".vditor-toolbar [data-type]").forEach((el) => {
+      const tip = TOOLBAR_TITLES[el.getAttribute("data-type") || ""]
+      if (tip) el.setAttribute("title", tip)
+    })
+  }, [ready, mode])
+
+  // 下拉菜单用 fixed 定位脱离卡片边界，滚动/窗口变化时定位失效，直接收起
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    window.addEventListener("scroll", close, true)
+    window.addEventListener("resize", close)
+    return () => {
+      window.removeEventListener("scroll", close, true)
+      window.removeEventListener("resize", close)
+    }
+  }, [menu])
 
   if (failed) {
     return (
@@ -368,8 +600,59 @@ function WysiwygSurface({ value, onChange, onExit, placeholder, className, minHe
   }
 
   return (
-    <div className={cn("rme-vditor relative rounded-md border border-border/60 bg-secondary/20", minHeight, className)}>
+    <div ref={wrapperRef} className={cn("rme-vditor relative rounded-md border border-border/60 bg-secondary/20", minHeight, className)}>
       <div ref={hostRef} style={{ minHeight: "inherit" }} className="overflow-hidden rounded-md" />
+      {menu === "list-style" && (
+        <div
+          className="fixed z-50 min-w-[168px] rounded-lg border border-border bg-popover p-1 shadow-md"
+          style={{ top: menuPos.top, bottom: menuPos.bottom, left: menuPos.left }}
+        >
+          {(
+            [
+              { title: "圆点符号", group: "unordered" as const },
+              { title: "编号样式", group: "ordered" as const },
+            ]
+          ).map(({ title, group }) => (
+            <React.Fragment key={group}>
+              <div className={cn("px-2 py-1 text-[10px] text-muted-foreground", group === "ordered" && "mt-1 border-t border-border/60")}>{title}</div>
+              {LIST_STYLE_OPTIONS.filter((o) => o.group === group).map((o) => (
+                <button
+                  key={o.id}
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-secondary"
+                  onClick={() => applyMarkdownTransform((md) => applyListStyle(md, o.id))}
+                >
+                  <span className="w-7 shrink-0 text-center text-sm leading-none">{o.sample}</span>
+                  {o.label}
+                </button>
+              ))}
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+      {menu === "edit-mode" && (
+        <div
+          className="fixed z-50 min-w-[140px] rounded-lg border border-border bg-popover p-1 shadow-md"
+          style={{ top: menuPos.top, bottom: menuPos.bottom, left: menuPos.left }}
+        >
+          {(
+            [
+              { id: "wysiwyg", label: "所见即所得" },
+              { id: "sv", label: "分屏预览" },
+            ] as const
+          ).map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-secondary"
+              onClick={() => switchMode(opt.id)}
+            >
+              <span className="w-7 shrink-0 text-center text-xs leading-none text-primary">{mode === opt.id ? "✓" : ""}</span>
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
       {!ready && (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-background/60 text-xs text-muted-foreground">
           编辑器加载中…
