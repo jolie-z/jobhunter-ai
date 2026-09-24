@@ -134,28 +134,3 @@ WORK_FIELD_OPTIONS_MAP = {
         "industries": "51job_industry.json",
     },
 }
-
-
-def load_llm_config() -> dict:
-    """从 backend/.env 读取 LLM 配置"""
-    candidates = [
-        os.path.join(_BACKEND_DIR, ".env"),
-        os.path.join(_BACKEND_DIR, "..", "backend", ".env"),
-    ]
-    config = {}
-    for env_path in candidates:
-        env_path = os.path.normpath(env_path)
-        if os.path.exists(env_path):
-            with open(env_path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
-                        k, v = line.split("=", 1)
-                        v = v.strip().strip('"').strip("'")
-                        config[k.strip()] = v
-            break
-    # OpenAI SDK 会自动拼 /chat/completions：配置写成完整请求路径时归一化回基址
-    bu = config.get("OPENAI_BASE_URL", "")
-    if bu.endswith("/chat/completions"):
-        config["OPENAI_BASE_URL"] = bu[:-len("/chat/completions")]
-    return config

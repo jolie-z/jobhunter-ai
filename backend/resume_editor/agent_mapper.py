@@ -531,29 +531,32 @@ def _validate_option_consistency(report: dict, platform: str) -> dict:
 
 # ============ 配置 / 飞书主简历 ============
 
+# 简历同步中心消费的全部配置键（load_env_config 读取清单；
+# tests/test_agent_mapper_config_chain.py 引用同一常量，勿在测试里重复硬编码）
+RESUME_SYNC_CONFIG_KEYS = (
+    "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_APP_TOKEN",
+    "FEISHU_TABLE_ID_RESUMES",
+    "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL",
+)
+
+
 def load_env_config() -> dict:
-    """从 backend/.env 读取 LLM 与飞书配置（与 resume_server._load_llm_config 同源；
-    优先本项目 backend/.env，worktree 等非标布局回退主项目路径）"""
-    candidates = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                     "..", "..", "..", "new_jobhunter", "backend", ".env"),
-    ]
-    config = {}
-    for env_path in candidates:
-        env_path = os.path.normpath(env_path)
-        if os.path.exists(env_path):
-            with open(env_path, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
-                        k, v = line.split("=", 1)
-                        config[k.strip()] = v.strip().strip('"').strip("'")
-            break
+    """LLM 与飞书配置统一走 common.config 的运行时同源链：
+    settings.json（配置大盘页面保存）> 环境变量（.env 注入）。
+
+    旧实现只读 backend/.env 文件，绕过了配置大盘——新机器没有 .env 时
+    简历同步中心直接报「飞书配置缺失」（2026-09-24 修复）。
+    返回 dict 契约保持不变（list_feishu_resumes / load_master_resume /
+    _llm_classify_titles / map_platform 四处消费方零改动）。"""
+    from common.config import get_configured_value
+
+    # 空值/纯空白键直接剔除（而非留空串）：消费方依赖 cfg.get("OPENAI_MODEL", "gpt-4o-mini")
+    # 这类默认值语义，键存在但值为空会吞掉默认值；strip 兜住大盘误填纯空格的场景
+    config = {k: v for k in RESUME_SYNC_CONFIG_KEYS if (v := get_configured_value(k).strip())}
     # OpenAI SDK 会自动拼 /chat/completions：配置写成完整请求路径时归一化回基址
-    bu = config.get("OPENAI_BASE_URL", "")
-    if bu.endswith("/chat/completions"):
-        config["OPENAI_BASE_URL"] = bu[: -len("/chat/completions")]
+    base_url = config.get("OPENAI_BASE_URL", "")
+    if base_url.endswith("/chat/completions"):
+        config["OPENAI_BASE_URL"] = base_url[: -len("/chat/completions")]
     return config
 
 
@@ -598,8 +601,13 @@ def _get_feishu_token(cfg: dict):
 
 
 def _require_feishu_cfg(cfg: dict):
-    if not cfg.get("FEISHU_APP_ID") or not cfg.get("FEISHU_APP_TOKEN") or not cfg.get("FEISHU_TABLE_ID_RESUMES"):
-        raise RuntimeError("飞书配置缺失(FEISHU_APP_ID/FEISHU_APP_TOKEN/FEISHU_TABLE_ID_RESUMES)")
+    missing = [k for k in ("FEISHU_APP_ID", "FEISHU_APP_TOKEN", "FEISHU_TABLE_ID_RESUMES") if not cfg.get(k)]
+    if missing:
+        try:
+            from common.config import missing_guide_text
+        except ImportError:
+            raise RuntimeError(f"飞书配置缺失({'/'.join(missing)})")
+        raise RuntimeError(missing_guide_text(missing, "简历同步中心"))
 
 
 def list_feishu_resumes(cfg: dict = None) -> dict:
