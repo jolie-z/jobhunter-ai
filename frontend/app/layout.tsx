@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { Analytics } from '@vercel/analytics/next'
 import { Toaster } from '@/components/ui/toaster'
+import { Toaster as SonnerToaster } from '@/components/ui/sonner'
 import { GlobalTerminalDrawer } from '@/components/global/global-terminal-drawer'
 import { SetupGuideProvider } from '@/components/dashboard/setup-guide/setup-guide-provider'
 import './globals.css'
@@ -40,6 +41,9 @@ export default function RootLayout({
           {children}
           <GlobalTerminalDrawer />
           <Toaster />
+          {/* 指挥中心全族用 sonner toast（此前容器从未挂载，其 toast 全部静默丢失——
+              门禁拦截/启动失败等反馈用户从未见过，2026-09-26 真机验证发现），两套容器并存各管各系 */}
+          <SonnerToaster position="bottom-right" />
         </SetupGuideProvider>
         <Analytics />
       </body>

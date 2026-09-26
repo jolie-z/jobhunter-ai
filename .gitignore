@@ -67,6 +67,12 @@ data/
 # 系统底层配置页面保存的密钥（明文 JSON，严禁提交）
 backend/common/data/settings.json
 backend/data/settings.json
+# 但新机配置模板（空值、无任何凭证）必须入库；
+# 三段式：反选目录让 git 下探 → 重新排除全部内容 → 只放行模板
+# （目录级排除后单文件反选无效，且不能只反选目录——否则 profile 等运行数据全部漏出）
+!backend/data/
+backend/data/*
+!backend/data/settings.json.example
 # 平台登录态 Cookie（本地保留供系统运行，严禁入库）
 backend/**/*cookies*.json
 # 简历编辑器运行数据目录：字段映射缓存/回写报告/测试快照均为程序运行时读写，

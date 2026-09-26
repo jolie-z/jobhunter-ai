@@ -95,6 +95,13 @@ export function CommandHeader({
     if (!allConfigured) {
       const missing = STAGES_META.filter((s) => s.requiredConfig && !configStatus[s.key])
       if (missing.length > 0) {
+        // 门禁拦截必须有声：静默 return 曾让新机用户误以为"代码没跑/没 push"（0926 排查教训）。
+        // 名称列表截断展示，防 9 项全缺时撑爆 toast；「等 N 项」指前 3 项之外的剩余数量。
+        const names = missing.map((s) => s.label)
+        const shown = names.slice(0, 3).join(" / ")
+        const restCount = names.length - 3
+        const suffix = restCount > 0 ? ` 等 ${restCount} 项` : ""
+        toast.warning(`有 ${names.length} 项配置未完成（${shown}${suffix}），已打开第一个配置面板`)
         if (onOpenConfig) {
           onOpenConfig(missing[0].key)
         }

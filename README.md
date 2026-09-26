@@ -100,6 +100,30 @@ npm run dev                          # 启动 http://localhost:3000
 
 > Windows 用户可直接双击 `start_all.bat` 一键拉起前后端。
 
+### 新机自检（点「启动全链路」之前，先跑这条命令）
+
+服务能起来 ≠ 链路能跑：飞书凭证、清洗策略、评估权重、简历、平台 Cookie 文件
+**都在 git 仓库之外**，全新克隆后必须补齐，否则指挥中心的启动按钮会被配置门禁
+拦下（或跑起来后整轮 0 条空转）。一条命令体检：
+
+```bash
+cd backend && uv run python scripts/newmachine_check.py   # 或 .venv/bin/python scripts/newmachine_check.py
+```
+
+- 每个缺失项都会就地打印「怎么补」；`exit 0` = 抓取资产齐备，可以去指挥中心点启动。
+- 按钮若显示「待配置规则 (N)」：点它弹出 toast 并打开第一个未完成的配置面板，逐项补齐即可。
+- 投递就绪段仅提示：平台 CDP 端口未监听属正常（尚未唤起浏览器），投递前在指挥中心
+  「平台会话」唤起并扫码即可；投递登录态以投递引擎登录门实测为准。
+
+配置模板：`cp backend/data/settings.json.example backend/data/settings.json`
+（纯 JSON 不可写注释，逐字段说明见下方配置说明表格与 [docs/feishu-setup.md](docs/feishu-setup.md)
+配置项字典；也可以不复制，直接在前端「策略实验室 → 系统底层配置」页面填写，写入的就是同一文件）。
+
+猎聘说明：猎聘搜索预检免 DOM 登录校验，但抓取引擎依赖本地
+`backend/liepin_scraper/liepin_cookies.json`（缺失时预检会拦截并等你扫码）——
+新机请先在 backend 终端跑 `liepin_scraper/liepin_cookie_harvester.py` 扫码生成，
+步骤见 [docs/liepin-setup.md](docs/liepin-setup.md)。
+
 ### 生产部署（宿主机常驻）
 
 > ⚠️ 本项目**不支持 Docker 部署**：四大平台爬虫依赖真实 Edge 浏览器 + 持久化登录态 +

@@ -183,12 +183,13 @@ async def test_create_resume_skips_heal_on_stale_view():
 
 async def test_setup_status_heals_once_with_throttle(monkeypatch):
     """体检接口在「无生效简历」时触发兜底自愈：仅触发一次，60s 节流内不再触发。"""
-    import app.pipeline.routes.feishu_status_router as fsr
+    import app.pipeline.config_status_service as css
     import app.settings.setup_status as ss
     import app.strategy.config_service as cs
 
-    monkeypatch.setattr(fsr, "_ACTIVE_RESUME_META_CACHE",
-                        {"ts": fsr.time.time() + 9999, "value": None})
+    # 判定体已下沉 config_status_service，缓存操纵必须打在 service 模块命名空间
+    monkeypatch.setattr(css, "_ACTIVE_RESUME_META_CACHE",
+                        {"ts": css.time.time() + 9999, "value": None})
     monkeypatch.setattr(ss, "_LAST_HEAL_TS", {"ts": 0.0})
     monkeypatch.setattr(cs, "_ensure_single_resume_active", AsyncMock())
     # 自愈后失效缓存 → 重判会重新拉取活跃简历；单测内 mock 掉真实飞书查询
@@ -207,12 +208,12 @@ async def test_setup_status_heals_once_with_throttle(monkeypatch):
 
 async def test_setup_status_heal_success_then_recheck_true(monkeypatch):
     """真链路闭环：自愈启用成功 → 缓存失效 → 重判读到「已生效」→ 第二步点亮。"""
-    import app.pipeline.routes.feishu_status_router as fsr
+    import app.pipeline.config_status_service as css
     import app.settings.setup_status as ss
     import app.strategy.config_service as cs
 
-    monkeypatch.setattr(fsr, "_ACTIVE_RESUME_META_CACHE",
-                        {"ts": fsr.time.time() + 9999, "value": None})
+    monkeypatch.setattr(css, "_ACTIVE_RESUME_META_CACHE",
+                        {"ts": css.time.time() + 9999, "value": None})
     monkeypatch.setattr(ss, "_LAST_HEAL_TS", {"ts": 0.0})
     monkeypatch.setattr(cs, "_ensure_single_resume_active", AsyncMock())
     # 缓存失效后重判：模拟飞书侧确实查到了启用中的简历
@@ -254,12 +255,12 @@ def test_manual_activation_invalidates_meta_cache():
 
 async def test_setup_status_resume_requires_active_resume(monkeypatch):
     """新手指引第二步：只认生效简历，本地文件存在不再兜底。"""
-    import app.pipeline.routes.feishu_status_router as fsr
+    import app.pipeline.config_status_service as css
 
-    monkeypatch.setattr(fsr, "_ACTIVE_RESUME_META_CACHE",
-                        {"ts": fsr.time.time() + 9999, "value": {"id": "recA", "title": "主简历"}})
+    monkeypatch.setattr(css, "_ACTIVE_RESUME_META_CACHE",
+                        {"ts": css.time.time() + 9999, "value": {"id": "recA", "title": "主简历"}})
     assert setup_status._resume_exists() is True
 
-    monkeypatch.setattr(fsr, "_ACTIVE_RESUME_META_CACHE",
-                        {"ts": fsr.time.time() + 9999, "value": None})
+    monkeypatch.setattr(css, "_ACTIVE_RESUME_META_CACHE",
+                        {"ts": css.time.time() + 9999, "value": None})
     assert setup_status._resume_exists() is False
