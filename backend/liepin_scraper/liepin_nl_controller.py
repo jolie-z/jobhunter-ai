@@ -28,6 +28,8 @@ if PROJECT_ROOT not in sys.path:
 from app.core.config import settings
 # 🌟 统一 Token 埋点
 from app.core.llm_tracker import make_tracked_client
+# 猎聘采集放行双判据（Cookie 文件 OR Edge profile 登录实证），与预检守卫同一实现
+from app.session.health_checker import liepin_collect_ready
 OPENAI_API_KEY = settings.OPENAI_API_KEY
 OPENAI_BASE_URL = settings.OPENAI_BASE_URL
 OPENAI_MODEL = settings.OPENAI_MODEL
@@ -325,15 +327,21 @@ async def process_liepin_scraping_request(chat_id: str, city: str, keyword: str,
                 msg = 'data: {"type": "start", "message": "✅ 收到指令！正在启动 [猎聘] 爬虫引擎..."}\n\n'
                 await task_queues[sse_task_id].put(msg)
 
-        # 猎聘特有：检查 Cookie 文件是否已存在
+        # 猎聘特有：采集放行双判据（2026-09-27）——Cookie 文件存在，或 Edge profile
+        # 登录实证有效。会话条「唤起浏览器」与采集引擎（DrissionPage 9226）共用同一
+        # profile，用户在指挥中心登录后即使无文件也可开工；引擎确认 profile 登录后
+        # 会把 cookie 自愈回写文件（liepin_crawler._self_heal_cookie_file），两条通道收敛。
         cookie_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'liepin_cookies.json')
-        if not os.path.exists(cookie_file):
-            print(f"⚠️ 猎聘 Cookie 文件不存在: {cookie_file}")
+        if not await asyncio.to_thread(liepin_collect_ready, cookie_file):
+            print(f"⚠️ 猎聘 Cookie 文件不存在且浏览器未检出登录态: {cookie_file}")
             await _notify_feishu_liepin(
                 chat_id,
-                "❌ 缺少猎聘 Cookie，请先在本地终端运行 `liepin_cookie_harvester.py` 扫码登录！"
+                "❌ 缺少猎聘 Cookie 且未检出浏览器登录态：请在指挥中心「唤起浏览器」登录猎聘，"
+                "或在后端终端运行 `liepin_cookie_harvester.py` 扫码登录！"
             )
             return
+        if not os.path.exists(cookie_file):
+            print("✅ Cookie 文件缺失，但专用浏览器登录实证有效，放行（采集启动后将自动回写文件）")
 
         # 调用底层逻辑
         loop = asyncio.get_running_loop()

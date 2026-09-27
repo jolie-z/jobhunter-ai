@@ -12,7 +12,9 @@
 """
 import json
 import logging
+import os
 import socket
+import time
 import urllib.request
 from datetime import datetime
 from urllib.parse import urlparse
@@ -345,3 +347,121 @@ def check_login_with_fallback(config: PlatformConfig, page_factory=None) -> Sess
             browser_type=config.browser_type,
         )
     return status
+
+
+# ==========================================
+# 猎聘 profile 登录实证（2026-09-27 双判据批，plan-review R3 PASS）
+# ==========================================
+# 猎聘登录后才存在的鉴权 cookie 键（本机 liepin_cookies.json 实测键集合背书，
+# 游客态无此二键）；与文件通道里的键同名，改名需同步 harvester/引擎注入侧。
+LIEPIN_LOGIN_COOKIE_KEYS = ("lt_auth", "liepin_login_valid")
+
+# Chrome/Edge Cookies 库时间基准：1601-01-01 与 unix epoch 的秒差
+_CHROME_EPOCH_OFFSET_S = 11644473600.0
+
+
+def _judge_login_keys(found: dict[str, float]) -> bool:
+    """判据：两键同时存在且均未过期。expires<=0 视为会话 cookie，落账即有效。"""
+    if not all(k in found for k in LIEPIN_LOGIN_COOKIE_KEYS):
+        return False
+    now = time.time()
+    return all(exp <= 0 or exp > now for exp in found.values())
+
+
+def _read_login_keys_via_cdp(port: int) -> dict[str, float] | None:
+    """端口 UP 模：playwright connect_over_cdp 被动附着读内存 cookie。
+
+    零页面导航、零 cookie 写入，实时感知扫码落账（不受磁盘 WAL 刷盘延迟影响）。
+    sync API 只能在无事件循环的线程中运行（异步调用方须 asyncio.to_thread 包装）。
+    连接失败/异常返回 None，由调用方 fail-closed。
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port}", timeout=3000)
+            try:
+                found: dict[str, float] = {}
+                for ctx in browser.contexts:
+                    for c in ctx.cookies():
+                        name = c.get("name")
+                        if name in LIEPIN_LOGIN_COOKIE_KEYS and name not in found:
+                            exp = c.get("expires", -1)
+                            found[name] = float(exp) if isinstance(exp, (int, float)) and exp > 0 else 0.0
+                return found
+            finally:
+                # CDP 附着模式下 close() 仅断开连接，不杀远端浏览器进程
+                browser.close()
+    except Exception as e:
+        logger.info(f"[health] CDP 读 cookie 失败（port={port}）: {e}")
+        return None
+
+
+def _read_login_keys_via_profile_db(profile_dir: str) -> dict[str, float] | None:
+    """端口 DOWN 模：拷贝 profile Cookies 库（连同 -wal/-shm）到临时目录后只读查键，用完即删。"""
+    import shutil
+    import sqlite3
+    import tempfile
+
+    if not profile_dir:
+        return None
+    try:
+        src = os.path.join(profile_dir, "Default", "Cookies")
+        if not os.path.exists(src):
+            return None
+        with tempfile.TemporaryDirectory(prefix="liepin_cookie_probe_") as tmp:
+            dst = os.path.join(tmp, "Cookies")
+            for suffix in ("", "-wal", "-shm"):
+                if os.path.exists(src + suffix):
+                    shutil.copy2(src + suffix, dst + suffix)
+            conn = sqlite3.connect(dst)
+            try:
+                rows = conn.execute(
+                    "SELECT name, expires_utc FROM cookies WHERE name IN (?, ?)",
+                    LIEPIN_LOGIN_COOKIE_KEYS,
+                ).fetchall()
+            finally:
+                conn.close()
+    except Exception as e:
+        logger.info(f"[health] profile Cookies 库读取失败（{profile_dir}）: {e}")
+        return None
+
+    found: dict[str, float] = {}
+    for name, exp_utc in rows:
+        # Chrome epoch（1601-01-01 起微秒）→ unix 秒；0/空=会话 cookie，落盘可恢复，计有效
+        found[name] = 0.0 if not exp_utc else max(0.0, exp_utc / 1_000_000 - _CHROME_EPOCH_OFFSET_S)
+    return found
+
+
+def check_liepin_login_evidence(port: int | None = None, profile_dir: str | None = None) -> bool:
+    """猎聘登录实证（纯同步）：Edge 专用 profile 是否携带真实登录态。
+
+    双模取数：端口 UP → CDP 直读内存 cookie；端口 DOWN → 离线拷贝 profile Cookies 库
+    （连同 -wal/-shm，规避只拷主文件漏读 WAL 的假阴性）。判据=LIEPIN_LOGIN_COOKIE_KEYS
+    两键齐且未过期。全流程兜底 try/except，任一环节失败一律 fail-closed 判 False
+    （回到「缺 Cookie 文件」原路径），绝不因探测异常误放行或向调用方抛错。
+    """
+    try:
+        from .registry import get_platform_port, get_profile_path
+        _port = port if port is not None else get_platform_port("liepin")
+        _profile = profile_dir if profile_dir is not None else get_profile_path("liepin")
+
+        if probe_port(_port, timeout=0.3):
+            found = _read_login_keys_via_cdp(_port)
+        else:
+            found = _read_login_keys_via_profile_db(_profile)
+        if not found:
+            return False
+        return _judge_login_keys(found)
+    except Exception as e:
+        logger.info(f"[health] 猎聘登录实证异常，fail-closed: {e}")
+        return False
+
+
+def liepin_collect_ready(cookie_file: str) -> bool:
+    """采集入口放行双判据：Cookie 文件存在，或 Edge profile 登录实证有效。
+
+    nl_controller 的文件硬门改判据后的统一入口（主进程不持浏览器会话，
+    实证由本函数在调用线程内完成）。"""
+    if os.path.exists(cookie_file):
+        return True
+    return check_liepin_login_evidence()

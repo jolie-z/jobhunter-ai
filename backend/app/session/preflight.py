@@ -28,7 +28,11 @@ import os
 import time
 
 from .browser import launch_edge
-from .health_checker import check_login_with_fallback, probe_port
+from .health_checker import (
+    check_liepin_login_evidence,
+    check_login_with_fallback,
+    probe_port,
+)
 from .models import SessionState, SessionStatus
 from .registry import resolve_platform
 
@@ -40,7 +44,9 @@ _OK_STATES = (SessionState.HEALTHY, SessionState.DEGRADED)
 # pending 平台的待办类型：
 #   "login"       = 登录态失效，复检走 DOM 级 check_login_with_fallback
 #   "cookie_file" = 免登录平台但本地 legacy cookie 文件缺失（如猎聘：抓取引擎缺文件直接 0 条
-#                   收工，2026-09-26 新机排查），复检只看文件是否落盘（hot-polling）
+#                   收工，2026-09-26 新机排查）。复检双判据（2026-09-27）：文件落盘，或
+#                   Edge profile 登录实证有效（会话条「唤起浏览器」登录与采集引擎共用同一
+#                   profile，登录落账即解锁，CDP 直读内存 cookie 不受刷盘延迟影响）
 _PENDING_KIND_LOGIN = "login"
 _PENDING_KIND_COOKIE_FILE = "cookie_file"
 
@@ -70,8 +76,9 @@ async def _notify_login_needed(items: list, wait_s: int) -> None:
         if kind == _PENDING_KIND_COOKIE_FILE:
             lines.append(
                 f"· {config.display_name}：缺少本地 Cookie 文件"
-                f"（{config.legacy_cookie_file}）——请在后端终端运行"
-                f" `liepin_cookie_harvester.py` 扫码登录生成后自动继续"
+                f"（{config.legacy_cookie_file}）——可在指挥中心会话条「唤起浏览器」"
+                f"登录 {config.display_name}，或在后端终端运行"
+                f" `liepin_cookie_harvester.py` 扫码生成；任一完成后自动继续"
             )
         else:
             lines.append(f"· {config.display_name}（端口 {config.port}）：{status.message}")
@@ -122,7 +129,9 @@ async def ensure_platforms_ready(platforms: list, emit_log=None) -> dict:
         #    匿名首页不渲染登录元素，DOM 校验只会误报。
         #    但豁免 ≠ 资产齐全：猎聘抓取引擎硬依赖本地 legacy cookie 文件（缺失时
         #    直接 0 条收工、整轮空转），故文件缺失时按「登录态异常」同通道拦截——
-        #    发飞书通知指引扫码 + 等待窗口内轮询文件落盘即放行（hot-polling）。
+        #    发飞书通知指引扫码 + 等待窗口内轮询放行。复检双判据（2026-09-27）：
+        #    文件落盘，或 Edge profile 登录实证有效（专用浏览器与采集引擎同
+        #    profile，用户在会话条登录即解锁，无需命令行 harvester）。
         #    文件存在 ≠ 凭证有效（有效期由平台服务端说了算），有效性由投递门
         #    ensure_login DOM 实测兜底，预检不重复做。
         if not config.requires_login:
@@ -132,6 +141,16 @@ async def ensure_platforms_ready(platforms: list, emit_log=None) -> dict:
                 except OSError:
                     cookie_ok = False
                 if not cookie_ok:
+                    # 双判据之实证侧：目前仅猎聘（键集合为猎聘特有，别平台误用会恒 False）
+                    if config.name == "liepin":
+                        evidence_ok = await asyncio.to_thread(check_liepin_login_evidence)
+                        if evidence_ok:
+                            results[key] = True
+                            await _log(
+                                f"✅ {config.display_name} 无 Cookie 文件，"
+                                f"但专用浏览器登录实证有效，放行（采集启动后将自动回写文件）"
+                            )
+                            continue
                     pending[key] = (
                         config,
                         SessionStatus(
@@ -142,8 +161,8 @@ async def ensure_platforms_ready(platforms: list, emit_log=None) -> dict:
                         _PENDING_KIND_COOKIE_FILE,
                     )
                     await _log(
-                        f"⚠️ {config.display_name} 免登录平台但缺少 Cookie 文件，"
-                        f"等待扫码生成（运行 liepin_cookie_harvester.py）…"
+                        f"⚠️ {config.display_name} 缺少 Cookie 文件且未检出浏览器登录态，"
+                        f"等待处理（会话条唤起浏览器登录，或运行 liepin_cookie_harvester.py）…"
                     )
                     continue
             results[key] = True
@@ -207,17 +226,23 @@ async def ensure_platforms_ready(platforms: list, emit_log=None) -> dict:
             for key in list(pending):
                 config, _, kind = pending[key]
                 if kind == _PENDING_KIND_COOKIE_FILE:
-                    # hot-polling：扫码脚本把 cookie 文件落盘的瞬间即放行，
-                    # 不做 DOM 判定（免登录平台首页本就不渲染登录元素）
+                    # 复检双判据（2026-09-27）：①文件落盘即放行（hot-polling 原判据）；
+                    # ②猎聘增补——Edge profile 登录实证有效也放行（CDP 直读内存 cookie，
+                    # 用户在会话条扫码登录落账的瞬间即被感知，不受磁盘刷盘延迟影响）
                     try:
                         recovered = os.path.exists(config.legacy_cookie_file)
                     except OSError:
                         recovered = False
+                    message = "Cookie 文件已生成" if recovered else ""
+                    if not recovered and config.name == "liepin":
+                        recovered = await asyncio.to_thread(check_liepin_login_evidence)
+                        if recovered:
+                            message = "专用浏览器登录实证有效（Cookie 文件将在采集启动时自动回写）"
                     if recovered:
                         status = SessionStatus(
                             platform=config.name,
                             state=SessionState.HEALTHY,
-                            message="Cookie 文件已生成",
+                            message=message,
                         )
                     else:
                         continue

@@ -348,12 +348,28 @@ def get_all_platform_sessions() -> list:
         else:
             cdp_status = check_session_via_cdp(cfg)
             state_val = cdp_status.state.value if hasattr(cdp_status.state, "value") else str(cdp_status.state)
+            message = cdp_status.message or "已连接"
+            if key == "liepin":
+                # 猎聘的 healthy 只代表浏览器在跑（匿名首页不渲染登录元素），补注资产实况，
+                # 消除「会话条已连接、预检却报缺 Cookie 文件」的矛盾观感（2026-09-27）。
+                # freshness 走只读快照，浏览器运行中可能滞后数秒——此处仅提示，不做门禁判定。
+                if cfg.legacy_cookie_file and os.path.exists(cfg.legacy_cookie_file):
+                    message += "；Cookie 文件存在"
+                else:
+                    freshness = inspect_profile_cookie_freshness(cfg)
+                    if freshness["state"] == "valid":
+                        message += (
+                            f"；profile 登录有效至 {freshness['expires_at']}"
+                            f"（采集启动时将自动自愈回写 Cookie 文件）"
+                        )
+                    else:
+                        message += "；Cookie 文件未生成"
             results.append({
                 "platform": key,
                 "display_name": cfg.display_name,
                 "port": cfg.port,
                 "state": state_val,
-                "message": cdp_status.message or "已连接",
+                "message": message,
                 "is_alive": True,
             })
     return results

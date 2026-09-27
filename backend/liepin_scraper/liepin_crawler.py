@@ -238,6 +238,7 @@ def _setup_chromium_browser():
     #    严禁注入本地 cookie 文件，防止过期 cookie 覆盖/污染有效登录态。
     if _check_login_status(page):
         print("   ✅ Edge Profile 自带活跃登录态，跳过 Cookie 注入")
+        _self_heal_cookie_file(page)
         return page
 
     if os.path.exists(COOKIE_FILE):
@@ -271,6 +272,55 @@ def _check_login_status(page) -> bool:
     except Exception as e:
         print(f"   ⚠️ 校验猎聘登录态异常: {e}")
         return False
+
+
+def _dump_cookies_drissionpage_to_playwright(page) -> list:
+    """DrissionPage cookie → playwright 注入兼容格式（与 liepin_session.save_current_cookies
+    及本文件注入侧 valid_keys 清洗集对齐：expiry/expires 双键兼容→expires、sameSite 归一、
+    bool 化）。"""
+    cookies = []
+    for c in (page.cookies(all_info=True) or []):
+        if not isinstance(c, dict) or not c.get("name"):
+            continue
+        same_site = str(c.get("sameSite") or "Lax").strip().capitalize()
+        if same_site not in ("Lax", "Strict", "None"):
+            same_site = "Lax"
+        # DrissionPage 版本间过期键名有 expires/expiry 两种形态，双键兼容防过期时间静默丢失
+        exp = c.get("expires")
+        if exp is None:
+            exp = c.get("expiry", -1)
+        cookies.append({
+            "name": c.get("name"),
+            "value": c.get("value"),
+            "domain": c.get("domain"),
+            "path": c.get("path", "/"),
+            "expires": exp or -1,
+            "httpOnly": bool(c.get("httpOnly")),
+            "secure": bool(c.get("secure")),
+            "sameSite": same_site,
+        })
+    return cookies
+
+
+def _self_heal_cookie_file(page) -> None:
+    """把已确认登录的浏览器 cookie 原子回写 COOKIE_FILE（2026-09-27 双判据配套）。
+
+    Cookie 文件缺失但 profile 登录有效时，采集可无文件开工（nl_controller 双判据放行）；
+    本回写让文件通道随首轮采集自愈，跨机拷文件等旧路径继续可用。因 profile 登录刚过
+    _check_login_status 实测，回写内容必然有效，且总是刷新文件保持新鲜。
+    失败仅打印告警，绝不影响本轮采集。"""
+    try:
+        cookies = _dump_cookies_drissionpage_to_playwright(page)
+        if not cookies:
+            print("   ⚠️ 自愈回写跳过：浏览器未返回任何 cookie")
+            return
+        tmp_path = COOKIE_FILE + '.tmp'
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(cookies, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, COOKIE_FILE)
+        print(f"   💾 已自愈回写 Cookie 文件（{len(cookies)} 条，playwright 兼容格式）")
+    except Exception as e:
+        print(f"   ⚠️ Cookie 文件自愈回写失败（不影响本轮采集）: {e}")
 
 def _intercept_job_packet(page, url):
     """辅助函数：请求页面并拦截 pc-search-job 数据包"""
