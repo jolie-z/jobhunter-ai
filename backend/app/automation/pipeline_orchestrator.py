@@ -39,11 +39,14 @@ async def run_full_auto_pipeline(
     target_jobs: int | None = None,
     platforms: list[str] | None = None,
     stop_at_review: bool = False,
+    trigger_source: str = "scheduled",
 ) -> str:
     """
     启动一轮全自动链路（后台异步执行），立即返回 pipeline_task_id 供前端订阅 SSE。
     未显式传入的抓取参数将从 autopilot 配置自动推导。
     stop_at_review=True 为定时链路模式：改写/话术全部做完后一律挂审批断点。
+    trigger_source 标记触发来源（scheduled=定时任务 / manual=手动即时），
+    随链路贯穿到飞书主战报卡片标题。
     """
     cur = pb.get_current_pipeline()
     if cur.get("running"):
@@ -65,7 +68,7 @@ async def run_full_auto_pipeline(
         "platforms": platforms or derived["platforms"],
     }
 
-    asyncio.create_task(_execute_pipeline(pipeline_task_id, config, search, stop_at_review=stop_at_review))
+    asyncio.create_task(_execute_pipeline(pipeline_task_id, config, search, stop_at_review=stop_at_review, trigger_source=trigger_source))
     return pipeline_task_id
 
 
@@ -74,6 +77,7 @@ async def _execute_pipeline(
     config: dict[str, Any],
     search: dict[str, Any],
     stop_at_review: bool = False,
+    trigger_source: str = "scheduled",
 ):
     """全链路主体：抓取 → 清洗 → 飞书 → 评估投递。全程广播阶段事件，结束时发飞书任务报告。"""
     log_task_id = str(uuid.uuid4())
@@ -130,6 +134,7 @@ async def _execute_pipeline(
                     job_results=job_results,
                     dedup_count=dedup_count,
                     rejected_ids=actual_rejected_ids,
+                    trigger_source=trigger_source,
                 )
                 if not card_ok:
                     await pr.send_pipeline_report(text)

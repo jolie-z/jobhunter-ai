@@ -440,6 +440,23 @@ def test_master_pipeline_card_structure():
 
     assert "全链路指挥中心 · 定时任务 · 09:00" in card["header"]["title"]["content"]
 
+    # 手动即时触发来源：标题必须切换为「手动即时任务」，不得再误标定时任务
+    card_manual = build_master_pipeline_card(
+        task_time="2026-09-26 19:30", duration_mins=8, total_scraped=5, hard_passed=5,
+        hard_rejected=0, ai_passed=5, ai_rejected=0, precision_cnt=2,
+        channel_counts={"BOSS直聘": 0, "猎聘": 5, "智联招聘": 0, "51job": 0},
+        grade_counts={"A": 0, "B": 2, "C": 2, "D/F": 1}, mass_review_cnt=0, other_review_cnt=1,
+        trigger_source="manual",
+    )
+    assert "全链路指挥中心 · 手动即时任务 · 19:30" in card_manual["header"]["title"]["content"]
+    assert "定时任务" not in card_manual["header"]["title"]["content"]
+
+    # 非法来源走 fallback 兜底（回退定时任务标签），防御未来重构退化
+    card_fallback = build_master_pipeline_card(
+        task_time="2026-09-26 19:30", trigger_source="invalid_source",
+    )
+    assert "全链路指挥中心 · 定时任务 · 19:30" in card_fallback["header"]["title"]["content"]
+
     # 校验 4 列看板
     col_set = next(e for e in card["elements"] if e.get("tag") == "column_set")
     cols = col_set["columns"]
@@ -503,6 +520,7 @@ def test_delivery_batch_card_structure():
     assert "投递受阻清单" in card_str
     assert "岗位已下线" in card_str
 
-    # 包含电脑端跳转
-    action_el = next(e for e in card["elements"] if e.get("tag") == "action")
-    assert any("电脑端指挥中心" in btn["text"]["content"] for btn in action_el["actions"])
+    # 底部跳转按钮已下线（手机端 localhost 链接无实用价值），卡片内不得再出现
+    assert not any(e.get("tag") == "action" for e in card["elements"])
+    assert "电脑端指挥中心" not in card_str
+    assert "查看飞书多维表格" not in card_str

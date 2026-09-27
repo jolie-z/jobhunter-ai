@@ -9,9 +9,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from app.core.config import settings
 from app.core.feishu_messaging import is_valid_receive_id, send_feishu_card
-from app.services.pipeline_card_builders import get_base_url
 from app.services.report_feishu import _get_receive_id
 
 logger = logging.getLogger("delivery_card_notifier")
@@ -44,9 +42,6 @@ def build_delivery_batch_card(
         header_theme = "carmine"
     else:
         header_theme = "blue"
-
-    frontend_url = getattr(settings, "FRONTEND_BASE_URL", "http://localhost:3000") or "http://localhost:3000"
-    base_url = get_base_url()
 
     elements: list[dict[str, Any]] = [
         {
@@ -128,31 +123,10 @@ def build_delivery_batch_card(
             }
         })
 
-    # 跳转按钮组
-    buttons = [
-        {
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "💻 打开电脑端指挥中心"},
-            "type": "primary",
-            "url": frontend_url
-        }
-    ]
-    if base_url:
-        buttons.append({
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "📑 查看飞书多维表格"},
-            "type": "default",
-            "url": base_url
-        })
-
-    elements.extend([
-        {"tag": "hr"},
-        {"tag": "action", "actions": buttons},
-        {
-            "tag": "note",
-            "elements": [{"tag": "plain_text", "content": "JobHunter 全链路指挥中心 · 投递状态与附件日志已双端实时同步"}]
-        }
-    ])
+    elements.append({
+        "tag": "note",
+        "elements": [{"tag": "plain_text", "content": "JobHunter 全链路指挥中心 · 投递状态与附件日志已双端实时同步"}]
+    })
 
     return {
         "config": {"wide_screen_mode": True},

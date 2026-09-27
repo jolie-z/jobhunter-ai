@@ -16,6 +16,12 @@ from app.services.action_card_builders import build_action_result_card  # noqa: 
 
 SUB_CARD_MAX: int = 20
 
+# 触发来源 → 卡片标题任务标签（与前端指挥中心双执行模式叫法对齐）
+TRIGGER_SOURCE_LABELS: dict[str, str] = {
+    "scheduled": "定时任务",
+    "manual": "手动即时任务",
+}
+
 
 def extract_job_record_id(job: Any) -> str:
     """统一从岗位字典中提取权威 record_id，严格遵循 record_id > job_id 优先级。"""
@@ -334,10 +340,12 @@ def build_master_pipeline_card(
     ab_record_ids: list[str] | None = None,
     mass_record_ids: list[str] | None = None,
     rejected_record_ids: list[str] | None = None,
+    trigger_source: str = "scheduled",
 ) -> dict[str, Any]:
-    """构建【📊 全链路指挥中心 · 定时任务】主战报卡片（严格对齐图 2 规范标准）。"""
+    """构建【📊 全链路指挥中心 · 定时任务/手动即时任务】主战报卡片（严格对齐图 2 规范标准）。"""
     t_str = task_time or datetime.now().strftime("%Y-%m-%d %H:%M")
     hhmm = t_str.split(" ")[-1] if " " in t_str else "09:00"
+    task_label = TRIGGER_SOURCE_LABELS.get(trigger_source, TRIGGER_SOURCE_LABELS["scheduled"])
 
     total_ai = ai_passed + ai_rejected
     ai_rate = round((ai_passed / total_ai) * 100) if total_ai > 0 else (100 if ai_passed > 0 else 0)
@@ -378,7 +386,7 @@ def build_master_pipeline_card(
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"📊 全链路指挥中心 · 定时任务 · {hhmm}"},
+            "title": {"tag": "plain_text", "content": f"📊 全链路指挥中心 · {task_label} · {hhmm}"},
             "template": "blue"
         },
         "elements": [

@@ -247,8 +247,9 @@ async def send_pipeline_master_card(
     job_results: list[dict[str, Any]],
     dedup_count: int = 0,
     rejected_ids: list[str] | None = None,
+    trigger_source: str = "scheduled",
 ) -> bool:
-    """构建【全链路指挥中心 · 定时任务】Card 2.0 主战报卡片并推送至飞书群。"""
+    """构建【全链路指挥中心 · 定时任务/手动即时任务】Card 2.0 主战报卡片并推送至飞书群。"""
     try:
         from app.core.feishu_messaging import is_valid_receive_id, send_feishu_card
         from app.services.pipeline_card_builders import (
@@ -320,6 +321,7 @@ async def send_pipeline_master_card(
             ab_record_ids=ab_record_ids,
             mass_record_ids=mass_record_ids,
             rejected_record_ids=combined_rejected_ids,
+            trigger_source=trigger_source,
         )
 
         ok = await send_feishu_card(

@@ -48,7 +48,7 @@ async def trigger_autopilot_manual(req: TriggerRequest):
         )
     try:
         from app.automation.full_auto import run_full_auto_pipeline
-        pipeline_task_id = await run_full_auto_pipeline()
+        pipeline_task_id = await run_full_auto_pipeline(trigger_source="manual")
         return {
             "status": "success",
             "pipeline_task_id": pipeline_task_id,

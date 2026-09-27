@@ -61,7 +61,8 @@ def run_full_pipeline(keyword: str = "", city: str = "", salary: str = "", targe
         return await run_full_auto_pipeline(
             keyword=keyword or None, city=city or None, salary=salary or None,
             target_jobs=target_jobs if target_jobs > 0 else None,
-            platforms=[p.strip() for p in platforms.split(",") if p.strip()] if platforms else None
+            platforms=[p.strip() for p in platforms.split(",") if p.strip()] if platforms else None,
+            trigger_source="manual"
         )
 
     try:
