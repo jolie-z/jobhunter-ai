@@ -412,7 +412,7 @@ def test_card_builders_form_structure():
     assert "AI 初评" in btn_rej["text"]["content"]
     assert "查阅全部岗位总表" not in str(card_rej)
 
-    # 4. 回执卡片结构验证：必须包含双列指标与直达跳转按钮
+    # 4. 回执卡片结构验证：必须包含双列指标；底部跳转按钮已下线
     res_card = build_action_result_card(
         title="🎉 选中的 2 个精投岗位放行成功！",
         succ_cnt=2,
@@ -423,8 +423,9 @@ def test_card_builders_form_structure():
     assert res_card["header"]["title"]["content"] == "🎉 选中的 2 个精投岗位放行成功！"
     cols = next(e for e in res_card["elements"] if e.get("tag") == "column_set")
     assert len(cols["columns"]) == 2
-    actions = next(e for e in res_card["elements"] if e.get("tag") == "action")
-    assert any("电脑端指挥中心" in btn["text"]["content"] for btn in actions["actions"])
+    assert not any(e.get("tag") == "action" for e in res_card["elements"])
+    assert "电脑端指挥中心" not in str(res_card)
+    assert "查看飞书多维表格" not in str(res_card)
 
 
 def test_master_pipeline_card_structure():

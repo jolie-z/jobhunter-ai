@@ -6,8 +6,6 @@
 
 from typing import Any
 
-from app.core.config import settings
-
 
 def build_action_result_card(
     title: str,
@@ -18,15 +16,8 @@ def build_action_result_card(
     fail_details: str = "",
     target_status: str = "待投递",
     theme: str = "turquoise",
-    base_url: str = "",
 ) -> dict[str, Any]:
     """构建高审美的大盘交互操作回执卡片。"""
-    if not base_url:
-        from app.services.pipeline_card_builders import get_base_url
-        base_url = get_base_url()
-
-    frontend_url = getattr(settings, "FRONTEND_BASE_URL", "http://localhost:3000") or "http://localhost:3000"
-
     # 卡片主题色与状态配置
     if fail_cnt > 0 and succ_cnt > 0:
         header_theme = "orange"
@@ -90,33 +81,10 @@ def build_action_result_card(
             }
         ])
 
-    buttons = [
-        {
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "💻 打开电脑端指挥中心"},
-            "type": "primary",
-            "url": frontend_url
-        }
-    ]
-    if base_url:
-        buttons.append({
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "📑 查看飞书多维表格"},
-            "type": "default",
-            "url": base_url
-        })
-
-    elements.extend([
-        {"tag": "hr"},
-        {
-            "tag": "action",
-            "actions": buttons
-        },
-        {
-            "tag": "note",
-            "elements": [{"tag": "plain_text", "content": "JobHunter 全链路指挥中心 · 状态已双端即时同步"}]
-        }
-    ])
+    elements.append({
+        "tag": "note",
+        "elements": [{"tag": "plain_text", "content": "JobHunter 全链路指挥中心 · 状态已双端即时同步"}]
+    })
 
     return {
         "config": {"wide_screen_mode": True},
