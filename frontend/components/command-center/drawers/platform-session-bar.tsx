@@ -28,6 +28,37 @@ export interface PlatformSessionBarProps {
   allowedPlatforms?: string[]
 }
 
+// 唤起成功后的死亡观察窗口：窗口内"上轮存活→本轮掉线"判定为浏览器进程异常退出
+// （2026-09-26 排查：Edge 曾多次 exec 后数分钟内静默退出，界面静默回落 offline 零反馈）
+export const WAKE_DEATH_WATCH_MS = 120_000
+
+// 会话快照的最小切面（死亡监视只关心这三个字段）
+type WakeWatchSnapshot = Pick<PlatformSessionItem, "platform" | "display_name" | "is_alive">
+
+// 观察窗口截止时刻（组件外定义：Date.now 属非纯调用，不进渲染作用域）
+const wakeDeadline = () => Date.now() + WAKE_DEATH_WATCH_MS
+
+/**
+ * 唤起后死亡监视（纯函数）：对比前后两轮会话快照，
+ * 在观察窗口内由存活翻转为掉线的平台即视为异常退出。
+ * 不修改 watchUntil（触发后的去重删除由调用方完成）。
+ */
+export function findWakeDeaths(
+  prev: WakeWatchSnapshot[],
+  curr: WakeWatchSnapshot[],
+  watchUntil: ReadonlyMap<string, number>,
+  now: number,
+): Array<Pick<PlatformSessionItem, "platform" | "display_name">> {
+  const prevAlive = new Set(prev.filter((s) => s.is_alive).map((s) => s.platform))
+  const deaths: Array<Pick<PlatformSessionItem, "platform" | "display_name">> = []
+  for (const s of curr) {
+    if (!s.is_alive && prevAlive.has(s.platform) && (watchUntil.get(s.platform) ?? 0) > now) {
+      deaths.push({ platform: s.platform, display_name: s.display_name })
+    }
+  }
+  return deaths
+}
+
 export function PlatformSessionBar({
   onSessionsChange,
   className,
@@ -43,6 +74,9 @@ export function PlatformSessionBar({
   const { guardLaunch, edgeDialog } = useEdgeLaunchGuard()
   // 唤起后延迟刷新会话的定时器（组件卸载时清理，防止 setState 泄漏）
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 死亡监视：平台 -> 观察窗口截止时间戳；prevSessionsRef 供"存活→掉线"翻转比对
+  const wakeWatchRef = useRef<Map<string, number>>(new Map())
+  const prevSessionsRef = useRef<PlatformSessionItem[]>([])
   const onSessionsChangeRef = useRef(onSessionsChange)
 
   useEffect(() => {
@@ -73,7 +107,18 @@ export function PlatformSessionBar({
       const res = await fetch(`${API_BASE}/api/pipeline/platform-sessions`)
       const data = await res.json()
       if (data.code === 0 && Array.isArray(data.data)) {
-        setSessions(data.data)
+        const incoming = data.data as PlatformSessionItem[]
+        // 死亡监视：观察窗口内"存活→掉线"即时告警，不再静默回落
+        const deaths = findWakeDeaths(prevSessionsRef.current, incoming, wakeWatchRef.current, Date.now())
+        for (const d of deaths) {
+          wakeWatchRef.current.delete(d.platform)
+          toast.error(
+            `${d.display_name} 专用浏览器进程异常退出（已回落离线）。临终日志: backend/logs/edge_${d.platform}.log`,
+            { duration: 8000 }
+          )
+        }
+        prevSessionsRef.current = incoming
+        setSessions(incoming)
         const filtered = data.data.filter((item: PlatformSessionItem) => {
           if (allowedPlatforms && !allowedPlatforms.includes(item.platform)) return false
           if (excludePlatforms && excludePlatforms.includes(item.platform)) return false
@@ -115,6 +160,13 @@ export function PlatformSessionBar({
       })
       if (result.ok) {
         toast.success(`已唤起 ${name} 专用浏览器，请完成扫码/登录`)
+        // 登记死亡观察窗口：接下来 2 分钟内该平台掉线即告警
+        wakeWatchRef.current.set(platKey, wakeDeadline())
+        // 乐观登记存活：若 Edge 在 2s 首刷前就秒退，没经历过一次存活快照会漏报翻转
+        prevSessionsRef.current = [
+          ...prevSessionsRef.current.filter((s) => s.platform !== platKey),
+          { platform: platKey, display_name: name, port: 0, state: "running", message: "", is_alive: true },
+        ]
         if (refreshTimer.current) clearTimeout(refreshTimer.current)
         refreshTimer.current = setTimeout(fetchSessions, 2000)
       } else if (!result.handled) {
@@ -139,6 +191,8 @@ export function PlatformSessionBar({
       const data = await res.json()
       if (res.ok && data.code === 0) {
         toast.success(`已安全关闭 ${data.data?.closed_count || 0} 个浏览器进程`)
+        // 用户主动关闭：清空死亡观察，避免误报"异常退出"
+        wakeWatchRef.current.clear()
         fetchSessions()
       } else {
         toast.error("关闭异常")

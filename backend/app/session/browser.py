@@ -11,6 +11,7 @@ import logging
 import os
 import subprocess
 import time
+from pathlib import Path
 
 from .models import PlatformConfig
 
@@ -22,6 +23,19 @@ _EDGE_CANDIDATES = [
     r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
 ]
+
+# 拉起后 CDP 端口就绪轮询上限：exec 成功 ≠ 浏览器可用（2026-09-26 排查：
+# Edge 曾多次 exec 后数分钟内静默退出，fire-and-forget 让前端永远停留在"唤起中"）
+_CDP_READY_TIMEOUT_SECS = 30
+
+# 每平台 Edge 运行日志（临终遗言落盘，关闭 2026-09-25 排查确认的"日志黑洞"）：
+# backend/logs/edge_<platform>.log
+_LOGS_DIR = Path(__file__).resolve().parents[2] / "logs"
+_EDGE_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def edge_log_path(platform_name: str) -> Path:
+    return _LOGS_DIR / f"edge_{platform_name}.log"
 
 # 本机未装 Edge 时给用户的官方下载页（各唤起入口统一引用这份）。
 # 前端 lib/platform-auth.ts 的 FALLBACK_EDGE_DOWNLOAD_URL 是同一地址的兜底副本，
@@ -66,48 +80,98 @@ def get_edge_install_status() -> dict:
     return {"installed": installed, "download_url": EDGE_DOWNLOAD_URL}
 
 
-def _launch_edge_daemon(command: list[str]) -> None:
-    """以双重 fork 守护进程模式拉起 Edge（PPID=1 launchd 接管）。
+def _launch_edge_daemon(command: list[str], log_path: str | None = None) -> None:
+    """以双重 fork 守护进程模式拉起 Edge（孤儿链：launchd → 监护 python → Edge）。
 
     业务价值：
-    彻底切断 Edge 进程与 Python/FastAPI/PM2 父进程的任何血缘联系（PPID 恒为 1）。
-    当 PM2 重启（pm2 restart）使用 tree-kill 扫描父子进程树时，
-    Edge 绝不会被视作 Python 的子进程，从而实现服务热重启与全流程迭代期间 100% 常驻存活。
+    彻底切断 Edge 进程与 Python/FastAPI/PM2 父进程的任何血缘联系
+    （孙进程经双重 fork 被 launchd 接管），当 PM2 重启（pm2 restart）使用
+    tree-kill 扫描父子进程树时，Edge 绝不会被视作 Python 的子进程，
+    实现服务热重启与全流程迭代期间 100% 常驻存活。
+
+    2026-09-26 变更：孙进程不再直接 execv Edge，而是作为一个常驻监护 python
+    ——它把 Edge 的 stdout/stderr 接入 log_path（临终遗言留痕，此前进 /dev/null
+    导致退出原因永远成谜），并在 Edge 退出后追加 `[edge exit] code=N` 标记行。
+    监护进程同样在孤儿链上，PM2 tree-kill 依然扫不到 Edge。
     """
     import sys
     if hasattr(os, "fork"):
         launcher_code = """
-import os, sys
-cmd = sys.argv[1:]
+import os, subprocess, sys, time
+log_path, cmd = sys.argv[1], sys.argv[2:]
 pid = os.fork()
 if pid == 0:
     os.setsid()
     pid2 = os.fork()
     if pid2 == 0:
-        devnull = os.open(os.devnull, os.O_RDWR)
-        os.dup2(devnull, 0)
-        os.dup2(devnull, 1)
-        os.dup2(devnull, 2)
-        os.close(devnull)
-        os.execv(cmd[0], cmd)
+        try:
+            fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+            os.dup2(fd, 1)
+            os.dup2(fd, 2)
+            fd0 = os.open(os.devnull, os.O_RDONLY)
+            os.dup2(fd0, 0)
+            for f in (fd, fd0):
+                if f > 2:
+                    os.close(f)
+        except Exception:
+            pass
+        code = -1
+        try:
+            code = subprocess.run(cmd).returncode
+        except Exception as sup_e:
+            try:
+                print(f"[edge supervisor] 启动失败: {sup_e}", flush=True)
+            except Exception:
+                pass
+        try:
+            with open(log_path, "a", encoding="utf-8", errors="replace") as f:
+                f.write(f"\\n[edge exit] code={code} at {time.strftime('%Y-%m-%d %H:%M:%S')}\\n")
+        except Exception:
+            pass
+        os._exit(0)
     else:
         os._exit(0)
 else:
     os.waitpid(pid, 0)
 """
         subprocess.run(
-            [sys.executable, "-c", launcher_code, *command],
+            [sys.executable, "-c", launcher_code, log_path or os.devnull, *command],
             check=True,
             timeout=5,
         )
     else:
-        # Windows 兼容模式
-        subprocess.Popen(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0),
-        )
+        # Windows 兼容模式（无 fork，无监护进程，输出接入同一日志文件）
+        log_fh = open(log_path, "ab") if log_path else subprocess.DEVNULL
+        try:
+            subprocess.Popen(
+                command,
+                stdout=log_fh,
+                stderr=log_fh,
+                stdin=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0),
+            )
+        finally:
+            if log_fh is not subprocess.DEVNULL:
+                log_fh.close()
+
+
+def _rotate_edge_log_if_oversized(log_path: Path) -> None:
+    """超限即整个重建（调试留痕日志，不值得做轮转保存）。"""
+    try:
+        if log_path.exists() and log_path.stat().st_size > _EDGE_LOG_MAX_BYTES:
+            log_path.unlink()
+    except Exception:
+        pass
+
+
+def _read_log_tail(log_path: Path, limit: int = 600) -> str:
+    try:
+        size = log_path.stat().st_size
+        with open(log_path, "rb") as f:
+            f.seek(max(0, size - limit))
+            return f.read().decode("utf-8", errors="replace").strip()
+    except Exception:
+        return "(日志文件不可读)"
 
 
 def launch_edge(config: PlatformConfig, url: str | None = None) -> dict:
@@ -116,7 +180,31 @@ def launch_edge(config: PlatformConfig, url: str | None = None) -> dict:
 
     :param url: 打开后自动访问的地址；缺省用 config.auth_url（可传 login_check_url 做静默续期）。
     成功返回 {"status": "success", "message": ...}；失败抛 RuntimeError。
+
+    2026-09-26 加固（唤起卡死排查）：
+    1. 端口已有监听者时直接复用返回，绝不二次拉起——Chromium 单例锁竞争会让
+       同 profile 双实例互相伤害（轻则一方被顶掉，重则 cookie 库损坏）；
+    2. 拉起后轮询 CDP 端口至多 30s，exec 成功但浏览器秒退时如实抛错并附日志尾部，
+       不再对前端谎报成功。
     """
+    from .health_checker import probe_port
+
+    # 防双实例竞态：端口已有浏览器在听 → 直接复用
+    if probe_port(config.port, timeout=0.4):
+        # 注意：复用路径不会导航到 url 参数指定的页面（续期/重新登录类调用方需自行补发 CDP 导航）
+        logger.info(
+            f"[launch_edge] {config.name} 端口 {config.port} 已有浏览器监听，跳过重复拉起"
+            + ("（本次未导航到调用方指定页面）" if url else "")
+        )
+        return {
+            "status": "success",
+            "message": (
+                f"{config.display_name} 浏览器已在端口 {config.port} 运行，已直接复用。"
+                + ("（复用模式：未跳转到本次传入的页面）" if url else "")
+            ),
+            "reused": True,
+        }
+
     edge_path = find_edge_path()
 
     profile_dir = config.profile_dir
@@ -137,14 +225,38 @@ def launch_edge(config: PlatformConfig, url: str | None = None) -> dict:
     if target_url:
         command.append(target_url)
 
+    log_path = edge_log_path(config.name)
     try:
-        _launch_edge_daemon(command)
+        _LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        _rotate_edge_log_if_oversized(log_path)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"\n[launch {time.strftime('%Y-%m-%d %H:%M:%S')}] platform={config.name} port={config.port}\n")
+    except Exception as log_e:
+        logger.warning(f"[launch_edge] Edge 日志文件初始化失败（不阻断拉起）: {log_e}")
+        log_path = None
+
+    try:
+        _launch_edge_daemon(command, str(log_path) if log_path else None)
     except Exception as e:
         logger.exception("启动 Edge 浏览器失败")
         raise RuntimeError(f"启动浏览器失败: {e}") from e
 
-    logger.info(f"成功启动 Edge 浏览器（Double-Fork 守护模式，PPID=1），平台: {config.name}, 端口: {config.port}")
-    return {"status": "success", "message": f"Edge 浏览器已成功在端口 {config.port} 唤起。"}
+    deadline = time.time() + _CDP_READY_TIMEOUT_SECS
+    while time.time() < deadline:
+        if probe_port(config.port, timeout=0.4):
+            logger.info(
+                f"成功启动 Edge 浏览器（Double-Fork 守护模式，孤儿链 launchd→监护→Edge），"
+                f"平台: {config.name}, 端口: {config.port}，CDP 已就绪"
+            )
+            return {"status": "success", "message": f"Edge 浏览器已成功在端口 {config.port} 唤起。"}
+        time.sleep(0.5)
+
+    tail = _read_log_tail(log_path) if log_path else "(日志不可用)"
+    logger.error(f"[launch_edge] {config.name} CDP 端口 {config.port} {_CDP_READY_TIMEOUT_SECS}s 未就绪；日志尾部: {tail}")
+    raise RuntimeError(
+        f"浏览器进程已拉起，但 CDP 端口 {config.port} 在 {_CDP_READY_TIMEOUT_SECS}s 内未就绪"
+        f"（进程可能已异常退出）。临终日志: {log_path}；日志尾部: {tail}"
+    )
 
 
 def _find_port_processes(port: int) -> list:
