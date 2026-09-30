@@ -141,9 +141,16 @@ async def _execute_pipeline(
             except Exception as rep_e:
                 logger.warning(f"[FullAuto] 任务报告发送异常（不阻断链路）: {rep_e}")
 
+        async def _safe_send_abort_report() -> None:
+            """终止战报加超时上限——飞书网络抖动绝不阻断 emit_end 与台账清零（0928 事故）。"""
+            try:
+                await asyncio.wait_for(_send_task_report([]), timeout=15)
+            except Exception as rep_e:
+                logger.warning(f"[FullAuto] 终止战报发送异常/超时（不阻断终止收尾）: {rep_e}")
+
         # 终止守卫
         if abort_mod.is_aborted():
-            await _send_task_report([])
+            await _safe_send_abort_report()
             await pb.emit_stage(pipeline_task_id, "done", "done")
             await pb.emit_end(pipeline_task_id, {"reason": "aborted"})
             complete_autopilot_log(log_task_id, "failed", 0, "手动终止")
@@ -205,7 +212,7 @@ async def _execute_pipeline(
 
         # 终止守卫
         if abort_mod.is_aborted():
-            await _send_task_report([])
+            await _safe_send_abort_report()
             await pb.emit_stage(pipeline_task_id, "done", "done")
             await pb.emit_end(pipeline_task_id, {"reason": "aborted"})
             complete_autopilot_log(log_task_id, "failed", 0, "手动终止")

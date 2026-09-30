@@ -7,9 +7,12 @@ SSE 是「直播」：连接断开（刷新页面）后，之前推过的进度�
 即使任务收尾、后端重启、页面刷新，在下一次新任务启动覆盖前，当前最后一轮产出的岗位永远锁定为「本轮」！
 """
 import json
+import logging
 import sqlite3
 import threading
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _DB_PATH = Path(__file__).resolve().parents[2] / "data" / "job_hunter.db"
 _lock = threading.Lock()
@@ -117,6 +120,29 @@ def _load_from_db():
 
 # 模块初始化时主动从数据库恢复
 _load_from_db()
+
+
+def reconcile_startup_ghost() -> bool:
+    """启动对账（0928 事故）：清零上次异常退出残留的幽灵 running，返回是否发生清零。
+
+    running 只可能由本进程协程经 begin() 写入；模块加载=进程刚启动，此刻 DB 里
+    running=1 必为重启/崩溃前的幽灵残留。不清零会让 /run-snapshot 永久返回「运行中」，
+    前端刷新后与失效任务 ID 绑定（/current-pipeline 读内存态故无此问题）。
+    内存与持久层同步清零（code-review R1-P1）：只清内存的话再次触发 _load_from_db 会复活。
+    """
+    with _lock:
+        if not _runtime.get("running"):
+            return False
+        logger.warning(
+            "[run_snapshot] 启动对账：发现上次异常退出残留的 running=1（task_id=%s），已清零",
+            _runtime.get("task_id"),
+        )
+        _runtime["running"] = False
+    _save_to_db()
+    return True
+
+
+reconcile_startup_ghost()
 
 
 def begin(task_id: str, start_rowid: int, budgets: dict[str, int], disabled: list) -> None:

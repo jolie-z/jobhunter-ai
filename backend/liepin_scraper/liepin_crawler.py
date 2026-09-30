@@ -12,11 +12,13 @@
 
 import json
 import os
+import subprocess
 import time
 import random
 import sqlite3
 import datetime
 import argparse
+import glob
 import re
 from DrissionPage import ChromiumPage, ChromiumOptions
 
@@ -207,6 +209,68 @@ def fetch_liepin_detail(main_page, job_link, is_headhunter):
     finally:
         if tab: tab.close()
 
+def _edge_binary_probe_detail(edge_path: str, exc: Exception) -> str:
+    """拉起失败后的二进制体检（0928 事故配套）：连 --version 都跑不起来=系统层损坏。
+
+    典型如 macOS 12 配 Edge 151+：dyld 加载期 Symbol not found → SIGABRT，
+    此时报错不是代码问题，报错原文直接给出真凶，避免 DrissionPage 天书掩盖三天。
+    """
+    try:
+        probe = subprocess.run([edge_path, '--version'], capture_output=True, text=True, timeout=8)
+    except Exception as pe:
+        return f"Edge 二进制体检执行失败: {pe}；原始连接错误: {exc}"
+    if probe.returncode != 0:
+        tail = (probe.stderr or probe.stdout or '').strip()[-400:]
+        return (
+            f"Edge 二进制无法启动（--version 退出码 {probe.returncode}），疑似系统与浏览器版本"
+            f"不兼容或安装损坏（典型：macOS 12 配 Edge 151+，dyld 报 Symbol not found；"
+            f"处置=升级 macOS 或回滚 Edge 150 并封锁自动更新）。加载器报错尾部：{tail}"
+        )
+    return f"Edge 二进制自检正常但 CDP 连接失败（原错误：{exc}）；请检查 9226 端口占用与 profile 档案锁"
+
+
+def _clear_stale_profile_locks(profile_path: str) -> bool:
+    """无 Edge 进程占用该 profile 时清掉残留 Singleton 锁并返回 True；有占用或清理失败返回 False。"""
+    try:
+        busy = subprocess.run(
+            ['pgrep', '-f', f'user-data-dir={profile_path}'],
+            capture_output=True, text=True, timeout=5)
+        if busy.returncode == 0:
+            return False  # 有活进程占着档案，绝不能动锁
+        # 回退候选与 app.session.browser._EDGE_CANDIDATES 语义一致（防漂移：改路径两处同改）
+        cleared = False
+        for lock in glob.glob(os.path.join(profile_path, 'Singleton*')):
+            os.remove(lock)
+            cleared = True
+        return cleared
+    except Exception:
+        return False
+
+
+def _resolve_edge_path() -> str:
+    """定位 Edge 可执行文件（0928 事故配套）。
+
+    优先复用 app.session.browser 的统一候选解析（/Applications 与 ~/Applications 都认，
+    与会话条唤起同标准，防止「会话条能唤起、爬虫却报找不到」的标准分裂）；
+    引擎可能脱离 app 上下文直跑（CLI），届时回退本模块候选清单。
+    """
+    try:
+        from app.session.browser import find_edge_path
+        return find_edge_path()
+    except Exception:
+        pass
+    for cand in (
+        os.path.expanduser('~/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'),
+        '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    ):
+        if os.path.exists(cand):
+            return cand
+    raise RuntimeError(
+        "未找到 Microsoft Edge（已检查 /Applications 与 ~/Applications）。"
+        "猎聘采集引擎依赖 Edge，请先安装：https://www.microsoft.com/edge/download"
+    )
+
+
 def _setup_chromium_browser():
     """辅助函数：初始化并配置 DrissionPage 浏览器环境"""
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -215,11 +279,11 @@ def _setup_chromium_browser():
     co = ChromiumOptions()
     co.set_argument('--no-sandbox')
     co.set_argument('--disable-blink-features=AutomationControlled')
-    
-    # 🌟 统一架构：强制指定 Microsoft Edge 的绝对路径
-    mac_edge_path = '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'
-    if os.path.exists(mac_edge_path):
-        co.set_browser_path(mac_edge_path)
+
+    # 🌟 统一架构：强制指定 Microsoft Edge（0928 事故加固：缺失时报错而非
+    #    静默回退默认浏览器——那会让采集在无意识中换了浏览器行为）
+    mac_edge_path = _resolve_edge_path()
+    co.set_browser_path(mac_edge_path)
 
     # 🌟 1. 随机分配一个不冲突的调试端口 (避开默认的 9222，防止与日常浏览器/僵尸进程抢占)
     co.set_local_port(9226)
@@ -232,7 +296,19 @@ def _setup_chromium_browser():
     print(f"🛡️  [Profile 物理隔离] 用户数据目录: {profile_path}")
 
     co.headless(False)
-    page = ChromiumPage(co)
+
+    # 0928 事故加固：拉起失败先清一次无主档案锁重试，仍失败则带二进制体检诊断抛错
+    try:
+        page = ChromiumPage(co)
+    except Exception as launch_exc:
+        if _clear_stale_profile_locks(profile_path):
+            print("   🧹 检测到无主档案锁残留，已清理并重试拉起浏览器…")
+            try:
+                page = ChromiumPage(co)
+            except Exception as retry_exc:
+                raise RuntimeError(_edge_binary_probe_detail(mac_edge_path, retry_exc)) from retry_exc
+        else:
+            raise RuntimeError(_edge_binary_probe_detail(mac_edge_path, launch_exc)) from launch_exc
 
     # 🌟 登录态守卫（与投递侧 liepin_auto_delivery 一致）：profile 自带活跃 session 时
     #    严禁注入本地 cookie 文件，防止过期 cookie 覆盖/污染有效登录态。

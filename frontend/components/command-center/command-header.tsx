@@ -36,7 +36,14 @@ export function CommandHeader({
   const [starting, setStarting] = useState(false)
   const [aborting, setAborting] = useState(false)
   const [abortMsg, setAbortMsg] = useState("")
-  
+  // 终止后对账窗口（0928 事故修复）：后端确认无运行中协程即复位本地 running 态
+  const [abortPending, setAbortPending] = useState(false)
+  const componentAliveRef = useRef(true)
+  useEffect(() => {
+    componentAliveRef.current = true
+    return () => { componentAliveRef.current = false }
+  }, [])
+
   // 统一管理所有定时器
   const timersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set())
 
@@ -134,23 +141,64 @@ export function CommandHeader({
     }
   }
 
+  // 终止后对账（0928 事故修复）：轮询后端 current-pipeline，确认协程已不存在即复位本地
+  // running 态——防「幽灵任务」（后端重启/崩溃后无协程、永远等不到 SSE end）把界面永久
+  // 卡在 running。绑定发起终止时的 taskId：SSE end 先到或用户已开新任务即短路，绝不误洗新任务。
+  const reconcileAfterAbort = async (abortedTaskId: string) => {
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 3000))
+      if (!componentAliveRef.current) return
+      const snapshot = usePipelineStore.getState()
+      if (snapshot.status !== "running" || snapshot.pipelineTaskId !== abortedTaskId) {
+        setAbortPending(false)
+        return
+      }
+      try {
+        const res = await fetch(`${API_BASE}/api/automation/current-pipeline`)
+        const data = await res.json()
+        // data 缺失/data:null = 后端无运行任务，与 running:false 同义（防御式，code-review R1-P1）
+        if (res.ok && (!data?.data || data?.data?.running === false)) {
+          // 复位前必须取 fetch 后的新鲜快照：fetch 期间 SSE end 可能已到达（code-review R2-P2 不采纳，正确性优先）
+          const latest = usePipelineStore.getState()
+          if (latest.status === "running" && latest.pipelineTaskId === abortedTaskId) {
+            usePipelineStore.getState().reset()
+            toast.success("后端已确认无运行中任务，界面已复位")
+          }
+          setAbortPending(false)
+          return
+        }
+      } catch {
+        // 网络抖动：继续重试
+      }
+    }
+    if (!componentAliveRef.current) return
+    setAbortPending(false)
+    toast.error("后端任务收尾超时，请稍后刷新页面核对实际状态")
+  }
+
   // 终止任务
   const handleAbort = async () => {
-    if (aborting) return
+    if (aborting || abortPending) return
     if (!window.confirm("确定终止本次全链路任务？\n各平台爬虫与状态机将在安全点收尾，并生成执行报告。")) return
     setAborting(true)
     setAbortMsg("")
+    const abortedTaskId = pipelineTaskId || ""
     try {
       const res = await fetch(`${API_BASE}/api/automation/abort`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task_id: pipelineTaskId || "" }),
+        body: JSON.stringify({ task_id: abortedTaskId }),
       })
       const data = await res.json()
       if (res.ok) {
         setAbortMsg(data.message || "终止指令已下达")
         const timer = setTimeout(() => setAbortMsg(""), 5000)
         timersRef.current.add(timer)
+        // 指令已被后端受理：进入对账窗口（非静默重置，SSE end 仍是第一复位来源）
+        if (data?.aborted !== false) {
+          setAbortPending(true)
+          void reconcileAfterAbort(abortedTaskId)
+        }
       } else {
         setAbortMsg("终止失败: " + (data.detail || data.message || "未知错误"))
       }
@@ -273,11 +321,12 @@ export function CommandHeader({
           {pipelineStatus === "running" ? (
             <button
               onClick={handleAbort}
-              disabled={aborting}
+              disabled={aborting || abortPending}
               className="flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3.5 py-1.5 text-xs font-medium text-red-600 transition-all hover:bg-red-500/20 active:scale-95 disabled:opacity-50"
+              title={abortPending ? "终止指令已受理，正在等待后端收尾/对账" : "终止本次全链路任务"}
             >
               <Square className="h-3.5 w-3.5 fill-current" />
-              {aborting ? "终止中…" : "终止任务"}
+              {aborting || abortPending ? "终止中…" : "终止任务"}
             </button>
           ) : (
             <button

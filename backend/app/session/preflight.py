@@ -214,14 +214,22 @@ async def ensure_platforms_ready(platforms: list, emit_log=None) -> dict:
             pending[key] = (config, status, _PENDING_KIND_LOGIN)
 
     # 3. 失效平台：发飞书通知 + 等待窗口内轮询复检
+    aborted_early = False
     if pending:
         wait_s = _wait_seconds()
         await _notify_login_needed(list(pending.values()), wait_s)
         names = "、".join(c.display_name for c, _, _ in pending.values())
         await _log(f"⚠️ 登录态/资产异常: {names}；已发飞书通知，等待 {wait_s} 秒内手动处理…")
 
+        # 0928 事故修复：等待循环接入终止信号——用户点「终止任务」不应干等满窗口
+        from app.automation import abort as abort_mod  # 惰性导入，避免模块级循环依赖
+
         deadline = time.monotonic() + wait_s
         while pending and time.monotonic() < deadline:
+            if abort_mod.is_aborted():
+                aborted_early = True
+                await _log("🛑 检测到全链路终止信号，预检等待提前结束，未恢复平台按跳过处理")
+                break
             await asyncio.sleep(_poll_seconds())
             for key in list(pending):
                 config, _, kind = pending[key]
@@ -256,7 +264,9 @@ async def ensure_platforms_ready(platforms: list, emit_log=None) -> dict:
     # 4. 窗口结束仍未登录 → 本次任务跳过
     for key, (config, status, kind) in pending.items():
         results[key] = False
-        if kind == _PENDING_KIND_COOKIE_FILE:
+        if aborted_early:
+            await _log(f"🛑 {config.display_name} 因任务终止被跳过（预检未完成）")
+        elif kind == _PENDING_KIND_COOKIE_FILE:
             await _log(f"⛔ {config.display_name} 等待超时仍未生成 Cookie 文件，本次任务跳过该平台")
         else:
             await _log(f"⛔ {config.display_name} 等待超时仍未登录，本次任务跳过该平台（{status.message}）")

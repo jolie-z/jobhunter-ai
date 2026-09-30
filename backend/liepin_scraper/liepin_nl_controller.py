@@ -39,6 +39,10 @@ client = make_tracked_client(OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE
 # 🌟 全局急刹车开关：被飞书 stop_scrape 指令拉高后，底层循环会检测并优雅退出
 GLOBAL_STOP_FLAG = False
 
+# 🌟 最近一次引擎子进程崩溃原因（None=无）：run_task 崩溃快停时写入，
+# 异步入口 process_liepin_scraping_request 读取后回飞书告警（0928 事故修复）
+LAST_ENGINE_CRASH = None
+
 def set_stop_flag(value: bool):
     """外部（例如 FastAPI 路由）调用此函数拉起 / 释放猎聘急刹车。"""
     global GLOBAL_STOP_FLAG
@@ -159,10 +163,11 @@ def _process_crawler_output(process, sse_task_id, loop, target_jobs, current_pag
 
 def run_task(keyword, city, start_page, target_jobs, salary, sse_task_id=None, loop=None):
     """🌟 动态 While 循环，实时解析猎聘终端日志。支持 GLOBAL_STOP_FLAG 中断。"""
+    global GLOBAL_STOP_FLAG, LAST_ENGINE_CRASH
+    LAST_ENGINE_CRASH = None
     total_inserted = 0
     current_page = start_page
     search_total = 0
-    global GLOBAL_STOP_FLAG
     
     while total_inserted < target_jobs:
         # 🌟 主循环（翻页循环）首部急刹车检查
@@ -204,7 +209,18 @@ def run_task(keyword, city, start_page, target_jobs, salary, sse_task_id=None, l
             print("\n🚨 检测到子进程返回 99 错误码，触发风控熔断，停止任务！")
             total_inserted = real_time_inserted
             break
-            
+
+        # 引擎崩溃快停（0928 事故修复）：子进程非 0/99 退出=崩溃（如浏览器拉起失败），
+        # 不再当「本页 0 收获」傻睡翻页——否则崩溃-休眠死循环无页数上限
+        if process.returncode not in (0, 99):
+            LAST_ENGINE_CRASH = (
+                f"猎聘爬虫子进程异常退出(code={process.returncode})，已中止翻页循环"
+            )
+            print(f"\n🚨 [猎聘] {LAST_ENGINE_CRASH}")
+            print("   （浏览器类故障请另查 backend/logs/edge_liepin.log 与上方堆栈）")
+            total_inserted = real_time_inserted
+            break
+
         total_inserted = real_time_inserted
         
         if hit_bottom:
@@ -291,6 +307,7 @@ async def _notify_feishu_liepin(chat_id: str, message: str):
 
 
 async def process_liepin_scraping_request(chat_id: str, city: str, keyword: str, salary: str, start_page: int = 1, target_jobs: int = 40, sse_task_id: str = None):
+    global LAST_ENGINE_CRASH
     print(f"\n{'='*50}")
     print(f"🕵️ [DEBUG] 飞书请求已进入猎聘执行中枢！参数: 城市={city}, 岗位={keyword}, 薪资={salary}, start_page={start_page}, target_jobs={target_jobs}")
 
@@ -366,6 +383,27 @@ async def process_liepin_scraping_request(chat_id: str, city: str, keyword: str,
             run_scraping_task,
             keyword, city, salary, start_page, target_jobs, sse_task_id, loop
         )
+
+        # 引擎崩溃告警（0928 事故修复）：run_task 快停后此处回飞书真实原因，不发庆功报文
+        if LAST_ENGINE_CRASH:
+            crash_reason = LAST_ENGINE_CRASH
+            LAST_ENGINE_CRASH = None  # 读取即清，防跨请求/并发残留（code-review R1-P1）
+            print(f"🕵️ [DEBUG] 猎聘抓取异常中止: {crash_reason}")
+            await _notify_feishu_liepin(
+                chat_id,
+                f"❌ 猎聘抓取中止：{crash_reason}。\n"
+                f"请检查后端日志排查；浏览器类故障另见 backend/logs/edge_liepin.log。"
+            )
+            if sse_task_id:
+                from app.tasks.state import task_queues
+                if sse_task_id in task_queues:
+                    payload = json.dumps(
+                        {"type": "complete", "message": f"❌ 猎聘抓取中止：{crash_reason}"},
+                        ensure_ascii=False,
+                    )
+                    await task_queues[sse_task_id].put(f'data: {payload}\n\n')
+            return
+
         print(f"🕵️ [DEBUG] 猎聘抓取逻辑执行完毕，返回入库数: {total_inserted}")
 
         await _notify_feishu_liepin(
