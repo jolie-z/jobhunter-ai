@@ -130,6 +130,7 @@ backend/temp_print_data/
 *.pdf
 *.docx
 *.png
+!docs/feishu_group_qr.png
 
 # runtime logs
 nohup_*.log

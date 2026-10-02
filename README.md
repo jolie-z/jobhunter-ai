@@ -1,6 +1,7 @@
 # JobHunter — AI 全链路求职自动化平台
 
 [![Tests](https://github.com/jolie-z/jobhunter-ai/actions/workflows/tests.yml/badge.svg)](https://github.com/jolie-z/jobhunter-ai/actions/workflows/tests.yml)
+[![Feishu Group](https://img.shields.io/badge/%E9%A3%9E%E4%B9%A6-%E4%BA%A4%E6%B5%81%E7%BE%A4-00D6B9)](#-交流与反馈)
 
 > 从岗位抓取 → 数据清洗 → AI 评估 → 简历改写 → 人工审批 → 自动投递的端到端求职自动化系统，支持飞书 ChatOps 指挥与多维表格数据同步。
 > 🧬 本项目是 [Auto-JobHunter](https://github.com/jolie-z/Auto-JobHunter)（⭐ 80+）的全面升级版：招聘平台从 3 家扩到 4 家，新增四分屏定制工作台、在线简历多平台回写、面试训练营与飞书 ChatAgent，全链路代码重构。
@@ -180,6 +181,15 @@ python backend/test_scripts/test_feishu_chatops.py --batch
 # 底层配置验证（飞书/LLM/搜索/数据库）
 python scripts/test_config_validation.py all
 ```
+
+## 💬 交流与反馈
+
+- **飞书交流群**（快问快答 / 使用咨询）：扫描下方二维码加入（**二维码永久有效**）。注意：需使用**飞书个人版**账号扫码，企业组织账号暂不支持入群。
+- **Bug 反馈与功能建议**：请提 [Issue](https://github.com/jolie-z/jobhunter-ai/issues)（可追踪、可检索，方便后来人搜到同类问题）；提问时请附上**操作系统、Python 版本（3.10–3.13）与完整报错原文**。
+
+<p align="center">
+  <img src="docs/feishu_group_qr.png" alt="飞书交流群二维码（永久有效）" width="280">
+</p>
 
 ## ⚠️ 免责声明
 
