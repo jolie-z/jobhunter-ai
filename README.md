@@ -1,6 +1,9 @@
 # JobHunter — AI 全链路求职自动化平台
 
 [![Tests](https://github.com/jolie-z/jobhunter-ai/actions/workflows/tests.yml/badge.svg)](https://github.com/jolie-z/jobhunter-ai/actions/workflows/tests.yml)
+[![Python](https://img.shields.io/badge/Python-3.10--3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-%3E%3D0.114-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-%3E%3D1.2-1C3C3C?logo=langgraph&logoColor=white)](https://langchain-ai.github.io/langgraph/)
 [![Feishu Group](https://img.shields.io/badge/%E9%A3%9E%E4%B9%A6-%E4%BA%A4%E6%B5%81%E7%BE%A4-00D6B9)](#-交流与反馈)
 
 > 从岗位抓取 → 数据清洗 → AI 评估 → 简历改写 → 人工审批 → 自动投递的端到端求职自动化系统，支持飞书 ChatOps 指挥与多维表格数据同步。
