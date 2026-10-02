@@ -34,7 +34,7 @@
 
 ## 🏗️ 技术栈
 
-- **后端**：FastAPI · LangGraph · DrissionPage + Playwright（CDP）· SQLite（岗位主库）· APScheduler · Python 3.10+（uv 管理）
+- **后端**：FastAPI · LangGraph · DrissionPage + Playwright（CDP）· SQLite（岗位主库）· APScheduler · Python 3.10–3.13（uv 管理）
 - **前端**：Next.js (App Router) · Tailwind CSS v4 · shadcn/ui · Zustand · Vitest · ESLint
 - **集成**：飞书开放平台（多维表格 + 机器人 + ChatOps）· LLM（OpenAI 兼容接口）· Tavily 搜索 · Sentry
 - **部署**：宿主机常驻（uvicorn + Next.js；爬虫依赖真实浏览器环境，不可容器化）
@@ -65,7 +65,7 @@ jobhunter-ai/
 
 ### 环境要求
 
-- Python 3.10+（推荐 [uv](https://docs.astral.sh/uv/)）
+- Python 3.10–3.13（推荐 3.12；暂不支持 3.14）· 推荐 [uv](https://docs.astral.sh/uv/)
 - Node.js 18+
 - **Microsoft Edge 浏览器（必需）**：四大平台的岗位抓取与自动投递均通过 CDP 接管真实 Edge（持久化 Profile + 登录态）；未安装 Edge 时，岗位抓取与自动投递无法运行
 
