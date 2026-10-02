@@ -188,7 +188,7 @@ python scripts/test_config_validation.py all
 - **Bug 反馈与功能建议**：请提 [Issue](https://github.com/jolie-z/jobhunter-ai/issues)（可追踪、可检索，方便后来人搜到同类问题）；提问时请附上**操作系统、Python 版本（3.10–3.13）与完整报错原文**。
 
 <p align="center">
-  <img src="docs/feishu_group_qr.png" alt="飞书交流群二维码（永久有效）" width="280">
+  <img src="docs/feishu_group_qr_v2.png" alt="飞书交流群二维码（永久有效）" width="280">
 </p>
 
 ## ⚠️ 免责声明
