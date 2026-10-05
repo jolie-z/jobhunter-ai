@@ -1,4 +1,5 @@
 import type { ResumeDataV2 } from "@/types/resume"
+import { hasListStylePrefix } from "../../../resume-builder/bullet-style"
 
 /**
  * 描述字段统一转行数组：数据经飞书/AI 改写回流后 description 可能退化为字符串
@@ -45,7 +46,9 @@ export function formatMarkdownPangu(content: string): string {
  *
  * 保守规则（只补不删、不动结构）：
  * - 空行保留（加粗小标题上下空行的既定排版约定不受影响）；
- * - 已是列表项（- / * / 1.）、加粗小标题（**x** 或 "标题：" 独行）、引用、代码、表格行不动；
+ * - 已是列表项（- / * / 1.）、符号/编号 bullet（○ ■ ◆ ▸ ➢ 一、① a) 等）、
+ *   加粗小标题（**x** 或 "标题：" 独行）、引用、代码、表格行不动；
+ * - 以空白开头的缩进行视为用户有意排版，不吞成列表；
  * - 连续纯文本行视为要点逐行补齐，避免半列表半纯文本的参差观感。
  */
 export function normalizeBulletLines(content: string): string {
@@ -55,6 +58,9 @@ export function normalizeBulletLines(content: string): string {
     .map(line => {
       const trimmed = line.trim()
       if (trimmed === "") return line // 空行原样
+      if (/^[ \t　]/.test(line)) return line // 缩进行（半角空格/Tab/全角空格）不动
+      // 符号/编号 bullet（编辑器「列表符号」产物或外部导入）已是要点形态
+      if (hasListStylePrefix(line)) return line
       // 加粗小标题独行必须先于星号列表判定（** 开头会被 [\-*+] 分支误吞）；
       // 仅加粗标记包裹整行（后跟冒号/空格/结尾）才算小标题，加粗起头接正文的行要补符
       if (/^\*\*.+\*\*(:|：)?\s*$/.test(trimmed)) return line

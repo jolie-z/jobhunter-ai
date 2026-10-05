@@ -12,6 +12,24 @@ from app.main import app
 client = TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _reset_jd_report_cache():
+    """get/update_global_jd_report 共用 5 分钟进程内缓存：用例间必须清零。
+
+    否则 generate 用例生成的报告会经缓存泄入 get 用例（顺序耦合，CI/本地同炸）。
+    """
+    from app.strategy import jd_report_service as _svc
+
+    def _clear():
+        with _svc._jd_report_cache_lock:
+            _svc._JD_REPORT_CACHE["value"] = None
+            _svc._JD_REPORT_CACHE["at"] = 0.0
+
+    _clear()
+    yield
+    _clear()
+
+
 @pytest.fixture
 def mock_httpx_client():
     """generate 的第一步（搜索 A 级岗位）走 httpx.AsyncClient。"""
@@ -96,20 +114,6 @@ def test_generate_jd_report_success(
     assert mock_service_requests.post.call_count == 1
     assert mock_service_requests.put.call_count == 1
     assert mock_openai.return_value.chat.completions.create.call_count == 1
-
-
-@pytest.fixture(autouse=True)
-def _reset_jd_report_cache():
-    """进程内 5 分钟报告缓存在用例间重置：generate 用例回写成功会把 LLM mock 文本写入
-    _JD_REPORT_CACHE（update_global_jd_report 即缓存刷新），后续 get 用例会命中缓存短路、
-    触达不了自身 mock（顺序敏感假失败）。autouse 前后双清，不依赖用例执行顺序。"""
-    from app.strategy import jd_report_service
-
-    jd_report_service._JD_REPORT_CACHE["value"] = None
-    jd_report_service._JD_REPORT_CACHE["at"] = 0.0
-    yield
-    jd_report_service._JD_REPORT_CACHE["value"] = None
-    jd_report_service._JD_REPORT_CACHE["at"] = 0.0
 
 
 def test_get_jd_report_success(mock_feishu_token, mock_service_requests):

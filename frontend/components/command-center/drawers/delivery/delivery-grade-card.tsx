@@ -1,6 +1,5 @@
 "use client"
 
-import { useEffect, useRef } from "react"
 import { Filter, Info, CheckCircle2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
@@ -52,6 +51,13 @@ const GRADE_OPTIONS: GradeOption[] = [
     color: "text-orange-600 dark:text-orange-400 border-orange-500/20 bg-orange-500/[0.04]",
   },
   {
+    id: "E",
+    name: "E 级",
+    track: "mass",
+    desc: "一般",
+    color: "text-zinc-600 dark:text-zinc-400 border-zinc-500/20 bg-zinc-500/[0.04]",
+  },
+  {
     id: "F",
     name: "F 级",
     track: "mass",
@@ -60,47 +66,25 @@ const GRADE_OPTIONS: GradeOption[] = [
   },
 ]
 
-// 清洗后为空时的兜底默认集，与后端 automation_configs 默认 auto_deliver_grades 一致
-const DEFAULT_MASS_GRADES = ["C", "D", "F"]
-
 export function DeliveryGradeCard({ grades, onChangeGrades }: DeliveryGradeCardProps) {
-  // 存量配置可能残留已下线的等级（如 E）或重复项：入口归一化，
-  // 避免幽灵勾选与「长度>1 实际只有一种」的判定失真
-  const validGrades = Array.from(new Set(grades)).filter((g) =>
-    GRADE_OPTIONS.some((o) => o.id === g)
-  )
-
-  // 清洗回写：首次拿到非空 grades 时执行一次（父级配置多为异步灌入，挂载时可能是 []，
-  // 只看挂载会漏洗）。清洗后为空（存量配置全非法，如只剩 E）绝不可回写空集合——
-  // 全空=所有岗位挂人工审批，等于静默停摆海投；回退与后端默认一致的 ["C","D","F"]。
-  const cleanedRef = useRef(false)
-  useEffect(() => {
-    if (cleanedRef.current || grades.length === 0) return
-    cleanedRef.current = true
-    if (validGrades.length !== grades.length) {
-      onChangeGrades(validGrades.length > 0 ? validGrades : DEFAULT_MASS_GRADES)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅首次非空灌入时清洗一次，随依赖回写会与父级 setState 成环
-  }, [grades])
-
   const toggleGrade = (id: string) => {
-    if (validGrades.includes(id)) {
-      if (validGrades.length === 1) return // 至少保留 1 个等级，全空会导致所有岗位挂人工审批
-      onChangeGrades(validGrades.filter((g) => g !== id))
+    if (grades.includes(id)) {
+      if (grades.length === 1) return // 至少保留 1 个等级，全空会导致所有岗位挂人工审批
+      onChangeGrades(grades.filter((g) => g !== id))
     } else {
-      onChangeGrades([...validGrades, id])
+      onChangeGrades([...grades, id])
     }
   }
 
   const toggleTrack = (track: "custom" | "mass") => {
     const trackIds = GRADE_OPTIONS.filter((g) => g.track === track).map((g) => g.id)
-    const allOn = trackIds.every((id) => validGrades.includes(id))
+    const allOn = trackIds.every((id) => grades.includes(id))
     if (allOn) {
       // 整轨取消至少要留下别的等级
-      const rest = validGrades.filter((id) => !trackIds.includes(id))
+      const rest = grades.filter((id) => !trackIds.includes(id))
       if (rest.length > 0) onChangeGrades(rest)
     } else {
-      onChangeGrades([...new Set([...validGrades, ...trackIds])])
+      onChangeGrades([...new Set([...grades, ...trackIds])])
     }
   }
 
@@ -126,7 +110,7 @@ export function DeliveryGradeCard({ grades, onChangeGrades }: DeliveryGradeCardP
             </TooltipTrigger>
             <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed p-2.5">
               勾选的等级在 AI 评估完成后直接自动投递，不再挂人工审批；未勾选的等级会停在「简历人工复核」等待放行。A/B
-              走定制轨（精修简历后投递），C/D/F 走海投轨（通用简历 + 打招呼语）。海投轨仍受公司规模门槛约束。
+              走定制轨（精修简历后投递），C-F 走海投轨（通用简历 + 打招呼语）。C-F 仍受公司规模门槛约束。
             </TooltipContent>
           </Tooltip>
         </div>
@@ -136,10 +120,10 @@ export function DeliveryGradeCard({ grades, onChangeGrades }: DeliveryGradeCardP
         </span>
       </div>
 
-      {/* 5 级勾选网格 */}
-      <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+      {/* 6 级勾选网格 */}
+      <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
         {GRADE_OPTIONS.map((item) => {
-          const isSelected = validGrades.includes(item.id)
+          const isSelected = grades.includes(item.id)
           return (
             <button
               key={item.id}
@@ -180,7 +164,7 @@ export function DeliveryGradeCard({ grades, onChangeGrades }: DeliveryGradeCardP
           onClick={() => toggleTrack("mass")}
           className="rounded-full border border-border/60 px-2.5 py-0.5 transition-colors hover:border-amber-500/40 hover:text-amber-600 dark:hover:text-amber-400 cursor-pointer"
         >
-          海投轨 C/D/F
+          海投轨 C-F
         </button>
       </div>
     </div>

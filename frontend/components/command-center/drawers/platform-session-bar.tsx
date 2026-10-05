@@ -8,8 +8,6 @@ import {
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { API_BASE } from "@/lib/api"
-import { parseEdgeErrorDetail } from "@/lib/platform-auth"
-import { useEdgeLaunchGuard } from "@/hooks/use-edge-launch-guard"
 
 export interface PlatformSessionItem {
   platform: string
@@ -70,8 +68,6 @@ export function PlatformSessionBar({
   const [loading, setLoading] = useState(false)
   const [launchingKey, setLaunchingKey] = useState<string | null>(null)
   const [closingAll, setClosingAll] = useState(false)
-  // Edge 未安装守卫：唤起前探测，未装弹「下载 Edge」引导
-  const { guardLaunch, edgeDialog } = useEdgeLaunchGuard()
   // 唤起后延迟刷新会话的定时器（组件卸载时清理，防止 setState 泄漏）
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // 死亡监视：平台 -> 观察窗口截止时间戳；prevSessionsRef 供"存活→掉线"翻转比对
@@ -144,21 +140,13 @@ export function PlatformSessionBar({
   const handleLaunch = async (platKey: string, name: string) => {
     setLaunchingKey(platKey)
     try {
-      const result = await guardLaunch(async () => {
-        const res = await fetch(`${API_BASE}/api/pipeline/platform-sessions/launch`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ platform: platKey }),
-        })
-        const data = await res.json()
-        if (res.ok && data.code === 0) return { ok: true as const, message: "" }
-        // 结构化错误：Edge 未安装（detail 为对象），交给守卫弹下载引导
-        const parsed = parseEdgeErrorDetail(data.detail)
-        if (parsed) return { ok: false as const, ...parsed }
-        const detailMsg = typeof data.detail === "string" ? data.detail : ""
-        return { ok: false as const, message: detailMsg || data.msg || "未知错误" }
+      const res = await fetch(`${API_BASE}/api/pipeline/platform-sessions/launch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ platform: platKey }),
       })
-      if (result.ok) {
+      const data = await res.json()
+      if (res.ok && data.code === 0) {
         toast.success(`已唤起 ${name} 专用浏览器，请完成扫码/登录`)
         // 登记死亡观察窗口：接下来 2 分钟内该平台掉线即告警
         wakeWatchRef.current.set(platKey, wakeDeadline())
@@ -169,9 +157,8 @@ export function PlatformSessionBar({
         ]
         if (refreshTimer.current) clearTimeout(refreshTimer.current)
         refreshTimer.current = setTimeout(fetchSessions, 2000)
-      } else if (!result.handled) {
-        // Edge 未安装已在守卫里弹下载引导（handled=true），不重复报错
-        toast.error(`唤起失败: ${result.message}`)
+      } else {
+        toast.error(`唤起失败: ${data.detail || data.msg || "未知错误"}`)
       }
     } catch {
       toast.error("网络异常，无法唤起浏览器")
@@ -331,7 +318,6 @@ export function PlatformSessionBar({
           )
         })}
       </div>
-      {edgeDialog}
     </div>
   )
 }

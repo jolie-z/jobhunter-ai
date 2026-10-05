@@ -108,7 +108,7 @@ def _call_llm_for_job_parsing(text: str) -> str:
         temperature=0.1,
     )
     res = response.choices[0].message.content or ""
-    logger.info("--> LLM 原始返回文本片段:\n", res[:200], "...\n" if len(res) > 200 else "")
+    logger.info("--> LLM 原始返回文本片段:\n%s%s", res[:200], "...\n" if len(res) > 200 else "")
     return res
 
 

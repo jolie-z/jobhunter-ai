@@ -344,7 +344,12 @@ def ensure_page_tab(port: int) -> None:
 
 
 def ensure_browser(platform_key: str) -> None:
-    """确保平台浏览器在监听；不在则按 registry 配置拉起并等待。"""
+    """确保平台浏览器就绪；不在则按 registry 配置拉起并等待。
+
+    2026-09-24 51job 收编：patchright_persistent 引擎无 CDP 端口可探，
+    走 launch_edge（内部分流 patchright 登录守护/引擎锁），拉起即就绪，
+    不再做端口等待。其他平台保持原端口探测逻辑。
+    """
     sys.path.insert(0, str(BACKEND_ROOT))
     from app.session.registry import resolve_platform
     from app.session.browser import launch_edge
@@ -352,6 +357,12 @@ def ensure_browser(platform_key: str) -> None:
     config = resolve_platform(platform_key)
     if config is None:
         raise SystemExit(f"registry 中无平台配置: {platform_key}")
+    if config.browser_type == "patchright_persistent":
+        # R3 P0：51job patchright 引擎无 CDP 端口，且 checker（offshelf.py）自己会
+        # launch_or_fail 抢锁——这里若再派发 launch_edge 会同进程二次抢锁自锁死。
+        # 引擎生命周期全权归 checker，本函数对 51job 直接返回。
+        print(f"[{platform_key}] patchright 新链路：引擎由 checker 直启（互斥锁自管），跳过端口预拉", flush=True)
+        return
     if not probe_port(config.port):
         print(f"[{platform_key}] 浏览器未监听 {config.port}，正在拉起 ...", flush=True)
         launch_edge(config)

@@ -17,7 +17,7 @@ MODE=""
 ROUND=""
 TITLE=""
 MATERIAL=""
-ENGINE="${ENGINE:-zcode}"
+ENGINE="${ENGINE:-agy}"
 MODEL=""
 PRINT_TIMEOUT="${REVIEW_PRINT_TIMEOUT:-10m}"
 MAX_PROMPT_BYTES=900000   # macOS ARG_MAX 1MB，prompt 走命令行参数，超限提示拆分材料
@@ -68,13 +68,22 @@ case "$ENGINE" in
       echo "找不到 zcode CLI（尝试过 PATH 与 $HOME/.local/bin/zcode），可用 ZCODE_BIN=/path/to/zcode 指定" >&2; exit 2
     fi
     ;;
-  *) echo "--engine 必须是 agy | zcode（当前: '${ENGINE}'）" >&2; exit 2 ;;
+  qoder)
+    MODEL="${MODEL:-Qwen3.8-Flash}"
+    QODER_BIN="${QODER_BIN:-$(command -v qodercli 2>/dev/null || echo "$HOME/.local/bin/qodercli")}"
+    if [ ! -x "$QODER_BIN" ]; then
+      echo "找不到 qodercli CLI（尝试过 PATH 与 $HOME/.local/bin/qodercli），可用 QODER_BIN=/path/to/qodercli 指定" >&2; exit 2
+    fi
+    ;;
+  *) echo "--engine 必须是 agy | zcode | qoder（当前: '${ENGINE}'）" >&2; exit 2 ;;
 esac
 
 case "$MODEL" in
   gemini-3.8-flash-high) MODEL_LABEL="Gemini 3.8 Flash (High)" ;;
-  bigmodel/glm-5.3-flash|glm-5.3-flash) MODEL_LABEL="GLM 5.3 Flash" ;;
+  bigmodel/glm-5.3-flash|glm-5.3-flash|workbuddy/glm-5.3-flash) MODEL_LABEL="GLM 5.3 Flash (WorkBuddy)" ;;
   bigmodel/glm-5.3|glm-5.3) MODEL_LABEL="GLM 5.3" ;;
+  Qwen3.8-Flash|qwen3.8-flash|qwen-3.8-flash) MODEL_LABEL="Qwen 3.8 Flash (xhigh)" ;;
+  Qwen3.8-Max|qwen3.8-max) MODEL_LABEL="Qwen 3.8 Max (xhigh)" ;;
   *) MODEL_LABEL="$MODEL" ;;
 esac
 
@@ -152,6 +161,9 @@ trap 'rm -f "$RESP_FILE" "$ERR_FILE"' EXIT
 START_TS=$(date +%s)
 if [ "$ENGINE" = "zcode" ]; then
   "$ZCODE_BIN" -p "$PROMPT" >"$RESP_FILE" 2>"$ERR_FILE"
+  RC=$?
+elif [ "$ENGINE" = "qoder" ]; then
+  "$QODER_BIN" -p "$PROMPT" -m "$MODEL" --reasoning-effort "${REASONING_EFFORT:-xhigh}" --tools "" --dangerously-skip-permissions >"$RESP_FILE" 2>"$ERR_FILE"
   RC=$?
 else
   "$AGY_BIN" --model "$MODEL" --disable-slash-commands --print-timeout "$PRINT_TIMEOUT" --print="$PROMPT" \

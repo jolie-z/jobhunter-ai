@@ -121,7 +121,7 @@ async def update_holiday_data():
 
 @router.post("/generate-mass-greeting")
 async def generate_mass_greeting():
-    """用「海投简历 + 全局岗位画像」生成通用海投打招呼语。"""
+    """用「海投简历 + A级岗位画像」生成通用海投打招呼语。"""
     from ai_agents.skill_greeting import run_skill_based_greeting
     from app.services.feishu_service import (
         get_active_resume_from_feishu,
@@ -136,10 +136,7 @@ async def generate_mass_greeting():
     if not resume_text:
         resume_text = await asyncio.to_thread(get_active_resume_from_feishu)
     if not resume_text:
-        raise HTTPException(
-            status_code=400,
-            detail="读不到简历内容：请先到【在线简历同步中心】上传并启用一份简历（新机器请先完成飞书配置），再回来生成",
-        )
+        raise HTTPException(status_code=400, detail="读不到简历内容，请先确认简历库")
 
     try:
         from app.strategy.service import get_global_jd_report
@@ -147,22 +144,13 @@ async def generate_mass_greeting():
     except Exception:
         jd_report = ""
     if not jd_report:
-        raise HTTPException(
-            status_code=400,
-            detail="还没有全局岗位画像：请先到【配置大盘 → 岗位画像】生成全局岗位画像，再回来一键生成",
-        )
+        raise HTTPException(status_code=400, detail="还没有 A级岗位画像，请先生成")
 
     text, _ = await asyncio.to_thread(
-        run_skill_based_greeting, jd_report, {}, resume_text, "全局岗位画像（海投通用）")
+        run_skill_based_greeting, jd_report, {}, resume_text, "A级岗位画像（海投通用）")
     text = (text or "").strip()
     if not text or text.startswith("❌"):
-        # 502 分支的 ❌ 至少包含「AI 服务未配置」「找不到策略文件」两类（见 skill_greeting）；
-        # 限流/超时等异常在 skill 内部被吞掉并返回兜底话术（成功路径），不进本分支。
-        # 先在全文上判定再截断，避免关键词恰好被 200 字截掉
-        detail = text[:200] or "模型返回空内容，请重试或更换模型"
-        if "未配置" in text:
-            detail += "（请在 backend/.env 配置大模型 API Key，可用【配置大盘 → LLM 链路诊断】自检后重试）"
-        raise HTTPException(status_code=502, detail=detail)
+        raise HTTPException(status_code=502, detail=text[:200] or "模型返回空内容，请重试或更换模型")
     return {"status": "success", "greeting": text}
 
 

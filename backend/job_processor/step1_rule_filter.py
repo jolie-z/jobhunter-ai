@@ -10,6 +10,26 @@ DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 # 🌟 全局清洗互斥锁：确保全系统（调试面板、全自动链路、定时调度）同时只有 1 个清洗流水线在跑，杜绝并发自愈冲突
 GLOBAL_CLEAN_LOCK = asyncio.Lock()
 
+# 清洗平台范围归一：把口语平台名映射为 raw_jobs.platform 库内规范值。
+# 口径与 app/services/feishu_jobs_fetcher.normalize_platform_name 的四平台子串规则一致
+# （引擎不 import 它，保持 job_processor 可独立测试）；只认清洗管道实际覆盖的四平台。
+_CLEAN_PLATFORM_PATTERNS = (
+    ("boss", "BOSS直聘"), ("直聘", "BOSS直聘"),
+    ("51", "51job"), ("前程", "51job"),
+    ("猎聘", "猎聘"), ("liepin", "猎聘"),
+    ("智联", "智联招聘"), ("zhilian", "智联招聘"), ("zhaopin", "智联招聘"),
+)
+
+def _normalize_clean_platform(platform) -> str:
+    """归一清洗平台范围；None/空串/识别不出返回 ""（由调用方决定不限定或拒绝）。"""
+    n = str(platform or "").strip().lower()
+    if not n:
+        return ""
+    for needle, canonical in _CLEAN_PLATFORM_PATTERNS:
+        if needle in n:
+            return canonical
+    return ""
+
 # 🌟 全局急刹车开关：支持手动终止清洗任务
 GLOBAL_STOP_FLAG = False
 
@@ -711,7 +731,22 @@ async def _async_skip_ai_to_feishu(sse_task_id=None, limit=None):
         finally:
             conn.close()
 
-async def _async_run_pipeline(sse_task_id=None, limit=None, min_rowid=0):
+async def _async_run_pipeline(sse_task_id=None, limit=None, min_rowid=0, platform=None):
+    """平台范围参数：None/空 = 全平台（既有行为）；指定平台 = 仅清洗该平台「已存入数据」岗位。
+
+    传入口语平台名（如 "zhilian"/"智联"）会先归一为库内规范值；识别不出的平台名
+    直接空跑返回，绝不静默放大成全平台清洗（宁可不做也不做错范围）。
+    limit 在平台过滤之后生效（该平台范围内取最新 N 条）。
+    """
+    canonical_platform = _normalize_clean_platform(platform)
+    raw_platform = str(platform or "").strip()
+    if raw_platform and not canonical_platform:
+        msg = (f"⚠️ 清洗范围的平台名无法识别: {raw_platform!r}"
+               f"（可识别示例: 智联招聘/BOSS直聘/51job/猎聘），本轮未清洗任何数据。")
+        print(msg)
+        await push_sse_message(sse_task_id, msg, "warning")
+        return []
+
     async with GLOBAL_CLEAN_LOCK:
         set_stop_flag(False)
         strategy = _get_active_strategy()
@@ -732,17 +767,22 @@ async def _async_run_pipeline(sse_task_id=None, limit=None, min_rowid=0):
                 print(f"🔄 [Processor自愈] 成功回收 {reclaimed_count} 条因异常中断或急刹残留的僵尸岗位，重新纳管清洗！")
 
             query_target = "SELECT job_link FROM raw_jobs WHERE process_status = '已存入数据'"
+            target_params: list = []
+            if canonical_platform:
+                query_target += " AND platform = ?"
+                target_params.append(canonical_platform)
             if min_rowid:
                 query_target += f" AND rowid > {int(min_rowid)}"
             query_target += " ORDER BY rowid DESC"
             if limit and limit > 0:
                 query_target += f" LIMIT {limit}"
-            cursor.execute(query_target)
+            cursor.execute(query_target, target_params)
             target_links = [r[0] for r in cursor.fetchall()]
 
-            print(f"🧹 [联合清洗] 执行数据清洗 (Tier 1 硬性规则) - 本轮处理 {len(target_links)} 条...")
+            scope_desc = f"平台={canonical_platform}" if canonical_platform else "全平台"
+            print(f"🧹 [联合清洗] 执行数据清洗 (Tier 1 硬性规则) - 范围: {scope_desc}, 本轮处理 {len(target_links)} 条...")
             await push_sse_event(sse_task_id, {"type": "phase_progress", "phase": "hard_clean", "current": 0, "total": len(target_links) if target_links else 1})
-            await push_sse_message(sse_task_id, f"开始执行 Tier 1: 绝对硬指标清洗 (本轮锁定 {len(target_links)} 条)")
+            await push_sse_message(sse_task_id, f"开始执行 Tier 1: 绝对硬指标清洗 (范围: {scope_desc}，本轮锁定 {len(target_links)} 条)")
 
             if target_links:
                 _run_tier1_hard_filter(cursor, conn, strategy, target_links)

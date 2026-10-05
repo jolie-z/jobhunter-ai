@@ -211,7 +211,13 @@ def run_task(keyword, city, start_page, target_jobs, salary, on_page_done=None):
         total_inserted, hit_bottom, page_search_total = _process_crawler_output(
             process, target_jobs, total_inserted, current_page, on_page_done
         )
-        last_touched = current_page  # 本页已处理完，记账（是否扫满未知，续抓时重爬兜底）
+        # 2026-09-24 记账修正：被词级检查点跳过的页（collector 退出码 3=SKIP_NOT_TOUCHED）
+        # 数据未触碰，不记账 last_touched——否则续抓会永久漏采这些页。
+        # collector 以退出码区分：0=真实采集过，3=检查点跳过。
+        if process.returncode == 3:
+            print(f"      ⏭️ 第 {current_page} 页被词级检查点跳过（数据未触碰），不推进续抓页码")
+        else:
+            last_touched = current_page  # 本页已处理完，记账（是否扫满未知，续抓时重爬兜底）
         if page_search_total > 0:
             search_total = page_search_total
 

@@ -118,6 +118,7 @@ async def test_delivery_tasks_stale_quota_failure_resets_and_launches():
          patch("app.automation.run_snapshot.mark_job_delivering", side_effect=spy_mark), \
          patch("app.automation.run_snapshot.unmark_job_delivering", side_effect=spy_unmark), \
          patch("app.automation.delivery_tasks._delivery_guard_ok", return_value=True), \
+         patch("app.automation.scheduler._delivery_guard_ok", return_value=True), \
          patch("app.automation.scheduler._check_non_workday", return_value=(True, "")), \
          patch("app.automation.scheduler._check_schedule_date_range", return_value=(True, "")), \
          patch("app.services.feishu_service.get_scheduled_delivery_jobs_from_feishu", return_value=[job_yesterday_quota]), \
@@ -178,6 +179,7 @@ async def test_delivery_tasks_single_job_tagging_and_failure_guard():
          patch("app.automation.run_snapshot.record_delivery_failure") as mock_rs_fail, \
          patch("app.services.feishu_service.mark_job_delivery_failed") as mock_feishu_fail, \
          patch("app.automation.delivery_tasks._delivery_guard_ok", return_value=True), \
+         patch("app.automation.scheduler._delivery_guard_ok", return_value=True), \
          patch("app.automation.scheduler._check_non_workday", return_value=(True, "")), \
          patch("app.automation.scheduler._check_schedule_date_range", return_value=(True, "")), \
          patch("app.services.feishu_service.get_scheduled_delivery_jobs_from_feishu", return_value=targets), \
@@ -235,6 +237,7 @@ async def test_delivery_tasks_transient_failure_within_limit_retries_auto_launch
          patch("app.automation.run_snapshot.mark_job_delivering", side_effect=spy_mark), \
          patch("app.automation.run_snapshot.unmark_job_delivering", side_effect=spy_unmark), \
          patch("app.automation.delivery_tasks._delivery_guard_ok", return_value=True), \
+         patch("app.automation.scheduler._delivery_guard_ok", return_value=True), \
          patch("app.automation.scheduler._check_non_workday", return_value=(True, "")), \
          patch("app.automation.scheduler._check_schedule_date_range", return_value=(True, "")), \
          patch("app.services.feishu_service.get_scheduled_delivery_jobs_from_feishu", return_value=targets), \

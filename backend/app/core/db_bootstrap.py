@@ -12,14 +12,11 @@ backend/data/ 被 gitignore，全新克隆既没有目录也没有 job_hunter.db
 执行一遍：已存在的对象原样跳过（IF NOT EXISTS），缺的补建，绝不触碰已有数据。
 各业务模块自带的惰性 ensure_table 全部保留，作为双保险。
 
-注意：主库路径解析的唯一真源是本模块 resolve_main_db_path()；goal_service.DB_PATH 是
-它 import 期冻结的快照。启动引导（main.py）显式传 goal_service.DB_PATH 进
-ensure_main_db_schema(db_path)，与业务模块共用同一个 import 期时机，杜绝两套解析
-各建各库；改路径口径只改 resolve_main_db_path。
+注意：主库路径解析的唯一真源是本模块 resolve_main_db_path()，goal_service.DB_PATH
+直接复用它；改路径口径只改这里。
 """
 import logging
 import os
-import re
 import sqlite3
 
 logger = logging.getLogger(__name__)
@@ -64,17 +61,6 @@ CREATE TABLE IF NOT EXISTS job_preferences (
     rule TEXT,
     status TEXT
 );
-CREATE TABLE IF NOT EXISTS resume_parse_corrections (
-  id TEXT PRIMARY KEY,
-  snapshot_id TEXT NOT NULL,
-  module_key TEXT NOT NULL,
-  initial_text TEXT,
-  corrected_text TEXT,
-  corrected_hash TEXT,
-  created_at TEXT
-);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_resume_corrections_dedup
-  ON resume_parse_corrections(snapshot_id, module_key, corrected_hash);
 CREATE TABLE IF NOT EXISTS job_strategies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     strategy_name TEXT NOT NULL,
@@ -247,9 +233,8 @@ def _split_statements(script: str) -> list[str]:
     """按 sqlite3.complete_statement 切分 DDL——触发器 BEGIN...END 体内含分号，
     complete_statement 对触发器有感知（体内分号不算完整，须等 END;），实测可证。
 
-    注释语义（实测）：complete_statement 按 SQLite 分词规则跳过 `--` 注释，
-    注释内的分号不会触发误切（实证见 tests/test_db_bootstrap.py）；但为可读性
-    起见，蓝本注释仍避免写分号。"""
+    约束：蓝本脚本的注释/字符串字面量内不得出现分号（complete_statement 不识别
+    注释与字符串，注释里写 ';' 会被静默错切且被逐条容错吞掉）。"""
     statements: list[str] = []
     buf = ""
     for line in script.splitlines(keepends=True):
@@ -264,54 +249,6 @@ def _split_statements(script: str) -> list[str]:
     return statements
 
 
-def _strip_leading_comments(stmt: str) -> str:
-    """剥离语句开头连续的 `--` 注释行（_split_statements 会把注释并入下一条语句）。"""
-    return re.sub(r"^(?:\s*--[^\n]*\n)+", "", stmt)
-
-
-def _pre_existing_table_columns(conn: sqlite3.Connection) -> dict[str, set[str]]:
-    """引导前已存在的业务表 → 当前列集（用于识别历史窄表；排除 sqlite_% 内部对象）。"""
-    return {
-        row[0]: {c[1] for c in conn.execute(f'PRAGMA table_info("{row[0]}")')}
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-        )
-    }
-
-
-def _trigger_target_table(stmt: str) -> str | None:
-    """从 CREATE TRIGGER DDL 里取目标表名（... ON <table>，兼容 [table]/"table" 引用）。"""
-    m = re.search(r"\bON\s+[\[\"']?(\w+)", stmt, re.IGNORECASE)
-    return m.group(1) if m else None
-
-
-_blueprint_table_columns_cache: dict[str, set[str]] | None = None
-
-
-def _blueprint_table_columns() -> dict[str, set[str]]:
-    """从蓝本自身派生「表 → 列集」（首次使用时 :memory: 执行并缓存），供窄表触发器守卫比对。
-
-    惰性派生而非 import 期执行：蓝本 DDL 若有语法错误，只在真正引导时报错（main.py
-    的 try 有兜底），不会炸掉整个 app 的 import 链。自蓝本派生而非手抄：蓝本改列时
-    守卫口径自动跟进，不产生第二份需要人工同步的清单。
-    """
-    global _blueprint_table_columns_cache
-    if _blueprint_table_columns_cache is None:
-        mem = sqlite3.connect(":memory:")
-        try:
-            for stmt in _split_statements(BOOTSTRAP_SCRIPT):
-                mem.execute(stmt)
-            _blueprint_table_columns_cache = {
-                row[0]: {c[1] for c in mem.execute(f'PRAGMA table_info("{row[0]}")')}
-                for row in mem.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-                )
-            }
-        finally:
-            mem.close()
-    return _blueprint_table_columns_cache
-
-
 def ensure_main_db_schema(db_path: str | None = None) -> list[str]:
     """幂等补齐主库全部表/索引/触发器，返回本次实际新建的对象名。
 
@@ -321,11 +258,6 @@ def ensure_main_db_schema(db_path: str | None = None) -> list[str]:
 
     逐条执行、单条失败记警告继续：若库里已有历史窄表缺蓝本索引的列（如旧版懒建的
     token_log 没有 created_at），对应索引跳过即可，不能卡死整个引导。
-
-    触发器特殊：SQLite 不预校验触发器体内列名，历史窄表上「带病创建」会让后续
-    每次 INSERT 到触发器执行时才爆缺列——把原本可用的写路径改成必失败且无告警。
-    因此对「引导前已存在、列集窄于蓝本」的表跳过其触发器（与索引容错同口径），
-    并记入 skipped 留痕；表补齐列后下一次引导会自动补建触发器。
     """
     path = db_path or resolve_main_db_path()
     parent = os.path.dirname(path)
@@ -333,61 +265,16 @@ def ensure_main_db_schema(db_path: str | None = None) -> list[str]:
         os.makedirs(parent, exist_ok=True)
 
     conn = sqlite3.connect(path, timeout=10.0)
-    # TODO(债): 单条语句 busy timeout 10s，库被长事务持锁时最坏逐条串行等待；
-    # 后续可收紧单条超时或加全局引导超时（逐条容错设计本身保留：旧窄表只跳过缺索引，不整体失败）
     skipped: list[str] = []
     try:
         # 与 goal_service._get_conn 同款：主库在线上本就以 WAL 运行，非本批新增行为
         conn.execute("PRAGMA journal_mode=WAL")
         before = _user_objects(conn)
-        pre_existing_cols = _pre_existing_table_columns(conn)
-        blueprint_cols_by_table = _blueprint_table_columns()
-        # 历史窄表（缺蓝本列）上若已有旧引导留下的触发器：SQLite 建触发器不校验体内列名，
-        # 这些触发器会带病存在并把每次 INSERT 打挂——只告警不擅删（可能是用户自建）
-        narrow_existing = {
-            t for t, cols in pre_existing_cols.items()
-            if blueprint_cols_by_table.get(t) and blueprint_cols_by_table[t] - cols
-        }
-        if narrow_existing:
-            for row in conn.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger'"):
-                trg_target = _trigger_target_table(row[1] or "")
-                if trg_target in narrow_existing:
-                    logger.warning(
-                        f"⚠️ [db_bootstrap] 发现窄表 {trg_target} 上的存量触发器 {row[0]}，"
-                        f"其体内列可能缺失（INSERT 时才会暴露），请核对是否需要重建"
-                    )
         for stmt in _split_statements(BOOTSTRAP_SCRIPT):
-            # 剥离前导注释行后再识别语句类型（_split_statements 会把注释并入下一条语句，
-            # 直接 startswith 会在蓝本加注释行时静默漏判）
-            stmt_body = _strip_leading_comments(stmt)
-            # 触发器防带病创建：目标表在引导前已存在且缺蓝本列（历史窄表）→ 跳过，
-            # 否则 SQLite 会照建不误、把写失败延迟到业务 INSERT 时才爆
-            if stmt_body.upper().lstrip().startswith("CREATE TRIGGER"):
-                target = _trigger_target_table(stmt)
-                existing_cols = pre_existing_cols.get(target or "")
-                if existing_cols is not None:
-                    blueprint_cols = blueprint_cols_by_table.get(target or "")
-                    if blueprint_cols and blueprint_cols - existing_cols:
-                        m = re.search(
-                            r"TRIGGER\s+(?:IF\s+NOT\s+EXISTS\s+)?[\"']?(\w+)",
-                            stmt, re.IGNORECASE,
-                        )
-                        trg_name = m.group(1) if m else stmt[:50]
-                        skipped.append(trg_name)
-                        logger.warning(
-                            f"⚠️ [db_bootstrap] 触发器跳过（历史窄表 {target} 缺列 "
-                            f"{sorted(blueprint_cols - existing_cols)}，防带病创建）: {trg_name}"
-                        )
-                        continue
             try:
                 conn.execute(stmt)
             except sqlite3.Error as e:
-                # skipped 清单取对象名（触发器体内无圆括号，切前缀会带换行），便于定位
-                m = re.search(
-                    r"(?:TABLE|INDEX|TRIGGER)\s+(?:IF\s+NOT\s+EXISTS\s+)?[\"']?(\w+)",
-                    stmt, re.IGNORECASE,
-                )
-                skipped.append(m.group(1) if m else stmt[:50])
+                skipped.append(stmt.split("(")[0][:50])
                 logger.warning(f"⚠️ [db_bootstrap] 语句跳过（{e}）: {stmt[:60]}...")
         conn.commit()
         after = _user_objects(conn)

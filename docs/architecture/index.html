@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Auto-JobHunter · 平台全景海报 (环形全链路版)</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;900&display=swap');
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #E2E8F0;
+      font-family: 'Plus Jakarta Sans', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+      color: #0F172A;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px 0;
+      margin: 0;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    #poster-root {
+      width: 1600px;
+      height: 1140px;
+      background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 55%, #F1F5F9 100%);
+      border: 1px solid #CBD5E1;
+      position: relative;
+      overflow: hidden;
+      padding: 34px 44px 28px 44px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      box-shadow: 0 25px 60px -15px rgba(15, 23, 42, 0.15);
+    }
+
+    /* Ambient background soft glow lights */
+    .glow-top {
+      position: absolute;
+      top: -120px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 1000px;
+      height: 320px;
+      background: radial-gradient(circle, rgba(59, 130, 246, 0.12) 0%, rgba(139, 92, 246, 0.08) 45%, transparent 70%);
+      filter: blur(50px);
+      pointer-events: none;
+    }
+
+    /* Subtle tech grid pattern */
+    .bg-grid {
+      position: absolute;
+      inset: 0;
+      background-image: 
+        linear-gradient(to right, rgba(15, 23, 42, 0.03) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(15, 23, 42, 0.03) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+    }
+
+    /* ================= HEADER ================= */
+    header {
+      position: relative;
+      z-index: 10;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 18px;
+      border-bottom: 1px solid #E2E8F0;
+    }
+    .brand-wrap {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .logo-badge {
+      width: 46px;
+      height: 46px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #2563EB 0%, #7C3AED 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 6px 20px rgba(37, 99, 235, 0.25);
+      font-size: 22px;
+      color: #FFFFFF;
+    }
+    .brand-title {
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      color: #0F172A;
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+    }
+    .brand-sub {
+      font-size: 13.5px;
+      font-weight: 500;
+      color: #64748B;
+      margin-top: 2px;
+    }
+
+    .header-pills {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 16px;
+      border-radius: 999px;
+      font-size: 12.5px;
+      font-weight: 600;
+    }
+    .pill-mode {
+      background: #EFF6FF;
+      color: #1D4ED8;
+      border: 1px solid #BFDBFE;
+    }
+    .pill-sched {
+      background: #F5F3FF;
+      color: #6D28D9;
+      border: 1px solid #DDD6FE;
+    }
+    .pill-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .dot-blue { background: #2563EB; box-shadow: 0 0 6px rgba(37, 99, 235, 0.4); }
+    .dot-purple { background: #7C3AED; box-shadow: 0 0 6px rgba(124, 58, 237, 0.4); }
+
+    /* ================= MAIN PIPELINE (HERO - 2-ROW CLOSED LOOP) ================= */
+    .hero-pipeline-card {
+      position: relative;
+      z-index: 10;
+      background: #FFFFFF;
+      border: 1.5px solid #CBD5E1;
+      border-radius: 22px;
+      padding: 22px 26px;
+      box-shadow: 0 12px 30px -5px rgba(15, 23, 42, 0.08), 0 0 0 1px rgba(15, 23, 42, 0.02);
+    }
+    .pipeline-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 18px;
+    }
+    .pipeline-title {
+      font-size: 14px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: #0284C7;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .pipeline-status-badge {
+      font-size: 12px;
+      font-weight: 600;
+      color: #047857;
+      background: #ECFDF5;
+      border: 1px solid #A7F3D0;
+      padding: 4px 12px;
+      border-radius: 999px;
+    }
+
+    /* LOOP LAYOUT: LEFT HUB + RIGHT TRACKS */
+    .loop-wrapper {
+      display: flex;
+      gap: 18px;
+      align-items: stretch;
+      position: relative;
+    }
+
+    /* LEFT UNIFIED HUB (HEAD & TAIL) */
+    .platform-hub-card {
+      width: 330px;
+      background: linear-gradient(180deg, #F8FAFC 0%, #EFF6FF 48%, #F5F3FF 100%);
+      border: 1.5px solid #94A3B8;
+      border-radius: 18px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      box-shadow: 0 8px 20px -4px rgba(15, 23, 42, 0.08);
+      position: relative;
+    }
+
+    .hub-section-title {
+      font-size: 14px;
+      font-weight: 800;
+      color: #0F172A;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .hub-badge {
+      font-size: 10.5px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 6px;
+    }
+    .hub-badge-head { background: #DBEAFE; color: #1D4ED8; }
+    .hub-badge-tail { background: #EDE9FE; color: #6D28D9; }
+
+    /* Icons inside Hub */
+    .platform-5-icons {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .app-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 900;
+      color: #FFFFFF;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      cursor: default;
+    }
+    .icon-boss { background: #00BEBD; font-size: 12px; letter-spacing: -0.5px; }
+    .icon-liepin { background: linear-gradient(135deg, #FF7B00 0%, #E65100 100%); font-size: 13.5px; }
+    .icon-zhilian { background: linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%); font-size: 13.5px; }
+    .icon-51job { background: linear-gradient(135deg, #FF6000 0%, #FF3D00 100%); font-size: 10.5px; font-weight: 900; }
+    .icon-red { background: linear-gradient(135deg, #FF2442 0%, #E11D48 100%); font-size: 11px; }
+
+    /* Inputs Row (Text paste & Screenshot) */
+    .input-methods-row {
+      display: flex;
+      gap: 8px;
+    }
+    .input-method-badge {
+      flex: 1;
+      background: #FFFFFF;
+      border: 1px solid #CBD5E1;
+      border-radius: 8px;
+      padding: 8px 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #334155;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    }
+
+    /* Hub Middle Divider */
+    .hub-divider {
+      position: relative;
+      margin: 12px 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .hub-divider-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: #CBD5E1;
+    }
+    .hub-divider-tag {
+      position: relative;
+      background: #FFFFFF;
+      border: 1px solid #CBD5E1;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #64748B;
+      letter-spacing: 0.5px;
+    }
+
+    /* Delivery 4 Icons */
+    .delivery-4-icons {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .delivery-4-icons .app-icon {
+      flex: 1;
+      height: 44px;
+    }
+    .delivery-feature-tag {
+      background: #FFFFFF;
+      border: 1px solid #A7F3D0;
+      padding: 6px 8px;
+      border-radius: 8px;
+      font-size: 11.5px;
+      font-weight: 600;
+      color: #047857;
+      text-align: center;
+    }
+
+    /* RIGHT TRACKS CONTAINER (ROW 1 & ROW 2) */
+    .loop-tracks-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 16px;
+      position: relative;
+    }
+
+    /* Row 1 (Left to Right) */
+    .track-row {
+      display: flex;
+      align-items: stretch;
+      gap: 14px;
+      position: relative;
+    }
+
+    /* Stage Common Box */
+    .stage-card {
+      background: #F8FAFC;
+      border: 1.5px solid #E2E8F0;
+      border-radius: 14px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.03);
+    }
+    .stage-card:hover {
+      border-color: #CBD5E1;
+      background: #FFFFFF;
+      box-shadow: 0 6px 16px rgba(15, 23, 42, 0.05);
+    }
+    .stage-card-title {
+      font-size: 13.5px;
+      font-weight: 800;
+      color: #0F172A;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* Connectors */
+    .flow-arrow-right {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #2563EB;
+      font-size: 20px;
+      font-weight: 900;
+    }
+    .flow-arrow-left {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #7C3AED;
+      font-size: 20px;
+      font-weight: 900;
+    }
+
+    /* STAGE: CLEANING */
+    .card-cleaning {
+      width: 275px;
+    }
+    .cleaning-pill-wrap {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      flex: 1;
+      background: #FFFFFF;
+      border: 1.5px solid #CBD5E1;
+      border-radius: 10px;
+      padding: 12px;
+      box-shadow: 0 2px 4px rgba(15, 23, 42, 0.04);
+    }
+    .clean-pill {
+      font-size: 12.5px;
+      font-weight: 700;
+      padding: 8px 12px;
+      border-radius: 6px;
+    }
+    .clean-py { background: #F1F5F9; color: #1E293B; border: 1px solid #CBD5E1; }
+    .clean-ai { background: #FAF5FF; color: #6B21A8; border: 1px solid #E9D5FF; }
+    .clean-plus { font-size: 16px; font-weight: 900; color: #2563EB; }
+
+    /* STAGE: 8-DIM EVALUATION */
+    .card-eval8 {
+      width: 410px;
+    }
+    .dim-tags-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+    }
+    .dim-tag {
+      background: #EFF6FF;
+      border: 1px solid #BFDBFE;
+      padding: 6px 4px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #1E40AF;
+      text-align: center;
+    }
+    .dim-tag span { color: #2563EB; font-weight: 800; }
+
+    /* STAGE: DEEP EVALUATION */
+    .card-deep {
+      flex: 1;
+    }
+    .deep-tags-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+    }
+    .deep-tag {
+      background: #F5F3FF;
+      border: 1px solid #DDD6FE;
+      padding: 6px 4px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #5B21B6;
+      text-align: center;
+    }
+    .deep-tag span { color: #7C3AED; }
+
+    /* RIGHT CORNER LOOP CONNECTOR (ROW 1 TO ROW 2) */
+    .loop-turn-curve {
+      position: absolute;
+      right: -28px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 44px;
+      height: 140px;
+      pointer-events: none;
+    }
+
+    /* ROW 2 CARDS (RESUME REWRITE & GREETINGS) */
+    .card-rewrite {
+      flex: 1;
+    }
+    .rewrite-options-row {
+      display: flex;
+      gap: 10px;
+      flex: 1;
+      align-items: center;
+    }
+    .rewrite-pill {
+      flex: 1;
+      background: #FAF5FF;
+      border: 1.5px solid #D8B4FE;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #6B21A8;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+    }
+    .rewrite-pill.custom {
+      background: #FDF2F8;
+      border-color: #FBCFE8;
+      color: #9D174D;
+    }
+
+    .card-greetings {
+      flex: 1;
+    }
+    .greeting-pill {
+      flex: 1;
+      background: #ECFDF5;
+      border: 1.5px solid #A7F3D0;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #065F46;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+    }
+    .greeting-pill.custom {
+      background: #FFFBEB;
+      border-color: #FDE68A;
+      color: #92400E;
+    }
+
+    /* ================= TWO HERO FEATURE BLOCKS (ROW) ================= */
+    .bottom-features-row {
+      position: relative;
+      z-index: 10;
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 20px;
+    }
+
+    .feature-card {
+      background: #FFFFFF;
+      border: 1.5px solid #CBD5E1;
+      border-radius: 18px;
+      padding: 20px 24px;
+      box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.05);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .feature-card.highlight {
+      border-color: #BFDBFE;
+      background: linear-gradient(135deg, #FFFFFF 0%, #F0F7FF 100%);
+    }
+    .feature-card.resume-card {
+      border-color: #DDD6FE;
+      background: linear-gradient(135deg, #FFFFFF 0%, #FAF5FF 100%);
+    }
+
+    .feature-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .feature-head h3 {
+      font-size: 15.5px;
+      font-weight: 800;
+      color: #0F172A;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .feature-badge {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 999px;
+      letter-spacing: 0.5px;
+    }
+    .badge-feishu { background: #2563EB; color: #FFFFFF; }
+    .badge-sync { background: #7C3AED; color: #FFFFFF; }
+
+    /* Visual Steps Strip inside Feishu */
+    .feishu-flow-strip {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #FFFFFF;
+      border: 1px solid #DBEAFE;
+      border-radius: 12px;
+      padding: 10px 14px;
+      margin-bottom: 10px;
+      box-shadow: 0 1px 3px rgba(37, 99, 235, 0.05);
+    }
+    .strip-step {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 11.5px;
+      font-weight: 700;
+      color: #1E293B;
+    }
+    .strip-step-icon {
+      font-size: 15px;
+    }
+    .strip-arrow {
+      color: #2563EB;
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .feature-bullet-list {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+    .bullet-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11.5px;
+      color: #475569;
+      background: #FFFFFF;
+      padding: 6px 10px;
+      border-radius: 8px;
+      border: 1px solid #E2E8F0;
+    }
+    .bullet-item strong {
+      color: #0F172A;
+      font-weight: 700;
+    }
+
+    /* Resume Sync Content */
+    .resume-sync-strip {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #FFFFFF;
+      border: 1px solid #E9D5FF;
+      border-radius: 12px;
+      padding: 9px 12px;
+      margin-bottom: 10px;
+      box-shadow: 0 1px 3px rgba(124, 58, 237, 0.05);
+    }
+    .resume-icons {
+      display: flex;
+      gap: 6px;
+    }
+    .resume-icons .app-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      font-size: 10px;
+    }
+    .sync-flow-steps {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #6D28D9;
+    }
+
+    /* ================= FOOTER / OBSERVABILITY ================= */
+    footer {
+      position: relative;
+      z-index: 10;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #FFFFFF;
+      border: 1px solid #CBD5E1;
+      border-radius: 12px;
+      padding: 10px 22px;
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.03);
+    }
+    .footer-metric-group {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+    .footer-metric {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #64748B;
+    }
+    .footer-metric strong {
+      color: #0F172A;
+      font-weight: 700;
+    }
+    .footer-tag {
+      background: #F1F5F9;
+      border: 1px solid #CBD5E1;
+      padding: 3px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #334155;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="poster-root">
+    <!-- Ambient Background Light FX -->
+    <div class="glow-top"></div>
+    <div class="bg-grid"></div>
+
+    <!-- 1. TOP HEADER -->
+    <header>
+      <div class="brand-wrap">
+        <div class="logo-badge">⚡</div>
+        <div>
+          <div class="brand-title">Auto-JobHunter <span style="font-size: 16px; font-weight: 600; color: #64748B;">v2.0</span></div>
+          <div class="brand-sub">下一代 AI 全链路求职自动化平台 · 从海量寻岗到一键送达</div>
+        </div>
+      </div>
+
+      <div class="header-pills">
+        <div class="pill pill-mode">
+          <span class="pill-dot dot-blue"></span>
+          <span>模块独立单跑 ｜ 一键全自动全流程</span>
+        </div>
+        <div class="pill pill-sched">
+          <span class="pill-dot dot-purple"></span>
+          <span>即时手动启动 ｜ 每日波次定时巡航</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- 2. HERO PIPELINE (CLOSED LOOP: 2 ROWS + LEFT HEAD/TAIL HUB) -->
+    <div class="hero-pipeline-card">
+      <div class="pipeline-header">
+        <div class="pipeline-title">
+          <span>THE AUTONOMOUS PIPELINE</span>
+          <span style="color: #64748B; font-weight: 600; font-size: 12px;">端到端全链路自动化闭环</span>
+        </div>
+        <div class="pipeline-status-badge">● LangGraph 状态机驱动</div>
+      </div>
+
+      <div class="loop-wrapper">
+        <!-- LEFT: UNIFIED PLATFORM HUB (HEAD & TAIL) -->
+        <div class="platform-hub-card">
+          <!-- HEAD: 岗位获取 -->
+          <div>
+            <div class="hub-section-title">
+              <span>📥 岗位获取</span>
+              <span class="hub-badge hub-badge-head">起始端 · Ingest</span>
+            </div>
+            <!-- Row 1: 5 Platform Icons -->
+            <div class="platform-5-icons">
+              <div class="app-icon icon-boss" title="BOSS直聘">BOSS</div>
+              <div class="app-icon icon-liepin" title="猎聘">猎聘</div>
+              <div class="app-icon icon-zhilian" title="智联招聘">智联</div>
+              <div class="app-icon icon-51job" title="前程无忧 51job">51job</div>
+              <div class="app-icon icon-red" title="小红书">小红书</div>
+            </div>
+            <!-- Row 2: Text paste & Screenshot input -->
+            <div class="input-methods-row">
+              <div class="input-method-badge">
+                <span>📋</span> 文字粘贴输入
+              </div>
+              <div class="input-method-badge">
+                <span>📸</span> 截图输入
+              </div>
+            </div>
+          </div>
+
+          <!-- HUB MIDDLE DIVIDER (LOOP INDICATION) -->
+          <div class="hub-divider">
+            <div class="hub-divider-line"></div>
+            <div class="hub-divider-tag">全网触达闭环枢纽</div>
+          </div>
+
+          <!-- TAIL: 自动投递 -->
+          <div>
+            <div class="hub-section-title">
+              <span>🚀 自动投递</span>
+              <span class="hub-badge hub-badge-tail">交付终态 · Deliver</span>
+            </div>
+            <!-- 4 Platform Icons for Delivery -->
+            <div class="delivery-4-icons">
+              <div class="app-icon icon-boss" title="BOSS直聘直投">BOSS</div>
+              <div class="app-icon icon-liepin" title="猎聘直投">猎聘</div>
+              <div class="app-icon icon-zhilian" title="智联直投">智联</div>
+              <div class="app-icon icon-51job" title="51job直投">51job</div>
+            </div>
+            <div class="delivery-feature-tag">
+              ● 真实浏览器免登 · 平台并发守卫
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT: 2-ROW TRACKS (ROW 1: -> , ROW 2: <-) -->
+        <div class="loop-tracks-container">
+          <!-- ROW 1 (FLOWS LEFT TO RIGHT) -->
+          <div class="track-row">
+            <!-- Stage 1: Cleaning -->
+            <div class="stage-card card-cleaning">
+              <div class="stage-card-title">🧹 岗位清洗</div>
+              <div class="cleaning-pill-wrap">
+                <span class="clean-pill clean-py">Python 清洗</span>
+                <span class="clean-plus">+</span>
+                <span class="clean-pill clean-ai">AI 清洗</span>
+              </div>
+            </div>
+
+            <div class="flow-arrow-right">➔</div>
+
+            <!-- Stage 2: 8-Dim Eval -->
+            <div class="stage-card card-eval8">
+              <div class="stage-card-title">🎯 AI 8 维度评估</div>
+              <div class="dim-tags-grid">
+                <div class="dim-tag"><span>1.</span> 角色匹配</div>
+                <div class="dim-tag"><span>2.</span> 技能硬度</div>
+                <div class="dim-tag"><span>3.</span> 资历经验</div>
+                <div class="dim-tag"><span>4.</span> 薪酬待遇</div>
+                <div class="dim-tag"><span>5.</span> 面试难度</div>
+                <div class="dim-tag"><span>6.</span> 企业阶段</div>
+                <div class="dim-tag"><span>7.</span> 行业前景</div>
+                <div class="dim-tag"><span>8.</span> 成长空间</div>
+              </div>
+            </div>
+
+            <div class="flow-arrow-right">➔</div>
+
+            <!-- Stage 3: Deep Eval -->
+            <div class="stage-card card-deep">
+              <div class="stage-card-title">🔬 AI 深度体检</div>
+              <div class="deep-tags-grid">
+                <div class="deep-tag"><span>●</span> JD 深度拆解</div>
+                <div class="deep-tag"><span>●</span> 逐行简历审计</div>
+                <div class="deep-tag"><span>●</span> 高杠杆匹配点</div>
+                <div class="deep-tag"><span>●</span> 毒点避坑预警</div>
+                <div class="deep-tag"><span>●</span> 理想画像比对</div>
+                <div class="deep-tag"><span>●</span> 定制行动计划</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- RIGHT CORNER LOOP CONNECTOR (SVG CURVED ARROW) -->
+          <svg class="loop-turn-curve" viewBox="0 0 50 140">
+            <path d="M 12 20 C 42 20, 42 120, 18 120" fill="none" stroke="#6366F1" stroke-width="3.5" stroke-dasharray="6,4" stroke-linecap="round"/>
+            <polygon points="20,113 8,120 20,127" fill="#6366F1"/>
+          </svg>
+
+          <!-- ROW 2 (FLOWS RIGHT TO LEFT: DEEP EVAL -> REWRITE -> GREETING -> HUB DELIVERY) -->
+          <div class="track-row" style="justify-content: flex-end;">
+            <!-- Connector returning into Hub's Delivery -->
+            <div class="flow-arrow-left" style="margin-right: 4px;">◄</div>
+
+            <!-- Stage 6: Greetings (Middle of row 2) -->
+            <div class="stage-card card-greetings">
+              <div class="stage-card-title">💬 写打招呼语</div>
+              <div class="rewrite-options-row">
+                <div class="greeting-pill">
+                  <span>🔥</span> 官方高转化话术
+                </div>
+                <div class="greeting-pill custom">
+                  <span>💡</span> 自定义专属话术
+                </div>
+              </div>
+            </div>
+
+            <!-- Arrow pointing LEFT between Rewrite and Greeting -->
+            <div class="flow-arrow-left">◄</div>
+
+            <!-- Stage 5: Resume Rewrite (Right of row 2, directly under Deep Eval) -->
+            <div class="stage-card card-rewrite">
+              <div class="stage-card-title">✍️ 简历改写</div>
+              <div class="rewrite-options-row">
+                <div class="rewrite-pill">
+                  <span>✨</span> 默认官方 Skill 改写
+                </div>
+                <div class="rewrite-pill custom">
+                  <span>📂</span> 上传自定义 Skill
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. TWO HERO FEATURES (FEISHU COPILOT & RESUME SYNC) -->
+    <div class="bottom-features-row">
+      <!-- HERO FEATURE 1: FEISHU COPILOT -->
+      <div class="feature-card highlight">
+        <div>
+          <div class="feature-head">
+            <h3>
+              <span>📱 打通飞书聊天框 · 移动随身求职官</span>
+            </h3>
+            <span class="feature-badge badge-feishu">ChatOps &amp; Mobile</span>
+          </div>
+
+          <div class="feishu-flow-strip">
+            <div class="strip-step">
+              <span class="strip-step-icon">📸</span>
+              <span>手机直接发岗位截图</span>
+            </div>
+            <div class="strip-arrow">➔</div>
+            <div class="strip-step">
+              <span class="strip-step-icon">🧠</span>
+              <span>OCR 提取 + 8维深度评估</span>
+            </div>
+            <div class="strip-arrow">➔</div>
+            <div class="strip-step">
+              <span class="strip-step-icon">📄</span>
+              <span>回传定制 PDF/长图 + 招呼语</span>
+            </div>
+            <div class="strip-arrow">➔</div>
+            <div class="strip-step" style="color: #2563EB;">
+              <span class="strip-step-icon">🚀</span>
+              <span>手机随时随地即时投递</span>
+            </div>
+          </div>
+
+          <div class="feature-bullet-list">
+            <div class="bullet-item">
+              <span>🔔</span>
+              <span><strong>任务动态实时通知</strong>：定时任务报错 / 完结即时卡片推送</span>
+            </div>
+            <div class="bullet-item">
+              <span>📊</span>
+              <span><strong>周期性求职战报</strong>：每日 / 每周 / 每月全景自动化数据战报</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- HERO FEATURE 2: 4 PLATFORMS ONLINE RESUME SYNC -->
+      <div class="feature-card resume-card">
+        <div>
+          <div class="feature-head">
+            <h3>
+              <span>📝 4 大平台官方在线简历数据中枢</span>
+            </h3>
+            <span class="feature-badge badge-sync">双向同步</span>
+          </div>
+
+          <div class="resume-sync-strip">
+            <div class="resume-icons">
+              <div class="app-icon icon-boss">BOSS</div>
+              <div class="app-icon icon-liepin">猎聘</div>
+              <div class="app-icon icon-zhilian">智联</div>
+              <div class="app-icon icon-51job">51job</div>
+            </div>
+            <div class="sync-flow-steps">
+              <span>数据采集</span>
+              <span style="opacity: 0.5;">➔</span>
+              <span>智能映射</span>
+              <span style="opacity: 0.5;">➔</span>
+              <span style="color: #6D28D9;">一键双向回传</span>
+            </div>
+          </div>
+
+          <div class="feature-bullet-list" style="grid-template-columns: 1fr;">
+            <div class="bullet-item">
+              <span>🔄</span>
+              <span><strong>告别逐个平台反复粘贴</strong>：一键拉取并同步官方在线档案，杜绝格式错位</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4. BOTTOM OBSERVABILITY & METRICS -->
+    <footer>
+      <div class="footer-metric-group">
+        <div class="footer-metric">
+          <span>⚡</span>
+          <span><strong>Token 消耗监控</strong>：单岗 / 全链路消耗实时审计</span>
+        </div>
+        <div class="footer-metric">
+          <span>📉</span>
+          <span><strong>成本精准核算</strong>：KV Cache 优化降低 70% Token 成本</span>
+        </div>
+      </div>
+
+      <div class="footer-metric-group">
+        <div class="footer-metric">
+          <span>📈</span>
+          <span><strong>数据分析大盘</strong>：全生命周期投递转化漏斗</span>
+        </div>
+        <div class="footer-tag">🔒 本地数据隐私安全 · 零凭证上云</div>
+      </div>
+    </footer>
+  </div>
+
+</body>
+</html>

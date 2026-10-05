@@ -10,7 +10,6 @@ import {
   type AuthStatusMap,
   type PlatformMeta,
 } from "@/lib/platform-auth"
-import { useEdgeLaunchGuard } from "@/hooks/use-edge-launch-guard"
 
 // 徽章展示顺序与显示名（仅 UI 文案，端口等配置一律来自后端 registry）
 const PLATFORM_ORDER: { key: string; label: string }[] = [
@@ -44,9 +43,6 @@ export function AuthMonitor({ onStatusChange }: AuthMonitorProps = {}) {
   const [dialogPlatform, setDialogPlatform] = useState<string | null>(null)
   const [isLaunching, setIsLaunching] = useState(false)
   const [edgeLaunched, setEdgeLaunched] = useState(false)
-
-  // Edge 未安装守卫：唤起前探测，未装弹「下载 Edge」引导
-  const { guardLaunch, edgeDialog } = useEdgeLaunchGuard()
 
   useEffect(() => {
     fetchPlatformMeta().then(setMetas).catch(() => {})
@@ -100,7 +96,7 @@ export function AuthMonitor({ onStatusChange }: AuthMonitorProps = {}) {
   const handleLaunch = async (platform: string) => {
     try {
       setIsLaunching(true)
-      const result = await guardLaunch(() => launchPlatformEdge(platform))
+      const result = await launchPlatformEdge(platform)
       if (result.ok) {
         toast.success(result.message)
         if (platform === "boss") {
@@ -109,8 +105,7 @@ export function AuthMonitor({ onStatusChange }: AuthMonitorProps = {}) {
           setDialogPlatform(null)
         }
         checkStatus()
-      } else if (!result.handled) {
-        // Edge 未安装已在守卫里弹下载引导（handled=true），不重复报错
+      } else {
         toast.error(result.message)
       }
     } catch (error) {
@@ -204,7 +199,6 @@ export function AuthMonitor({ onStatusChange }: AuthMonitorProps = {}) {
           </div>
         </DialogContent>
       </Dialog>
-      {edgeDialog}
     </>
   )
 }

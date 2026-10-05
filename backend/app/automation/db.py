@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -7,9 +8,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# 锚定到 backend/ 目录：若用相对路径，从其他 cwd 启动会静默新建空库
+# 锚定到 backend/ 目录：若用相对路径，从其他 cwd 启动会静默新建空库。
+# AUTOPILOT_DB_PATH 显式覆盖：MCP 侧车进程 PYTHONPATH 指向本仓时，模块锚定会落到
+# worktree 的 0 字节空库（0930 体检工具实测 OperationalError）——侧车启动必须带
+# AUTOPILOT_DB_PATH 指向生产 backend/autopilot.db（与 ANALYTICS_DB_PATH 同款铁律）。
 BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent
-DB_PATH = BACKEND_ROOT / "autopilot.db"
+DB_PATH = Path(os.environ.get("AUTOPILOT_DB_PATH") or (BACKEND_ROOT / "autopilot.db"))
 
 _DEFAULT_GREETING_PLATFORMS = {"boss": True, "liepin": True, "zhilian": True, "51job": False}
 

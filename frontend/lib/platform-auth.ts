@@ -91,63 +91,13 @@ export async function fetchAuthStatus(force = false): Promise<AuthStatusMap> {
   return status
 }
 
-// 本机未装 Edge 时的兜底下载页：仅后端 /auth/edge-status 不可达时使用；
-// 正常链路以后端返回为准（与 backend/app/session/browser.py 的 EDGE_DOWNLOAD_URL 同源，
-// 改址需两处同步——前端无法在预检失败时再向后端要地址）
-export const FALLBACK_EDGE_DOWNLOAD_URL = "https://www.microsoft.com/zh-cn/edge/download"
-
-/** 结构化错误码：本机未安装 Microsoft Edge（与后端 edge_not_installed_detail 对应） */
-export const EDGE_NOT_INSTALLED = "edge_not_installed"
-
-/** Edge 未安装的统一前端展示文案（标题/兜底用；后端 message 含行动指引，二者语义不同层） */
-export const EDGE_MISSING_MESSAGE = "未检测到 Microsoft Edge 浏览器"
-
-/** 后端 /auth/edge-status 返回的本机 Edge 安装状态 */
-export interface EdgeInstallStatus {
-  installed: boolean
-  downloadUrl: string
-}
-
-/**
- * 预检本机是否安装 Microsoft Edge（唤起浏览器前调用）。
- * 2.5s 超时：预检不该拖慢唤起主链路；超时/不可达按「已安装」放行，由唤起接口的结构化错误兜底。
- * 刻意不缓存结果：用户点弹窗装完 Edge 回到本页再点唤起时，必须拿到最新状态。
- */
-export async function fetchEdgeStatus(): Promise<EdgeInstallStatus> {
-  try {
-    const res = await fetch(`${MAIN_API_BASE}/v1/auth/edge-status`, {
-      signal: AbortSignal.timeout(2500),
-    })
-    const data = await res.json()
-    if (res.ok && data.status === "success") {
-      return {
-        installed: !!data.installed,
-        downloadUrl: data.download_url || FALLBACK_EDGE_DOWNLOAD_URL,
-      }
-    }
-  } catch {
-    // 后端不可达：放行走唤起链路的既有报错
-  }
-  return { installed: true, downloadUrl: FALLBACK_EDGE_DOWNLOAD_URL }
-}
-
-/** 唤起结果：handled=true 表示守卫已弹「下载 Edge」引导，调用方无需再 toast 报错 */
-export interface EdgeLaunchResult {
-  ok: boolean
-  message: string
-  code?: string
-  downloadUrl?: string
-  /** 结构化错误已被守卫消费（弹过下载引导） */
-  handled?: boolean
-}
-
 /**
  * 唤起指定平台的 Edge 浏览器完成登录 —— 所有平台同一套调用：
  * POST /api/v1/auth/{platform}/edge（后端按 registry 配置决定端口/profile/落地页）。
  */
 export async function launchPlatformEdge(
   platform: string
-): Promise<EdgeLaunchResult> {
+): Promise<{ ok: boolean; message: string }> {
   const res = await fetch(`${MAIN_API_BASE}/v1/auth/${platform}/edge`, {
     method: "POST",
   })
@@ -155,42 +105,5 @@ export async function launchPlatformEdge(
   if (res.ok && data.status === "success") {
     return { ok: true, message: data.message || "唤起成功" }
   }
-  // 后端结构化错误（detail 为对象）：Edge 未安装等需要引导的场景
-  const parsed = parseEdgeErrorDetail(data.detail)
-  if (parsed) {
-    return { ok: false, ...parsed }
-  }
-  const fallbackMessage =
-    data.message || (typeof data.detail === "string" ? data.detail : "") || "未知错误"
-  return { ok: false, message: fallbackMessage }
-}
-
-/**
- * 「Edge 未安装」结构化错误体的统一解析（含 object 判定，非对象返回 null 交回调用方
- * 走各自的字符串 detail 兜底）。当前后端唯一结构化 code 是 edge_not_installed，故兜底
- * 文案为 Edge 专属；未来新增结构化 code 时应在此按 code 分派。成功形态各端点契约不同
- * （扁平体 / 信封体），由调用方各自解析。
- */
-export function parseEdgeErrorDetail(
-  detail: unknown
-): Pick<EdgeLaunchResult, "message" | "code" | "downloadUrl"> | null {
-  if (!detail || typeof detail !== "object") return null
-  const d = detail as Record<string, unknown>
-  // 无 code 的对象型 detail（如 FastAPI 422 校验错误的数组/普通错误体）不归本解析管，
-  // 交回调用方走各自的通用兜底，避免把真实校验错误贴成 Edge 文案
-  if (typeof d.code !== "string" || !d.code) return null
-  return {
-    message: String(d.message || EDGE_MISSING_MESSAGE),
-    code: d.code,
-    downloadUrl: typeof d.download_url === "string" && d.download_url
-      ? d.download_url
-      : FALLBACK_EDGE_DOWNLOAD_URL,
-  }
-}
-
-/** 该唤起失败是否已被守卫处理（弹了下载引导），调用方无需再 toast 报错。
- * 优先用 guardLaunch 返回值上的 handled 字段（单一事实源），本函数保留给
- * 未走守卫、直接调用 launchPlatformEdge 的场景。 */
-export function isEdgeMissing(result: EdgeLaunchResult): boolean {
-  return result.code === EDGE_NOT_INSTALLED
+  return { ok: false, message: data.message || data.detail || "未知错误" }
 }

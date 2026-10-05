@@ -204,11 +204,13 @@ def build_feishu_fields_from_raw(job_data: dict) -> dict:
         "跟进状态": "新线索" 
     }
 
-def sync_sqlite_to_feishu(db_path, table_name="jobs", sse_task_id=None, limit=None, min_rowid=0, target_links=None):
+def sync_sqlite_to_feishu(db_path, table_name="jobs", sse_task_id=None, limit=None, min_rowid=0, target_links=None, platform=None):
     """
     从 SQLite 读取满足条件的数据，并推送到飞书（带防重复同步机制）
     min_rowid>0 时只推送本轮采集的行（全自动链路语义：旧存量不进自动链）
     target_links 存在时优先精准推送指定岗位；target_links 为空列表时直接返回
+    platform 非空时按平台二次过滤（库内规范值如「智联招聘」，与 target_links/limit 可叠加，
+    先 target_links 圈选再 platform 收窄再 limit 截断）；None/空 = 不限平台（既有行为）
 
     ⚠️ 纯同步函数，设计上只在 to_thread 工作线程内执行。从事件循环发起必须走
     sync_sqlite_to_feishu_async（负责锚定主 loop 供线程内 SSE 回推），
@@ -250,6 +252,8 @@ def sync_sqlite_to_feishu(db_path, table_name="jobs", sse_task_id=None, limit=No
         pass
 
     # 🌟 步骤 2：编写 SQL 查询（增加 is_synced = 0 的过滤条件与 rowid 倒序）
+    # 平台过滤参数化（2026-09-28 /agent 推送范围批）：规范值由工具层归一后传入，引擎信任入参
+    canonical_platform = str(platform or "").strip()
     if target_links is not None:
         if len(target_links) == 0:
             print("✅ 本轮清洗无通过 AI 初筛的岗位需要同步至飞书。")
@@ -262,11 +266,14 @@ def sync_sqlite_to_feishu(db_path, table_name="jobs", sse_task_id=None, limit=No
             WHERE process_status = '待推送至飞书'
             AND (is_synced = 0 OR is_synced IS NULL)
             AND job_link IN ({placeholders})
-            ORDER BY rowid DESC
         """
+        params = list(target_links)
+        if canonical_platform:
+            sql_query += " AND platform = ?"
+            params.append(canonical_platform)
+        sql_query += " ORDER BY rowid DESC"
         if limit and limit > 0:
             sql_query += f" LIMIT {limit}"
-        params = list(target_links)
     else:
         sql_query = f"""
             SELECT rowid, * FROM {table_name}
@@ -274,6 +281,9 @@ def sync_sqlite_to_feishu(db_path, table_name="jobs", sse_task_id=None, limit=No
             AND (is_synced = 0 OR is_synced IS NULL)
         """
         params = []
+        if canonical_platform:
+            sql_query += " AND platform = ?"
+            params.append(canonical_platform)
         if min_rowid:
             sql_query += f" AND rowid > {int(min_rowid)}"
         sql_query += " ORDER BY rowid DESC"

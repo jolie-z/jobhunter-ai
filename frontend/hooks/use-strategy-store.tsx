@@ -224,6 +224,8 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
     // resumes 的 ref 镜像：异步回调（拦截弹窗保存后继续）里读最新列表用，防闭包快照陈旧
     const resumesRef = useRef<StrategyItem[]>(resumes)
     useEffect(() => { resumesRef.current = resumes }, [resumes])
+    // 简历深链参数只生效一次的标记（agent 聊天里简历链接的落点，见 fetchConfig）
+    const resumeParamAppliedRef = useRef(false)
     // 进程启动时原子清理过期草稿槽与登记表（含已删除简历的残留槽位、非 temp_ 垃圾行）
     useEffect(() => { purgeExpiredResumeRegistry() }, [])
     // 关页/卸载时把所有待写草稿立即落盘（pagehide 不触发 React unmount，需单独监听）
@@ -447,6 +449,20 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
                 // 同步刷新 ref 镜像（不等 useEffect）：异步回调链（拦截弹窗保存→继续复制/切换）
                 // 恢复执行时读 resumesRef 拿到的就是刚 fetch 的最新列表
                 resumesRef.current = mergedResumes
+
+                // 简历深链定位：/strategy?section=resume&resume_id=<record_id> 打开即自动选中该简历
+                // （agent 聊天里简历链接的落点）。只生效一次：保存/切换触发的后续 fetch 不再抢编辑焦点；
+                // 深链简历不在列表（已删除/仅本地 temp_ 项/ID 手打错误）时回落默认选中逻辑
+                if (!resumeParamAppliedRef.current) {
+                    resumeParamAppliedRef.current = true
+                    const urlRid = new URLSearchParams(window.location.search).get("resume_id")
+                    const deepLinked = urlRid ? mergedResumes.find(r => r.record_id === urlRid) : undefined
+                    if (deepLinked) {
+                        if (sectionRef.current !== 'resume') setSection('resume')
+                        setEditingItem(deepLinked)
+                        return
+                    }
+                }
 
                 if (currentEditingId) {
                     const target = mergedResumes.find((i: any) => i.record_id === currentEditingId)

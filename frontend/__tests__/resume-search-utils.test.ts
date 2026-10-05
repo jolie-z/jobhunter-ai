@@ -95,6 +95,16 @@ describe("resume-search-utils", () => {
       )
     })
 
+    it("should not prefix glyph/ordered bullet lines produced by the list-style picker", () => {
+      const raw = "■ 方块要点\n▸ 三角要点\n一、中文编号要点\n① 圆圈要点\na) 字母要点"
+      expect(normalizeBulletLines(raw)).toBe(raw)
+    })
+
+    it("should not prefix indented lines (user-intended paragraph indent)", () => {
+      const raw = "　　全角缩进的首行正文\n  半角缩进的正文行"
+      expect(normalizeBulletLines(raw)).toBe(raw)
+    })
+
     it("should not prefix short '标题：' lines like tech stack", () => {
       const raw = "核心技术栈：Python、RPA、LLM API\n负责 RPA 流程自动化开发"
       expect(normalizeBulletLines(raw)).toBe(

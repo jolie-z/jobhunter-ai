@@ -94,11 +94,20 @@ def make_checker(platform_value: str):
     C.ensure_browser(key)
 
     if key == "51job":
-        from playwright.sync_api import sync_playwright
-        pw = sync_playwright().start()
-        browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{C.resolve_port(key)}")
-        context = browser.contexts[0]
+        # 2026-09-24 收编到 patchright 新链路：引擎直启（互斥锁+登录态校验），
+        # 弃用 connect_over_cdp 9227（与主链路抢 Profile + Runtime.enable 泄漏）。
+        # 沿用官方 playwright API 语法（patchright API 同构）——但这里直接复用
+        # 51job_scraper.engine 的启动器，保证与主链路同一个上下文。
+        import sys as _sys
+        _j51_dir = str(C.BACKEND_ROOT / "51job_scraper")
+        if _j51_dir not in _sys.path:
+            _sys.path.insert(0, _j51_dir)
+        from engine import launch_or_fail as _j51_launch
+        _ctx_mgr = _j51_launch(purpose="offshelf_check")
+        context = _ctx_mgr.__enter__()
         page = context.pages[0] if context.pages else context.new_page()
+        import atexit as _atexit
+        _atexit.register(_ctx_mgr.__exit__, None, None, None)  # 进程退出兜底释放引擎锁
 
         # 显式死链信号（实测死链页文案："当前职位审核中或已下线"）
         DEAD_WORDS = ("已下线", "审核中", "职位不存在", "岗位不存在", "已过期", "已失效")

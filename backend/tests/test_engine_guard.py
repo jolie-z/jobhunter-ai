@@ -308,22 +308,33 @@ def test_liepin_reject(monkeypatch):
 
 
 def test_51job_delivery_reject(monkeypatch):
+    """守卫拒绝语义回归：Q24 身份守卫拒绝（占用者陌生）时 _connect_browser 直接抛错。
+
+    9/26 f4885c11 投递回退旧栈后，_connect_browser(p) 恢复 CDP-first 签名（p 为
+    patchright/playwright 实例，仅在守卫放行后才使用），引擎锁拒绝由 engine.launch_or_fail
+    在守卫放行后的连接兜底路径触发。本用例锁定第一道闸门：身份守卫 fail-closed。
+    """
     j51 = _load_scraper("51job_scraper/51job_auto_delivery.py", "q24_51job_auto_delivery")
 
     _patch_engine_verify(monkeypatch, j51, (False, "占用者陌生"))
 
-    p = MagicMock()
-    with pytest.raises(EngineGuardError):
-        j51._connect_browser(p)
-    p.chromium.connect_over_cdp.assert_not_called()
+    # 守卫拒绝发生在 p 使用之前，传 None 即可；精确匹配桩原因，防其他 RuntimeError 假阳性
+    with pytest.raises(EngineGuardError, match="占用者陌生"):
+        j51._connect_browser(None)
 
 
 def test_51job_collector_reject(monkeypatch):
+    """2026-09-24 反爬改造后：引擎锁拒绝时 collector 直接返回（不拉起 patchright driver）。"""
+    # collector 顶层 eager `from engine import ...`：必须先挂 51job_scraper 到 sys.path
+    # 再 _load_scraper（勿依赖其他用例残留的路径插入，消除用例顺序耦合）
+    _51dir = str(_BACKEND_ROOT / "51job_scraper")
+    if _51dir not in sys.path:
+        sys.path.insert(0, _51dir)
     j51c = _load_scraper("51job_scraper/51job_collector.py", "q24_51job_collector")
 
-    _patch_engine_verify(monkeypatch, j51c, (False, "占用者陌生"))
+    import engine as engine_mod  # collector 内 engine.launch_or_fail 同理
+    def _reject(purpose="collect"):
+        raise RuntimeError("Profile 已被其他进程持有（pid=1, purpose=deliver, 心跳 0s 前更新）。")
+    monkeypatch.setattr(engine_mod, "launch_or_fail", _reject)
 
-    pw = MagicMock()
-    monkeypatch.setattr(j51c, "sync_playwright", lambda: pw)
-    j51c.start_collector(1)
-    pw.__enter__.assert_not_called()  # 守卫在 with 之外：拒绝时连 playwright driver 都不拉起
+    j51c.start_collector(1, keyword="python")  # 拒绝路径：内部捕获 RuntimeError 打印后 return

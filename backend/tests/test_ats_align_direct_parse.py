@@ -37,8 +37,8 @@ EXPECTED_DIRECT_PARSE = {
     "personalProjects": [
         {"name": "测试项目", "role": "owner", "years": "2024.01-至今", "description": ["开发C"]}
     ],
-    # skillOverview 为 185acf1 新增字段（AdditionalInfo 默认空串），model_dump 必带此键
-    "additional": {"skillOverview": "", "technicalSkills": [], "languages": [], "certificationsTraining": []},
+    # skillOverview 为空串：f782983d 解析保真批后 ResumeData.additional 固定含该字段
+    "additional": {"technicalSkills": [], "languages": [], "certificationsTraining": [], "skillOverview": ""},
     "moduleOrder": ["summary", "workExperience", "personalProjects"],
     "moduleTitles": {"summary": "个人总结", "workExperience": "工作经历", "personalProjects": "项目经历"},
     "customModules": {},

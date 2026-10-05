@@ -1,11 +1,12 @@
 """
-51job简历编辑器 - Edge 浏览器启动脚本
+51job简历编辑器 - Edge 浏览器启动脚本（2026-09-24 收编到 patchright 新链路）
 
-功能：
-1. 在 51job 统一端口启动 Edge（持久化 profile，端口由全项目统一配置区 registry 提供）
-2. 导航到51job简历页面
-3. 等待用户手动登录
-4. 登录完成后保持浏览器打开，供后续审计脚本连接
+旧实现（DrissionPage + 9227 端口直拉）已废弃：与主链路 patchright 引擎抢同一
+Profile 目录（Chromium SingletonLock 冲突），会话分裂/导航挂死（2026-09-24 事故）。
+
+新实现：调 app.session.browser.launch_edge（51job 自动分流到 patchright 登录守护）：
+- 互斥走 .engine_lock（单一持有者模型），与采集/投递引擎天然互斥；
+- 登录态由持久化 Profile 原生承载，探测成功自动关窗，不再需要人工按 Enter。
 
 用法：
     python start_51job_browser.py
@@ -13,92 +14,36 @@
 
 import os
 import sys
-import time
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _BACKEND_DIR = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
+sys.path.insert(0, _BACKEND_DIR)
 
-from DrissionPage import ChromiumPage, ChromiumOptions
-
-sys.path.insert(0, _SCRIPT_DIR)
-from browser_common import get_platform_port, get_platform_profile
-
-# 配置
-PORT = get_platform_port("51job")
-# 🛡️ profile 统一走 registry（与主链路同一份登录态）；私有 profile 会与主链路抢端口、互不见登录
-PROFILE_DIR = get_platform_profile("51job")
-JOB51_RESUME_URL = "https://we.51job.com/pc/myresume"
-JOB51_HOME_URL = "https://we.51job.com/"
+from app.session.registry import resolve_platform
+from app.session.browser import launch_edge
 
 
 def start_browser():
-    """启动 Edge 浏览器并导航到51job"""
     print("=" * 60)
-    print("  51job简历编辑器 - 浏览器启动")
-    print("=" * 60)
-
-    # 确保 profile 目录存在
-    os.makedirs(PROFILE_DIR, exist_ok=True)
-    print(f"\n  Profile 目录: {PROFILE_DIR}")
-    print(f"  端口: {PORT}")
-
-    # 配置浏览器
-    co = ChromiumOptions()
-    co.set_local_port(PORT)
-    co.set_user_data_path(PROFILE_DIR)
-
-    # macOS Edge 路径
-    mac_edge_path = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
-    if os.path.exists(mac_edge_path):
-        co.set_browser_path(mac_edge_path)
-        print(f"  浏览器: Microsoft Edge")
-    else:
-        print("  浏览器: 默认 Chrome/Chromium")
-
-    # 启动浏览器
-    print("\n  正在启动浏览器...")
-    page = ChromiumPage(co)
-    print("  浏览器已启动")
-
-    # 先导航到51job首页（方便登录）
-    print(f"\n  正在导航到51job首页...")
-    page.get(JOB51_HOME_URL)
-    time.sleep(2)
-
-    print("\n" + "=" * 60)
-    print("  请在浏览器中手动登录51job账号")
-    print("  登录完成后，回到这里按 Enter 继续")
+    print("  51job简历编辑器 - 浏览器启动（patchright 新链路）")
     print("=" * 60)
 
-    # 等待用户登录
-    input("\n  按 Enter 确认已登录...")
+    config = resolve_platform("51job")
+    if config is None:
+        raise SystemExit("registry 中无平台配置: 51job")
 
-    # 检查登录状态
-    print("\n  正在检查登录状态...")
-    page.get(JOB51_RESUME_URL)
-    time.sleep(3)
-
-    # 简单检查是否登录成功
-    current_url = page.url
-    title = page.title
-    print(f"  当前 URL: {current_url}")
-    print(f"  页面标题: {title}")
-
-    if "login" in current_url.lower() or "passport" in current_url.lower():
-        print("\n  似乎还未登录成功，请在浏览器中完成登录后重试")
-        print("  浏览器保持打开状态，你可以重新运行此脚本")
-    else:
-        print("\n  登录状态正常！")
-        print(f"  浏览器保持打开，后续审计脚本将连接端口 {PORT}")
-
-    print("\n  提示: 不要关闭浏览器窗口")
-    print("  按 Ctrl+C 退出此脚本（浏览器会保持打开）")
+    print(f"\n  Profile 目录: {config.profile_dir}")
+    print("  正在拉起浏览器（登录态有效时自动校验；未登录时弹出扫码窗口）...")
 
     try:
-        while True:
-            time.sleep(60)
-    except KeyboardInterrupt:
-        print("\n  脚本已退出，浏览器保持打开")
+        result = launch_edge(config)
+        print(f"\n  ✅ {result.get('message', '浏览器已就绪')}")
+    except RuntimeError as e:
+        print(f"\n  ❌ 拉起失败: {e}")
+        raise SystemExit(1)
+
+    print("\n  后续审计脚本（51job_resume_audit / 51job_deep_extract）将按需直启引擎，")
+    print("  无需保持本窗口；登录态已持久化在 Profile 中。")
 
 
 if __name__ == "__main__":

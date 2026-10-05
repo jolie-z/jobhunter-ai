@@ -48,7 +48,13 @@ def _clean_state():
 
 
 class _DummyProc:
-    """假子进程：run_task 只会对它调 wait()（输出解析已被 monkeypatch 掉）。"""
+    """假子进程：run_task 只会对它调 wait()（输出解析已被 monkeypatch 掉）。
+
+    returncode=0：nl_controller 退出码契约（0=真实采集/3=检查点跳过）会读它，
+    缺属性会让本测试在契约检查处炸 AttributeError（2026-09-25 补齐）。
+    """
+
+    returncode = 0
 
     def wait(self):
         return 0

@@ -29,44 +29,65 @@ if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 from browser_common import get_platform_profile
 
-from playwright.sync_api import sync_playwright
+# 2026-09-24 收编到 patchright 新链路：官方 Playwright 直启与主链路引擎抢同一 Profile
+# （SingletonLock 冲突 + 反检测泄漏），统一走 engine.launch_or_fail（互斥锁+登录态校验）。
+_SCRIPT_DIR_J51 = os.path.dirname(os.path.abspath(__file__))
+_BACKEND_ROOT_J51 = os.path.dirname(os.path.dirname(_SCRIPT_DIR_J51))
+if _BACKEND_ROOT_J51 not in sys.path:
+    sys.path.insert(0, _BACKEND_ROOT_J51)
+if _SCRIPT_DIR_J51 not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR_J51)
+from engine import launch_or_fail  # noqa: E402
 
 # 51job简历编辑页面
 JOB51_RESUME_URL = "https://we.51job.com/pc/myresume"
 
 
 def create_browser():
-    """创建51job浏览器实例"""
-    p = sync_playwright().start()
+    """创建51job浏览器实例（patchright 新链路）。
 
-    edge_path = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
-    # 🛡️ profile 统一走 registry（与主链路同一份登录态）；私有 profile 会与主链路互不见登录
-    profile_dir = get_platform_profile("51job")
-    os.makedirs(profile_dir, exist_ok=True)
+    返回 (None, context)：p 恒为 None 保持调用方签名兼容（finally 的 p.stop()
+    分支自然跳过）；context 生命周期由本模块 finally 的 context.close() 承担。
+    """
+    ctx_mgr = launch_or_fail(purpose="resume_editor")
+    context = ctx_mgr.__enter__()
+    # finally 收尾由 scrape_51job_resume_fields 现有 context.close() 完成；
+    # 引擎锁释放交给 engine 的退出钩子（close 后锁由 release_lock 清）——
+    # 这里挂到模块级容器，main 的 finally 调 _release_engine() 统一释放。
+    _CURRENT_CTX_MGR.append(ctx_mgr)
+    print("✅ Edge 浏览器已启动（patchright 新链路）")
+    return None, context
 
-    print("🚀 启动 Edge 浏览器...")
-    context = p.chromium.launch_persistent_context(
-        user_data_dir=profile_dir,
-        executable_path=edge_path,
-        headless=False,
-        viewport={'width': 1920, 'height': 1080},
-        args=[
-            "--no-first-run",
-            "--no-default-browser-check",
-        ]
-    )
 
-    print("✅ Edge 浏览器已启动")
-    return p, context
+_CURRENT_CTX_MGR: list = []
+
+import atexit as _atexit
+_atexit.register(lambda: _release_engine())  # R3 P1：库导入/异常退出兜底释放引擎锁
+
+
+def _release_engine():
+    """释放引擎上下文（context.close 落盘 cookie + 释放引擎锁）。"""
+    while _CURRENT_CTX_MGR:
+        mgr = _CURRENT_CTX_MGR.pop()
+        try:
+            mgr.__exit__(None, None, None)
+        except Exception:
+            pass
 
 
 def scrape_51job_resume_fields() -> dict:
-    """
-    扒取51job在线简历的所有字段
+    """扒取51job在线简历的所有字段（R3 P1：无论成败退出均释放引擎锁）。
 
     Returns:
         dict: 简历字段字典
     """
+    try:
+        return _scrape_51job_resume_fields_impl()
+    finally:
+        _release_engine()
+
+
+def _scrape_51job_resume_fields_impl() -> dict:
     p, context = create_browser()
     page = context.pages[0] if context.pages else context.new_page()
 
@@ -459,6 +480,7 @@ def main():
                 p.stop()
             except:
                 pass
+        _release_engine()  # 释放引擎锁（patchright 新链路）
 
 
 if __name__ == '__main__':
