@@ -325,6 +325,10 @@ def test_51job_delivery_reject(monkeypatch):
 
 def test_51job_collector_reject(monkeypatch):
     """2026-09-24 反爬改造后：引擎锁拒绝时 collector 直接返回（不拉起 patchright driver）。"""
+    # 采集新栈依赖 patchright（51job 采集侧保留新栈），但其未入 pyproject 依赖声明，
+    # 干净环境（CI Linux runner）无此包 → collector 模块无法导入，本用例只能跳过；
+    # 守卫语义已由 test_51job_delivery_reject 覆盖（同一 engine.launch_or_fail 闸门）。
+    pytest.importorskip("patchright")
     # collector 顶层 eager `from engine import ...`：必须先挂 51job_scraper 到 sys.path
     # 再 _load_scraper（勿依赖其他用例残留的路径插入，消除用例顺序耦合）
     _51dir = str(_BACKEND_ROOT / "51job_scraper")
