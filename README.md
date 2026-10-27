@@ -55,7 +55,32 @@
 | 🍎 **macOS Apple Silicon**（M 系列） | **[⬇️ 下载 macOS 安装包 .dmg](https://github.com/jolie-z/jobhunter-ai/releases/latest/download/JobHunter-mac-arm64.dmg)** |
 
 > 💡 下载链接始终指向最新版本；更新日志见 **[Releases 页面](https://github.com/jolie-z/jobhunter-ai/releases)**。
-> 🍎 macOS 首次打开若提示「无法验证开发者」：在「应用程序」目录右键 JobHunter → 打开 → 再点打开。
+> 🍎 **macOS 用户**：如首次打开提示「已损坏，无法打开」，请看下方 [macOS 安装说明](#macos-安装说明)。
+
+<a id="macos-install"></a>
+### ⚠️ macOS 用户安装说明（重要）
+
+通过 **GitHub Release** 或 **官网直链** 下载安装包后，首次打开可能提示：
+
+> **"JobHunter" 已损坏，无法打开。你应该将它移到废纸篓。**
+
+这不是文件损坏——作者尚未购买 Apple 开发者签名服务（688 元/年），这是 macOS 对未签名安装包的安全拦截，内容完全正常。两种解决方式任选：
+
+**方式一：终端命令（约 10 秒）**
+
+打开「终端」（Command + 空格，搜索"终端"），粘贴执行下面这条命令，然后重新打开 JobHunter 即可：
+
+```bash
+xattr -cr /Applications/JobHunter.app
+```
+
+**方式二：加 QQ 交流群，从「群文件」直接下载（更省心）**
+
+QQ 下载的文件不会触发上述拦截。进群（群号 **1129980650**）后从「群文件」获取安装包，开箱即用，还能第一时间收到新版本推送：
+
+<p align="center">
+  <img src="docs/images/qq-group-qr.jpg" width="220" alt="JobHunter QQ 交流群二维码">
+</p>
 
 <a id="why-jobhunter"></a>
 ## <span style="color: #3b82f6;">Why</span> <span style="color: #06b6d4;">JobHunter</span>？
