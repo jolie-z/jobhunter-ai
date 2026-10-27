@@ -186,6 +186,9 @@ backend/checkpoints.sqlite*
 # 架构图渲染产物（README 首屏展示，需入库；其余 png 仍一律忽略）
 !docs/architecture-overview.png
 
+# README v2 演示素材（docs/images 四分区作战室/动图封面/二维码，README 展示需入库；其余 png 仍一律忽略）
+!docs/images/*.png
+
 # Video agent artifacts
 .video_agent/
 .coverage
