@@ -11,7 +11,7 @@
   <a href="https://nextjs.org"><img src="https://img.shields.io/badge/Next.js-15.0%2B-black.svg?style=flat-square&logo=next.js&logoColor=white" alt="Next.js"></a>
   <img src="https://img.shields.io/badge/Platforms-BOSS%20%7C%20%E7%8C%8E%E8%81%98%20%7C%2051job%20%7C%20%E6%99%BA%E8%81%94-00B96B.svg?style=flat-square" alt="Platforms">
   <img src="https://img.shields.io/badge/Feishu-ChatOps%20%26%20Bitable-00D6B9.svg?style=flat-square&logo=lark&logoColor=white" alt="Feishu">
-  <a href="#feishu-community"><img src="https://img.shields.io/badge/飞书交流群-点击加入-00D6B9.svg?style=flat-square&logo=lark&logoColor=white" alt="飞书交流群"></a>
+  <a href="#qq-community"><img src="https://img.shields.io/badge/QQ交流群-点击加入-12B7F5.svg?style=flat-square&logo=tencentqq&logoColor=white" alt="QQ交流群"></a>
   <img src="https://img.shields.io/badge/Tests-1000%2B%20Passing-brightgreen.svg?style=flat-square" alt="Tests">
 </p>
 
@@ -20,7 +20,7 @@
   <a href="https://jobhunter.joliezeng.top/#demo">🎮 <b>项目 Demo 体验</b></a> &nbsp;•&nbsp;
   <a href="https://jobhunter.joliezeng.top/guide/pipeline">📖 <b>使用指南</b></a> &nbsp;•&nbsp;
   <a href="#download">💻 <b>客户端下载</b></a> &nbsp;•&nbsp;
-  <a href="#feishu-community">👥 <b>飞书交流群</b></a>
+  <a href="#qq-community">👥 <b>QQ交流群</b></a>
 </p>
 
 <!-- 核心板块快速直达锚点 -->
@@ -451,17 +451,18 @@ python scripts/test_config_validation.py all
 
 ---
 
-<a id="feishu-community"></a>
-## 💬 交流与反馈 · 飞书交流群
+<a id="qq-community"></a>
+## 💬 交流与反馈 · QQ 交流群
 
-- **飞书交流群（快问快答 / 使用咨询）**：扫描下方二维码即可加入（二维码永久有效）。
+- **QQ 交流群（快问快答 / 使用咨询）**：扫描下方二维码或搜索群号 **1129980650** 即可加入（二维码永久有效）。
+- **📦 群文件直接下载安装包**：macOS 首次打开提示「已损坏」？从 QQ 群文件下载安装包不存在该问题（详见上方 [macOS 安装说明](#macos-安装说明)）。
 - **Bug 反馈与功能建议**：请提交 [Issue](https://github.com/jolie-z/jobhunter-ai/issues)（可追踪、可检索，方便后来人搜到同类问题）；提问时请附上操作系统、Python 版本（3.10–3.13）与完整报错原文。
 - **客户端尝鲜与新版发布**：第一时间获取最新 Releases 资讯与 Windows / macOS 原生客户端安装包推送。
 
 <p align="center">
-  <img src="docs/images/feishu-group-qr.png" alt="JobHunter 官方飞书交流群二维码" width="300">
+  <img src="docs/images/qq-group-qr.jpg" alt="JobHunter 官方 QQ 交流群二维码（群号 1129980650）" width="300">
   <br>
-  <em>📱 <b>扫码加入 JobHunter 飞书交流群</b>（二维码永久有效）</em>
+  <em>📱 <b>扫码加入 JobHunter QQ 交流群</b>（群号 1129980650 · 二维码永久有效）</em>
 </p>
 
 ---
