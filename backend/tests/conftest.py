@@ -29,6 +29,18 @@ def client() -> Generator[TestClient, None, None]:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_llm_gate():
+    """每次测试前后重置 LLM 限流闸门单例，防止跨用例冷却窗或槽位泄漏。"""
+    try:
+        from app.core.llm_gate import reset_llm_gate
+        reset_llm_gate()
+        yield
+        reset_llm_gate()
+    except Exception:
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_51job_upload_quota(tmp_path, monkeypatch):
     """51job 日上传配额状态文件按测试隔离，避免波次/编排用例读到生产状态文件。"""
     from app.automation import upload_quota

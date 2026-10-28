@@ -1,7 +1,21 @@
-// 后端 API 地址：本地开发默认 8000 端口，部署时通过 NEXT_PUBLIC_API_URL 环境变量覆盖
-// 约定：env 必须为裸地址（不带 /api 路径段）；为兼容历史部署误填「.../api」，
-// 这里统一剥掉尾部的 /api 段（调用方均已自行拼接 /api/...）
+// 后端 API 地址解析链（M2 动态端口定稿：壳 preload 注入优先）：
+// 1. window.appConfig.backendBase —— 桌面壳 preload 注入（动态端口唯一来源，最高优先）
+// 2. NEXT_PUBLIC_API_URL —— 构建期 env（部署场景）
+// 3. window.location.hostname 推导 :8000 —— 浏览器直接访问 dev 前端的既有约定
+// 约定：均为裸地址（不带 /api 路径段）；为兼容历史部署误填「.../api」，
+// 统一剥掉尾部的 /api 段（调用方均已自行拼接 /api/...）
+declare global {
+  interface Window {
+    appConfig?: { backendBase?: string }
+  }
+}
+
 export function getApiBase(): string {
+  const injected =
+    typeof window !== "undefined" ? window.appConfig?.backendBase : undefined
+  if (injected) {
+    return injected.replace(/\/$/, "").replace(/\/api$/, "")
+  }
   if (process.env.NEXT_PUBLIC_API_URL) {
     return process.env.NEXT_PUBLIC_API_URL
       .replace(/\/$/, "")

@@ -34,9 +34,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+# GC 目标与写入侧同源（db_paths 阀门）：写入接线到哪，GC 就回收哪，
+# 否则打包态写入落 JOBHUNTER_DATA_DIR 而 GC 仍盯包内旧路径，出现"只涨不收"。
+from app.core.db_paths import job_hunter_db_path, writable_path
+
 logger = logging.getLogger(__name__)
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
+_LANGGRAPH_DB = writable_path(BACKEND_ROOT / "langgraph_checkpoints.db", "langgraph_checkpoints.db")
+_CHAT_CHECKPOINT_DB = writable_path(BACKEND_ROOT / "data" / "agent_chat_checkpoints.db", "agent_chat_checkpoints.db")
+_JOB_HUNTER_DB = job_hunter_db_path(BACKEND_ROOT / "data" / "job_hunter.db")
+_AUTOPILOT_DB = writable_path(BACKEND_ROOT / "autopilot.db", "autopilot.db")
 
 # UUIDv6 与 Unix 纪元之间的秒差（1582-10-15 格里高利历 → 1970-01-01）
 _UUID6_EPOCH_OFFSET_S = 12219292800
@@ -309,16 +318,16 @@ def run_gc(
     """执行一轮 GC。默认 dry_run=True 只统计不删除；调度任务传 dry_run=False。"""
     if targets is None:
         targets = [
-            GCTarget(BACKEND_ROOT / "langgraph_checkpoints.db", 14, "流水线checkpoint"),
+            GCTarget(_LANGGRAPH_DB, 14, "流水线checkpoint"),
             GCTarget(
-                BACKEND_ROOT / "data" / "agent_chat_checkpoints.db",
+                _CHAT_CHECKPOINT_DB,
                 90,
                 "ChatAgent对话checkpoint",
                 pipeline_protections=False,
             ),
         ]
-    job_hunter_db = Path(job_hunter_db or BACKEND_ROOT / "data" / "job_hunter.db")
-    autopilot_db = Path(autopilot_db or BACKEND_ROOT / "autopilot.db")
+    job_hunter_db = Path(job_hunter_db or _JOB_HUNTER_DB)
+    autopilot_db = Path(autopilot_db or _AUTOPILOT_DB)
 
     # pending/running 保护只对流水线类目标生效；聊天库的活跃会话天然由保留窗口覆盖
     need_pipeline_guard = any(t.pipeline_protections for t in targets)
@@ -403,9 +412,9 @@ if __name__ == "__main__":
     cli_targets = None
     if args.keep_days:
         cli_targets = [
-            GCTarget(BACKEND_ROOT / "langgraph_checkpoints.db", args.keep_days, "流水线checkpoint"),
+            GCTarget(_LANGGRAPH_DB, args.keep_days, "流水线checkpoint"),
             GCTarget(
-                BACKEND_ROOT / "data" / "agent_chat_checkpoints.db",
+                _CHAT_CHECKPOINT_DB,
                 90,
                 "ChatAgent对话checkpoint",
                 pipeline_protections=False,

@@ -1,0 +1,62 @@
+{
+  "code": 0,
+  "message": "Success",
+  "zpData": {
+    "durationConfig": [
+      {
+        "id": 1,
+        "deleted": 0,
+        "name": "1~3个月",
+        "code": 1
+      },
+      {
+        "id": 2,
+        "deleted": 0,
+        "name": "3~6个月",
+        "code": 2
+      },
+      {
+        "id": 3,
+        "deleted": 0,
+        "name": "6~12个月",
+        "code": 3
+      },
+      {
+        "id": 4,
+        "deleted": 0,
+        "name": "1年",
+        "code": 4
+      },
+      {
+        "id": 5,
+        "deleted": 0,
+        "name": "2年",
+        "code": 5
+      },
+      {
+        "id": 6,
+        "deleted": 0,
+        "name": "3年",
+        "code": 6
+      },
+      {
+        "id": 7,
+        "deleted": 0,
+        "name": "4年",
+        "code": 7
+      },
+      {
+        "id": 8,
+        "deleted": 0,
+        "name": "5年以上",
+        "code": 8
+      },
+      {
+        "id": 9,
+        "deleted": 0,
+        "name": "长期驻外",
+        "code": 9
+      }
+    ]
+  }
+}

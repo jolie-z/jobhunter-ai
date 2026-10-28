@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog"
 import { GROUP_META, type Tutorial } from "./system-config-meta"
 import { LlmDiagnoseButton } from "./llm-diagnose"
+import { FeishuFullGuideButton } from "./feishu-guide-link"
 import { useStrategyStore } from "@/hooks/use-strategy-store"
 import { apiFetch } from "@/lib/api"
 
@@ -592,6 +593,8 @@ export function SystemConfig() {
                 </DialogDescription>
               </DialogHeader>
 
+              {activeTutorial.fullGuide && <FeishuFullGuideButton />}
+
               <ol className="mt-4 space-y-4">
                 {activeTutorial.steps.map((step, i) => (
                   <li key={i} className="flex gap-3.5">
@@ -616,6 +619,7 @@ export function SystemConfig() {
           )}
         </DialogContent>
       </Dialog>
+
     </div>
   )
 }

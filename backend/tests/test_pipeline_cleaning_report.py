@@ -163,7 +163,7 @@ def test_build_master_pipeline_card_with_dedup_and_clean():
         channel_counts={"BOSS直聘": 20},
         grade_counts={"A": 4, "B": 2, "C": 5, "D/F": 6},
         mass_review_cnt=5,
-        other_review_cnt=6,
+        auto_delivered_cnt=6,
         dedup_count=1,
     )
 
@@ -202,7 +202,7 @@ def test_build_master_pipeline_card_anomaly_detection():
         channel_counts={"BOSS直聘": 20},
         grade_counts={"A": 4, "B": 2, "C": 2, "D/F": 2},  # 评估总数 10 条
         mass_review_cnt=2,
-        other_review_cnt=2,
+        auto_delivered_cnt=2,
         dedup_count=1,
     )
 
@@ -321,3 +321,31 @@ def test_orchestrator_send_task_report_ast_verification():
             assert "send_pipeline_master_card" in call_func_names
 
     assert found_func is True, "未在 pipeline_orchestrator.py 中找到 _send_task_report 函数定义！"
+
+
+def test_build_pipeline_report_ready_to_deliver_group():
+    """岗哨1 R1 P2：海投岗过安检停在「待投递」（outcome=ready_to_deliver）必须单独成组
+    「📬 待投递」，不再混入「⚠️ 提前终止」；error 恒空也不得把状态文案当失败原因展示。"""
+    started_at = datetime(2026, 10, 9, 14, 0, 0)
+    job_results = [
+        {"outcome": "ready_to_deliver", "error": "", "status": "待投递", "grade": "C",
+         "platform": "boss", "company_name": "海投过检公司", "job_name": "运营专员"},
+        {"outcome": "stopped", "error": "", "status": "已完成初步评估", "grade": "D",
+         "platform": "51job", "company_name": "门槛拦截公司", "job_name": "客服"},
+    ]
+    text = build_pipeline_report(
+        started_at=started_at,
+        scrape_counts={"BOSS直聘": 2},
+        disabled_platforms=[],
+        platform_cn={},
+        cleaning={"total": 2, "hard_passed": 2, "hard_rejected": 0, "ai_passed": 2, "ai_rejected": 0},
+        synced_count=2,
+        job_results=job_results,
+        aborted=False,
+        dedup_count=0,
+    )
+    assert "📬 待投递（1 条，已过安检，等发射波次自动投出）" in text
+    assert "海投过检公司" in text
+    stopped_block = text.split("⚠️ 提前终止", 1)[1] if "⚠️ 提前终止" in text else ""
+    assert "海投过检公司" not in stopped_block, "待投递岗不得混入提前终止组"
+    assert "门槛拦截公司" in stopped_block

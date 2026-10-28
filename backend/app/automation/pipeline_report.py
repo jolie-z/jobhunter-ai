@@ -24,6 +24,8 @@ OUTCOME_DELIVERED = "delivered"     # 已自动投递
 OUTCOME_WAITING = "waiting"         # 停在待审批断点
 OUTCOME_FAILED = "failed"           # 评估/投递失败
 OUTCOME_STOPPED = "stopped"         # 提前终止（如海投门槛）
+OUTCOME_READY_TO_DELIVER = "ready_to_deliver"  # 海投安检已过，停在待投递等发射波次
+OUTCOME_ABORTED = "aborted"         # 手动终止（2026-10-24 工单：与「提前终止」语义区分）
 
 
 def collect_cleaning_stats(raw_db_path: str, start_rowid: int) -> dict[str, int]:
@@ -106,7 +108,7 @@ def build_pipeline_report(
 
     lines = [
         "📊 全链路任务报告",
-        f"🕐 {started_at.strftime('%Y-%m-%d %H:%M')}{duration}",
+        f"🕐 {started_at.strftime('%Y-%m-%d %H:%M:%S')}{duration}",
     ]
     if aborted:
         lines.append("⛔ 本次任务被手动终止，以下为终止前已完成部分")
@@ -144,12 +146,20 @@ def build_pipeline_report(
         return "\n".join(lines)
 
     # ── 初评分布 ──
+    aborted_jobs = [j for j in job_results if j.get("outcome") == OUTCOME_ABORTED]
+    aborted_ungraded = [j for j in aborted_jobs if not (j.get("grade") or "").strip()]
     grade_dist: dict[str, int] = {}
     for j in job_results:
-        g = (j.get("grade") or "?").upper()
+        # 手动终止且未完成初评的岗位单列，不折算成「评估失败」（2026-10-24 工单）
+        if j.get("outcome") == OUTCOME_ABORTED and not (j.get("grade") or "").strip():
+            continue
+        # 空 grade = 评估失败（8维解析失败/LLM异常），不折算成任何评级
+        g = (j.get("grade") or "评估失败").upper()
         grade_dist[g] = grade_dist.get(g, 0) + 1
     dist_txt = " · ".join(f"{g} {n}" for g, n in sorted(grade_dist.items()))
-    lines.append(f"🧠 初评：共 {len(job_results)} 条 → {dist_txt}")
+    lines.append(f"🧠 初评：共 {len(job_results) - len(aborted_ungraded)} 条 → {dist_txt}")
+    if aborted_ungraded:
+        lines.append(f"⛔ 另手动终止 {len(aborted_ungraded)} 条（未完成初评，未计入）")
     lines.append("")
 
     # ── A/B 高价值岗位 ──
@@ -164,13 +174,20 @@ def build_pipeline_report(
                 line += "｜已自动投递"
             elif j.get("outcome") == OUTCOME_FAILED:
                 line += "｜失败"
+            elif j.get("outcome") == OUTCOME_ABORTED:
+                line += "｜手动终止"
             lines.append(line)
         lines.append("")
 
     # ── 已自动投递 ──
     delivered = [j for j in job_results if j.get("outcome") == OUTCOME_DELIVERED]
     if delivered:
-        lines.append(f"🚀 已自动投递（{len(delivered)} 条）：")
+        plat_dist: dict[str, int] = {}
+        for j in delivered:
+            p = str(j.get("platform") or "未知渠道")
+            plat_dist[p] = plat_dist.get(p, 0) + 1
+        plat_txt = " · ".join(f"{p} {n}" for p, n in plat_dist.items())
+        lines.append(f"🚀 已自动投递（{len(delivered)} 条：{plat_txt}）：")
         for i, j in enumerate(delivered, 1):
             lines.append(_fmt_job_line(i, j))
         lines.append("")
@@ -194,12 +211,27 @@ def build_pipeline_report(
             lines.append(_fmt_job_line(i, j, with_reason=True))
         lines.append("")
 
+    # ── 待投递（海投安检已过，等发射波次）──
+    ready = [j for j in job_results if j.get("outcome") == OUTCOME_READY_TO_DELIVER]
+    if ready:
+        lines.append(f"📬 待投递（{len(ready)} 条，已过安检，等发射波次自动投出）：")
+        for i, j in enumerate(ready, 1):
+            lines.append(_fmt_job_line(i, j))
+        lines.append("")
+
     # ── 提前终止 ──
     stopped = [j for j in job_results if j.get("outcome") == OUTCOME_STOPPED]
     if stopped:
         lines.append(f"⚠️ 提前终止（{len(stopped)} 条，如海投门槛/数据不全）：")
         for i, j in enumerate(stopped, 1):
             lines.append(_fmt_job_line(i, j))
+        lines.append("")
+
+    # ── 手动终止（2026-10-24 工单）：终止前已完成的成果照常统计，未执行完的岗位单列 ──
+    if aborted_jobs:
+        lines.append(f"⛔ 手动终止（{len(aborted_jobs)} 条，后续节点未执行）：")
+        for i, j in enumerate(aborted_jobs, 1):
+            lines.append(_fmt_job_line(i, j, with_reason=True))
         lines.append("")
 
     return "\n".join(lines).rstrip()
@@ -248,6 +280,7 @@ async def send_pipeline_master_card(
     dedup_count: int = 0,
     rejected_ids: list[str] | None = None,
     trigger_source: str = "scheduled",
+    aborted: bool = False,
 ) -> bool:
     """构建【全链路指挥中心 · 定时任务/手动即时任务】Card 2.0 主战报卡片并推送至飞书群。"""
     try:
@@ -264,7 +297,9 @@ async def send_pipeline_master_card(
             return False
 
         duration_mins = max(1, int((datetime.now() - started_at).total_seconds() // 60))
-        task_time_str = started_at.strftime("%Y-%m-%d %H:%M")
+        # 精确到秒（2026-10-10 用户需求 3.1）：肉眼可验证真实触发时刻——用户此前连续
+        # 看到整点（真实整点触发）误以为显示被取整；秒级时间戳自证无舍入
+        task_time_str = started_at.strftime("%Y-%m-%d %H:%M:%S")
 
         total_scraped = sum(scrape_counts.values()) if scrape_counts else cleaning.get("total", 0)
         hard_rejected = cleaning.get("hard_rejected", 0)
@@ -273,36 +308,89 @@ async def send_pipeline_master_card(
         ai_passed = cleaning.get("ai_passed", max(0, hard_passed - ai_rejected))
 
         # 统计评级与精投岗位
+        # 分桶口径（2026-10-23 修复，pipeline_63487fa1 事故）：待审批桶以闸门挂起类型
+        # （review_kind，graph_runner 审批断点写入）为事实源，与桌面待审批 tab（跟进状态
+        # 含「复核」）同口径；旧版按评级 C/D/F 分桶——D 级大厂拦截岗（挂「海投人工复核」
+        # 停审批断点）被误报进「其他情况已自动投递」，C 级已投递岗被虚报为待审批，
+        # 「海投规则审批」计数恒等于 C 级岗位数、与文案语义脱节且放行卡为空。
+        # 评级此后只用于「初评梯队」展示行，不再充当投递/待审批判据。
         grade_counts: dict[str, int] = {}
         precision_cnt = 0
         mass_review_cnt = 0
-        other_cnt = 0
         ab_record_ids: list[str] = []
         mass_record_ids: list[str] = []
 
+        eval_failed_cnt = 0
         for j in job_results:
-            g = str(j.get("grade") or "D").upper()
+            # 评估失败（8维解析失败/LLM异常）grade 为空串：绝不折算进 D/F 桶伪装成
+            # 真实评级（2026-10-10），单列「评估失败」交由执行失败 tab 重试
+            g = str(j.get("grade") or "").upper()
             rid = extract_job_record_id(j)
             if not rid:
                 logger.warning(f"[PipelineReport] 岗位缺失有效 record_id: {j.get('job_name')}")
+            if not g:
+                # 手动终止且未完成初评的岗位单列，不计入「评估失败」（2026-10-24 工单）
+                if j.get("outcome") == OUTCOME_ABORTED:
+                    continue
+                eval_failed_cnt += 1
+                continue
+            # 初评梯队展示行：纯评级分布，与投递/待审批去向解耦
             if g in ("A", "B"):
                 precision_cnt += 1
                 grade_counts[g] = grade_counts.get(g, 0) + 1
-                if rid:
-                    ab_record_ids.append(rid)
             elif g == "C":
                 grade_counts["C"] = grade_counts.get("C", 0) + 1
-                mass_review_cnt += 1
-                if rid:
-                    mass_record_ids.append(rid)
             else:
                 grade_counts["D/F"] = grade_counts.get("D/F", 0) + 1
-                other_cnt += 1
+
+            # 待审批分桶：review_kind 为事实源；缺失时兜底——A/B 视为精投审批，其余视为海投审批
+            if j.get("outcome") == OUTCOME_WAITING:
+                review_kind = str(j.get("review_kind") or "").strip()
+                is_mass_review = review_kind == "mass_review" or (
+                    not review_kind and g not in ("A", "B")
+                )
+                if is_mass_review:
+                    mass_review_cnt += 1
+                    if rid:
+                        mass_record_ids.append(rid)
+                elif rid:
+                    ab_record_ids.append(rid)
 
         # 淘汰候选清单：仅收阶段 2 清洗/AI 排雷淘汰 ID（rowid），保序去重防截断窗口重复占位。
         # 初评 D/F 级不并入——流水线把 D/F 走海投轨正常流转（待投递/复核/已投递），
         # 并入会把活跃岗位误标成「淘汰:规则清洗拦截」，且召回已投递岗会污染状态。
         combined_rejected_ids = list(dict.fromkeys(rejected_ids or []))
+
+        # 自动投递执行情况（2026-10-10 用户需求 3.2/3.4）：即时任务会真实发生投递动作，
+        # 报告必须体现投了多少、成败多少、败因是什么——数据以运行时 job_results 为源
+        delivered_jobs = [j for j in job_results if j.get("outcome") == OUTCOME_DELIVERED]
+        delivery_failed_jobs = [j for j in job_results if j.get("outcome") == OUTCOME_FAILED]
+        delivered_by_platform: dict[str, int] = {}
+        delivered_record_ids: list[str] = []
+        for j in delivered_jobs:
+            platform = str(j.get("platform") or "未知渠道")
+            delivered_by_platform[platform] = delivered_by_platform.get(platform, 0) + 1
+            rid = extract_job_record_id(j)
+            if rid:
+                delivered_record_ids.append(rid)
+        delivery_fail_reasons: dict[str, int] = {}
+        for j in delivery_failed_jobs:
+            reason = str(j.get("error") or "").strip()[:30] or "未知原因"
+            delivery_fail_reasons[reason] = delivery_fail_reasons.get(reason, 0) + 1
+            # 失败岗位同样进详情卡按钮值（R1 审查 P1：漏提会导致详情卡永远看不到失败明细，
+            # 全败时更会误显「本轮无自动投递岗位」）
+            rid = extract_job_record_id(j)
+            if rid:
+                delivered_record_ids.append(rid)
+
+        # 「已执行自动投递」= 真实投递成功数（outcome==delivered），不再是 D/F 评级的代名词；
+        # 已过安检停在「待投递」等发射波次的岗位单列（定时链路的正常终点）
+        auto_delivered_cnt = len(delivered_jobs)
+        ready_to_deliver_cnt = sum(1 for j in job_results if j.get("outcome") == OUTCOME_READY_TO_DELIVER)
+        # 手动终止（2026-10-24 工单）：主战报卡片必须带终止横幅，且未完成初评的终止岗
+        # 不能计入「评估异常中断」（否则终止会被误报成故障）。
+        aborted_jobs = [j for j in job_results if j.get("outcome") == OUTCOME_ABORTED]
+        aborted_ungraded_cnt = sum(1 for j in aborted_jobs if not (j.get("grade") or "").strip())
 
         card = build_master_pipeline_card(
             task_time=task_time_str,
@@ -316,12 +404,21 @@ async def send_pipeline_master_card(
             channel_counts=scrape_counts,
             grade_counts=grade_counts,
             mass_review_cnt=mass_review_cnt,
-            other_review_cnt=other_cnt,
+            auto_delivered_cnt=auto_delivered_cnt,
+            ready_to_deliver_cnt=ready_to_deliver_cnt,
             dedup_count=dedup_count,
             ab_record_ids=ab_record_ids,
             mass_record_ids=mass_record_ids,
             rejected_record_ids=combined_rejected_ids,
+            delivered_record_ids=delivered_record_ids,
+            delivered_by_platform=delivered_by_platform,
+            delivery_fail_reasons=delivery_fail_reasons,
+            delivery_fail_cnt=len(delivery_failed_jobs),
+            eval_failed_cnt=eval_failed_cnt,
             trigger_source=trigger_source,
+            aborted=aborted,
+            aborted_cnt=len(aborted_jobs),
+            aborted_ungraded_cnt=aborted_ungraded_cnt,
         )
 
         ok = await send_feishu_card(

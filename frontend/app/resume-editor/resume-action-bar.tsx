@@ -12,6 +12,8 @@ import {
 } from "lucide-react"
 import type { ResumeOption } from "./agent-report-shared"
 import { MasterPreviewButton } from "./master-preview"
+import { AgentMapStatusModal } from "./agent-map-status-modal"
+import { useAgentMapStream, type AgentMapTerminalResult } from "./use-agent-map-stream"
 
 export const PLATFORM_NAMES: Record<string, string> = {
   boss: "BOSS直聘",
@@ -131,6 +133,7 @@ export function ResumeActionBar({
   const [resumesLoading, setResumesLoading] = useState(false)
   const [selectedModules, setSelectedModules] = useState<string[]>(DEFAULT_SELECTED_MODULES)
   const [mapping, setMapping] = useState(false)
+  const [mappingModalOpen, setMappingModalOpen] = useState(false)
 
   // 获取飞书主简历列表
   const fetchResumes = async () => {
@@ -181,7 +184,31 @@ export function ResumeActionBar({
     )
   }
 
-  // 触发生成映射报告
+  // 触发生成映射报告（Phase 4 异步化：秒回 task_id，进度经 SSE 推送到弹窗，可协作取消）
+  const handleMappingTerminal = (r: AgentMapTerminalResult) => {
+    setMapping(false)
+    // 无论整体成败，只要本次执行过就通知各 Tab 刷新报告（部分失败/取消时已完成平台的报告也要可见）
+    onReportGenerated()
+    if (r.cancelled) {
+      showToast("映射任务已取消，已完成平台的报告已保留", "info")
+      return
+    }
+    const reports = r.reports || {}
+    const attempted = Object.keys(reports).length > 0 ? Object.keys(reports) : (r.platforms || [])
+    const failed = attempted
+      .filter((p) => reports[p] && reports[p].success === false)
+      .map((p) => `${PLATFORM_NAMES[p] || p}生成映射失败：${String(reports[p].message || "失败").slice(0, 80)}`)
+    const okCount = attempted.length - failed.length
+    if (failed.length > 0) {
+      showToast(failed.join("；") + (okCount > 0 ? `；其余${okCount}个平台已生成` : ""), "error")
+    } else if (r.ok) {
+      showToast(`已成功为【${attempted.map(p => PLATFORM_NAMES[p] || p).join("、")}】生成映射报告，请在对应平台 Tab 查阅并确认！`, "success")
+    } else {
+      showToast(r.message || "映射生成失败", "error")
+    }
+  }
+  const mappingStream = useAgentMapStream(apiBase, handleMappingTerminal)
+
   const handleGenerateMapping = async () => {
     const platforms = Object.entries(selectedPlatforms).filter(([, v]) => v).map(([k]) => k)
     if (platforms.length === 0) {
@@ -194,39 +221,16 @@ export function ResumeActionBar({
     }
 
     setMapping(true)
-    try {
-      const res = await fetch(`${apiBase}/api/agent-map/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          platforms,
-          record_id: selectedRecordId,
-          selected_modules: selectedModules,
-        }),
-      })
-      const result = await res.json()
-      // 无论整体成败，只要本次执行过就通知各 Tab 刷新报告（部分失败时成功平台的报告也要可见）
-      onReportGenerated()
-      const reports = (result.reports || {}) as Record<string, any>
-      if (result.success) {
-        const names = platforms.map(p => PLATFORM_NAMES[p] || p).join("、")
-        showToast(`已成功为【${names}】生成映射报告，请在对应平台 Tab 查阅并确认！`, "success")
-      } else {
-        const failed = platforms
-          .filter((p) => reports[p] && reports[p].success === false)
-          .map((p) => `${PLATFORM_NAMES[p] || p}生成映射失败：${String(reports[p].message || "失败").slice(0, 80)}`)
-        const okCount = platforms.length - failed.length
-        if (failed.length > 0) {
-          const tail = okCount > 0 ? `；其余${okCount}个平台已生成` : ""
-          showToast(failed.join("；") + tail, "error")
-        } else {
-          showToast(result.message || "映射生成失败", "error")
-        }
-      }
-    } catch (e: any) {
-      showToast("映射请求网络异常: " + (e?.message || e), "error")
-    } finally {
+    const outcome = await mappingStream.start({ platforms, record_id: selectedRecordId, selected_modules: selectedModules })
+    if (outcome.started) {
+      setMappingModalOpen(true)
+    } else if (outcome.syncResult) {
+      // 回滚态（AGENT_MAP_ASYNC_ENABLED=false）：同步返回完整结果，沿用同一终态处理
+      const sr = outcome.syncResult
+      handleMappingTerminal({ ok: sr.success === true, cancelled: false, reports: sr.reports || {}, platforms, message: sr.message })
+    } else {
       setMapping(false)
+      showToast(outcome.error || "映射生成失败", "error")
     }
   }
 
@@ -509,6 +513,16 @@ export function ResumeActionBar({
             </div>
           </div>
         </div>
+
+        <AgentMapStatusModal
+          open={mappingModalOpen}
+          onClose={() => setMappingModalOpen(false)}
+          onCancel={mappingStream.cancel}
+          state={mappingStream.state}
+          platformOrder={["boss", "liepin", "51job", "zhilian"]}
+          platformNames={PLATFORM_NAMES}
+          platformColors={PLATFORM_COLORS}
+        />
       </CardContent>
     </Card>
   )

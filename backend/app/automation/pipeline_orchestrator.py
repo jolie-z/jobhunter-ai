@@ -135,6 +135,8 @@ async def _execute_pipeline(
                     dedup_count=dedup_count,
                     rejected_ids=actual_rejected_ids,
                     trigger_source=trigger_source,
+                    # 2026-10-24 工单：主卡片是飞书侧第一事实源，终止轮次必须带手动终止横幅
+                    aborted=abort_mod.is_aborted(),
                 )
                 if not card_ok:
                     await pr.send_pipeline_report(text)
@@ -170,7 +172,7 @@ async def _execute_pipeline(
                         dict(r) for r in _c.execute(
                             "SELECT rowid, platform, job_title, company_name, salary, city, "
                             "education_req, experience_req, jd_text, job_link, process_status, reject_reason "
-                            "FROM raw_jobs WHERE rowid > ? AND process_status IN ('清洗淘汰', 'ai清洗淘汰')",
+                            "FROM raw_jobs WHERE rowid > ? AND process_status IN ('清洗淘汰', 'ai清洗淘汰')",  # 本轮清洗语义,词表见 app/core/process_status
                             (start_rowid,)
                         ).fetchall()
                     ]
@@ -337,8 +339,14 @@ async def _execute_pipeline(
         await _send_task_report(job_results, dedup_count=dedup_count, rejected_ids=rejected_rowids)
 
         await pb.emit_stage(pipeline_task_id, "done", "done")
-        await pb.emit_end(pipeline_task_id, {"jobs": len(new_jobs)})
-        complete_autopilot_log(log_task_id, "success", len(new_jobs), f"已派发 {len(new_jobs)} 个岗位流水线")
+        # 2026-10-24 工单：评估/投递阶段被终止时，台账与结束事件必须如实标注，
+        # 不能把「手动终止」记成 success。
+        if abort_mod.is_aborted():
+            await pb.emit_end(pipeline_task_id, {"reason": "aborted", "jobs": len(new_jobs)})
+            complete_autopilot_log(log_task_id, "failed", len(new_jobs), "手动终止")
+        else:
+            await pb.emit_end(pipeline_task_id, {"jobs": len(new_jobs)})
+            complete_autopilot_log(log_task_id, "success", len(new_jobs), f"已派发 {len(new_jobs)} 个岗位流水线")
 
     except Exception as e:
         logger.error(f"🚨 [FullAuto] 链路崩溃: {e}", exc_info=True)

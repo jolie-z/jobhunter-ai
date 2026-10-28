@@ -183,20 +183,37 @@ def _find_chromium_executable() -> str | None:
 
 
 async def _launch_browser(playwright: Playwright) -> Browser:
-    """Launch Chromium, falling back to system Chrome if Playwright's isn't installed."""
+    """启动渲染内核：首选系统 Edge 通道（零下载），逐级回退 playwright chromium 与系统 Chrome。
+
+    2026-10-06 patchright 回退配套：本应用抓取/投递本就依赖真实 Edge（Win11 预装、
+    mac 需安装），PDF 渲染并入同一依赖，消灭首启 `playwright install chromium` 下载。
+    回退不对异常文案做匹配（对 driver 版本/文案变动脆弱）：任何 PlaywrightError
+    都记 warning 后进入下一级，全部失败才抛 PDFRenderError 汇总原因。
+    """
+    errors: list[str] = []
+    try:
+        return await playwright.chromium.launch(channel="msedge")
+    except PlaywrightError as e:
+        errors.append(f"msedge 通道: {e}")
+        logger.warning(f"Edge 通道启动失败，尝试回退 playwright chromium: {e}")
     try:
         return await playwright.chromium.launch()
     except PlaywrightError as e:
-        if "Executable doesn't exist" not in str(e):
-            raise
-        fallback = _find_chromium_executable()
-        if not fallback:
-            raise PDFRenderError(
-                "Playwright browser executable is missing, and no system Chrome/Edge "
-                "installation was found. Run: python -m playwright install chromium"
-            ) from e
-        logger.info(f"Using system browser: {fallback}")
-        return await playwright.chromium.launch(executable_path=fallback)
+        errors.append(f"playwright chromium: {e}")
+        logger.warning(f"playwright chromium 启动失败，尝试回退系统浏览器: {e}")
+    fallback = _find_chromium_executable()
+    if fallback:
+        try:
+            logger.info(f"Using system browser: {fallback}")
+            return await playwright.chromium.launch(executable_path=fallback)
+        except PlaywrightError as e:
+            errors.append(f"系统浏览器 {fallback}: {e}")
+    else:
+        errors.append("系统浏览器: 未找到系统 Chrome/Edge 安装路径")
+    raise PDFRenderError(
+        "未找到可用浏览器内核（msedge 通道/playwright chromium/系统浏览器依次失败），"
+        "请安装 Microsoft Edge 后重试。详情: " + " | ".join(errors)
+    )
 
 
 # ---------------------------------------------------------------------------

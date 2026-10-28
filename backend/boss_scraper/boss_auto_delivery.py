@@ -26,11 +26,13 @@ from app.core.feishu_utils import download_feishu_file
 from DrissionPage import ChromiumPage, ChromiumOptions
 
 from engine_guard import EngineGuardError, verify_browser_identity
+from app.core.db_paths import writable_path
 
 BOSS_HOME_URL = "https://www.zhipin.com/"
-TEMP_DIR = os.path.join(_PROJECT_ROOT, "temp_resumes")
+# db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
+TEMP_DIR = writable_path(os.path.join(_PROJECT_ROOT, "temp_resumes"), "temp_resumes")
 # 🌟 核心突破：创建一个专门存储 BOSS 浏览器状态的物理隔离文件夹
-PROFILE_DIR = os.path.join(_PROJECT_ROOT, "data", "profiles", "boss")
+PROFILE_DIR = writable_path(os.path.join(_PROJECT_ROOT, "data", "profiles", "boss"), "profiles/boss")
 os.makedirs(PROFILE_DIR, exist_ok=True)
 
 # ==========================================

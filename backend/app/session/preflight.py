@@ -27,7 +27,8 @@ import logging
 import os
 import time
 
-from .browser import launch_edge
+from .browser import close_edge, launch_edge
+from .cdp_probe import probe_cdp_channel
 from .health_checker import (
     check_liepin_login_evidence,
     check_login_with_fallback,
@@ -100,6 +101,61 @@ async def _notify_login_needed(items: list, wait_s: int) -> None:
         logger.warning("[preflight] 登录失效通知未能送达飞书（详见控制台降级输出）")
 
 
+async def _log_preflight(msg: str, emit_log=None) -> None:
+    logger.info(f"[preflight] {msg}")
+    if emit_log:
+        try:
+            await emit_log(msg)
+        except Exception:
+            pass
+
+
+async def _ensure_browser_ready(config, emit_log=None) -> bool:
+    """端口探活 + CDP 命令通道探活 → 按需优雅重启僵尸 / 拉起新浏览器，等待就绪。
+
+    Returns:
+        True=浏览器可用（CDP 命令通道就绪）；False=按不可用处理。
+    僵尸判定与自愈（2026-10-08 51job 事故）：端口通但 CDP 命令永不响应（HTTP 活着、
+    websocket 死了）时，TCP/HTTP 探活全绿，引擎附着即挂满超时——唯一修复是重启浏览器。
+    """
+    port_ok = await asyncio.to_thread(probe_port, config.port)
+    restarting_from_zombie = False
+    if port_ok:
+        channel = await asyncio.to_thread(probe_cdp_channel, config.port)
+        if channel == "alive":
+            return True
+        if channel == "zombie":
+            await _log_preflight(
+                f"🧟 {config.display_name} 端口 {config.port} CDP 命令通道僵死（HTTP 通但命令不应答），优雅重启浏览器…",
+                emit_log,
+            )
+            try:
+                await asyncio.to_thread(close_edge, config)
+            except Exception as e:
+                await _log_preflight(f"⚠️ {config.display_name} 旧浏览器关闭失败（仍尝试重新拉起）: {e}", emit_log)
+            # 端口释放窗口：close_edge 已等进程退出，这里再留缓冲防 SingletonLock 竞争
+            await asyncio.sleep(2)
+            restarting_from_zombie = True
+        # channel == "down"：端口通 TCP 但 HTTP 层确定无服务，与未监听同走拉起路径
+
+    if restarting_from_zombie:
+        await _log_preflight(f"♻️ {config.display_name} 僵尸浏览器已关闭，重新拉起…", emit_log)
+    else:
+        await _log_preflight(f"🌐 {config.display_name} 端口 {config.port} 未监听，自动拉起浏览器…", emit_log)
+    try:
+        await asyncio.to_thread(launch_edge, config)
+    except Exception as e:
+        await _log_preflight(f"❌ {config.display_name} 浏览器拉起失败: {e}", emit_log)
+        return False
+    for _ in range(30):
+        await asyncio.sleep(1)
+        if await asyncio.to_thread(probe_port, config.port):
+            await _log_preflight(f"✓ {config.display_name} 浏览器已就绪（端口 {config.port}）", emit_log)
+            return True
+    await _log_preflight(f"❌ {config.display_name} 浏览器 30 秒内未就绪，按不可用处理", emit_log)
+    return False
+
+
 async def ensure_platforms_ready(platforms: list, emit_log=None) -> dict:
     """
     逐平台保障登录态，返回 {平台key: 是否可用}。
@@ -169,27 +225,10 @@ async def ensure_platforms_ready(platforms: list, emit_log=None) -> dict:
             await _log(f"✅ {config.display_name} 无需登录，豁免预检登录校验")
             continue
 
-        # 1. 端口探测 → 不通则自动拉起并等待就绪
-        port_ok = await asyncio.to_thread(probe_port, config.port)
-        if not port_ok:
-            await _log(f"🌐 {config.display_name} 端口 {config.port} 未监听，自动拉起浏览器…")
-            try:
-                await asyncio.to_thread(launch_edge, config)
-            except Exception as e:
-                await _log(f"❌ {config.display_name} 浏览器拉起失败: {e}")
-                results[key] = False
-                continue
-            ready = False
-            for _ in range(30):
-                await asyncio.sleep(1)
-                if await asyncio.to_thread(probe_port, config.port):
-                    ready = True
-                    break
-            if not ready:
-                await _log(f"❌ {config.display_name} 浏览器 30 秒内未就绪，按不可用处理")
-                results[key] = False
-                continue
-            await _log(f"✓ {config.display_name} 浏览器已就绪（端口 {config.port}）")
+        # 1. 浏览器探活/拉起/僵尸自愈（共用 _ensure_browser_ready）
+        if not await _ensure_browser_ready(config, emit_log):
+            results[key] = False
+            continue
 
         # 1.5 确保至少存在 1 个活跃标签页，防止 CDP 连接因 0 标签页失败
         try:
@@ -270,5 +309,162 @@ async def ensure_platforms_ready(platforms: list, emit_log=None) -> dict:
             await _log(f"⛔ {config.display_name} 等待超时仍未生成 Cookie 文件，本次任务跳过该平台")
         else:
             await _log(f"⛔ {config.display_name} 等待超时仍未登录，本次任务跳过该平台（{status.message}）")
+
+    return results
+
+
+# ==========================================
+# 批次级投递预检（定时发射 / 手动批量 / delivery_node 逐岗共用，2026-10-08/09）
+# ==========================================
+
+# 预检成功 TTL 缓存：delivery_node 逐岗调用时避免每岗全量探活/登录判定。
+# 只缓存成功——失败/超时不进缓存，下次调用照常全检。
+# 失效机制（CR R1 P1）：命中时保留 probe_port 最小探活兜底（浏览器被关/僵尸可当场识破）；
+# close-all 等主动关闭路径须调 clear_platform_ready_cache 清缓存。
+# 失败冷却（CR R1 P2）：未就绪平台 30s 内直接判失败，不重进等待窗口，防逐岗串行阻塞。
+_READY_TTL_S = 300
+_NOT_READY_COOLDOWN_S = 30
+_ready_cache: dict[str, float] = {}
+_notready_until: dict[str, float] = {}
+
+
+def clear_platform_ready_cache(platform: str | None = None) -> None:
+    """主动关闭浏览器/登出/手动唤起等场景调用：清投递预检状态（成功缓存 + 失败冷却）。
+
+    只清成功缓存不清冷却 → 手动唤起扫码后仍会被残余冷却拦 ≤30s（CR R2 P2），两者同步清。"""
+    if platform is None:
+        _ready_cache.clear()
+        _notready_until.clear()
+    else:
+        _ready_cache.pop(platform, None)
+        _notready_until.pop(platform, None)
+
+
+async def ensure_delivery_platforms_ready(platforms: list, emit_log=None) -> dict:
+    """投递发射前的平台就绪预检：浏览器探活/自愈 + 登录态判定 + 失效等待窗口。
+
+    与抓取预检 ensure_platforms_ready 的差异：
+    - 无登录豁免：投递需要登录态。猎聘（抓取侧 requires_login=False）在此改用
+      check_liepin_login_evidence 做 cookie 键实证——浏览器 UP 时 CDP 直读内存
+      cookie，等待窗口内用户扫码落账即时感知；浏览器 DOWN 时离线读 profile 库。
+      实证失效时先尝试本地 Cookie 文件注入一次（浏览器已就绪），仍失效才进等待窗口。
+    - 抓取豁免平台（小红书等）不在投递平台集合内，天然不经过本函数。
+    - 成功结果 TTL 缓存（_READY_TTL_S）：delivery_node 逐岗接线后同平台短时间重复
+      调用免重探。
+
+    Returns:
+        {平台key: 是否可用}。不可用平台调用方应跳过其岗位：保留飞书「待投递」门牌，
+        在「自动投递失败日志」记 [环境] 跳过原因，下轮波次自然重试。
+    """
+    async def _log(msg: str):
+        await _log_preflight(msg, emit_log)
+
+    results: dict = {}
+    pending: dict = {}  # 平台key -> (config, status)
+    injection_attempted: set[str] = set()  # 猎聘 JSON 注入每轮预检至多尝试一次
+
+    async def _judge(config) -> SessionStatus:
+        """单平台登录判定：猎聘走 cookie 键实证，其余平台走 DOM+cookie 兜底。"""
+        if config.name == "liepin":
+            ok = await asyncio.to_thread(check_liepin_login_evidence)
+            return SessionStatus(
+                platform=config.name,
+                state=SessionState.HEALTHY if ok else SessionState.EXPIRED,
+                message="猎聘登录实证通过" if ok else "猎聘登录实证失效（登录 cookie 键缺失/过期），需扫码登录",
+            )
+        return await asyncio.to_thread(check_login_with_fallback, config)
+
+    async def _judge_with_injection(config, key: str) -> SessionStatus:
+        """猎聘专用：实证失效先尝试 JSON 注入一次再复测（浏览器已就绪），仍失效才进等待窗口。
+
+        2026-10-09 猎聘 22:30 事故补环：引擎内 ensure_login 的注入逻辑流程上死在更早的
+        无浏览器/守卫环节——预检把浏览器拉起后主动补一针注入，JSON 新鲜时直接恢复登录，
+        不用等用户扫码。每轮预检至多注入一次（等待窗口轮询复检不再重复注入）。
+        """
+        status = await _judge(config)
+        if status.state in _OK_STATES or config.name != "liepin" or key in injection_attempted:
+            return status
+        injection_attempted.add(key)
+        await _log(f"🍪 [投递预检] {config.display_name} 登录实证失效，尝试本地 Cookie 文件注入…")
+        try:
+            import liepin_session  # DrissionPage 重导入，惰性加载
+            ok = await asyncio.to_thread(liepin_session.inject_cookies_if_needed)
+        except Exception as inj_e:
+            await _log(f"⚠️ {config.display_name} Cookie 注入异常（继续走等待窗口）: {inj_e}")
+            return status
+        if ok:
+            await _log(f"🍪 [投递预检] {config.display_name} Cookie 注入成功，登录态已恢复")
+        return await _judge(config)
+
+    for key in platforms:
+        config = resolve_platform(key)
+        if config is None:
+            await _log(f"⚠️ 平台 {key} 无 registry 配置，按不可用处理")
+            results[key] = False
+            continue
+
+        # 0a. 失败冷却：短期内刚判过未就绪 → 直接失败，不重进等待窗口（防逐岗串行阻塞）
+        cool_until = _notready_until.get(key)
+        if cool_until is not None and time.monotonic() < cool_until:
+            results[key] = False
+            await _log(f"⛔ [投递预检] {config.display_name} 处于未就绪冷却期（{_NOT_READY_COOLDOWN_S}s），本轮直接跳过")
+            continue
+
+        # 0b. 成功 TTL 缓存命中 → 免全量重探，但保留 probe_port 最小兜底（防缓存期浏览器被关/僵死穿透）
+        last_ok = _ready_cache.get(key)
+        if last_ok is not None and (time.monotonic() - last_ok) < _READY_TTL_S:
+            if await asyncio.to_thread(probe_port, config.port):
+                results[key] = True
+                await _log(f"⚡ [投递预检] {config.display_name} {_READY_TTL_S}s 内已验证就绪（缓存命中且端口存活），跳过重探")
+                continue
+            _ready_cache.pop(key, None)
+            await _log(f"⚠️ [投递预检] {config.display_name} 缓存期内端口已失活，缓存作废走全检")
+
+        # 1. 浏览器探活/僵尸自愈/拉起
+        if not await _ensure_browser_ready(config, emit_log):
+            results[key] = False
+            _notready_until[key] = time.monotonic() + _NOT_READY_COOLDOWN_S
+            continue
+
+        # 2. 登录判定（猎聘实证失效先注入一次再复测）
+        status = await _judge_with_injection(config, key)
+        if status.state in _OK_STATES:
+            results[key] = True
+            _ready_cache[key] = time.monotonic()
+            await _log(f"✅ [投递预检] {config.display_name} 就绪（{status.message}）")
+        else:
+            pending[key] = (config, status)
+
+    # 3. 失效平台：发一条飞书汇总 + 一个等待窗口（窗口内轮询复检，浏览器 UP 走 CDP 实时判定）
+    if pending:
+        wait_s = _wait_seconds()
+        await _notify_login_needed(
+            [(c, s, _PENDING_KIND_LOGIN) for c, s in pending.values()], wait_s,
+        )
+        names = "、".join(c.display_name for c, _ in pending.values())
+        await _log(f"⚠️ [投递预检] 登录态异常: {names}；已发飞书通知，等待 {wait_s} 秒内手动登录…")
+
+        from app.automation import abort as abort_mod  # 惰性导入，避免模块级循环依赖
+
+        deadline = time.monotonic() + wait_s
+        while pending and time.monotonic() < deadline:
+            if abort_mod.is_aborted():
+                await _log("🛑 检测到全链路终止信号，投递预检等待提前结束，未恢复平台按跳过处理")
+                break
+            await asyncio.sleep(_poll_seconds())
+            for key in list(pending):
+                config, _ = pending[key]
+                status = await _judge(config)
+                if status.state in _OK_STATES:
+                    results[key] = True
+                    _ready_cache[key] = time.monotonic()
+                    del pending[key]
+                    await _log(f"🎉 [投递预检] {config.display_name} 登录已恢复，纳入本轮发射")
+
+    # 4. 窗口结束仍未恢复 → 本轮跳过（岗位保留「待投递」，下轮波次自然重试）
+    for key, (config, status) in pending.items():
+        results[key] = False
+        _notready_until[key] = time.monotonic() + _NOT_READY_COOLDOWN_S
+        await _log(f"⛔ [投递预检] {config.display_name} 等待超时仍未登录，本轮发射跳过该平台（{status.message}）")
 
     return results

@@ -59,7 +59,13 @@ async def batch_process(payload: BatchTaskRequest, background_tasks: BackgroundT
 
 @router.get("/status")
 def get_task_status(task_id: str | None = None):
-    """短轮询接口：查询当前是否有后台任务正在执行，支持无参自动探活"""
+    """短轮询接口：查询当前是否有后台任务正在执行，支持无参自动探活。
+
+    background 字段聚合三类「系统被谁占用」信号，供前端横幅感知并发撞车风险：
+    - activities: 定时投递等后台批量活动登记（此前对前端完全不可见）
+    - pipeline:   全链路自动化运行态（定时侦察/手动全链路共用）
+    - llm_gate:   LLM 闸门实时水位（并发槽/令牌/429 冷却窗）
+    """
     is_proc = GLOBAL_TASK_STATE.get("is_processing", False)
     current_tid = GLOBAL_TASK_STATE.get("current_task_id")
     target_id = task_id or current_tid or GLOBAL_TASK_STATE.get("last_completed_task_id")
@@ -71,6 +77,28 @@ def get_task_status(task_id: str | None = None):
     if target_id and target_id in task_status:
         res["task"] = task_status[target_id]
         res["task_id"] = target_id
+
+    try:
+        from app.tasks.state import get_background_activities
+        activities = get_background_activities()
+    except Exception:
+        activities = []
+    try:
+        from app.automation import pipeline_broadcast as pb
+        pipeline_state = pb.get_current_pipeline()
+    except Exception:
+        pipeline_state = {"task_id": None, "running": False}
+    try:
+        from app.core.llm_gate import get_llm_gate
+        gate_stats: dict[str, Any] = get_llm_gate().stats()
+    except Exception:
+        gate_stats = {}
+
+    res["background"] = {
+        "activities": activities,
+        "pipeline": pipeline_state,
+        "llm_gate": gate_stats,
+    }
     return res
 
 @router.get("/logs")

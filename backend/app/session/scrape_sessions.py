@@ -11,7 +11,9 @@ import os
 import sqlite3
 from datetime import datetime
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "job_hunter.db")
+from app.core.db_paths import job_hunter_db_path
+
+DB_PATH = job_hunter_db_path(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "job_hunter.db"))
 
 
 def init_scrape_sessions_table():

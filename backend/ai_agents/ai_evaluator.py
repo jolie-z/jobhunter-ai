@@ -11,28 +11,36 @@ AI 评估引擎 - 独立的岗位智能评估模块
 4. 将评估结果回写到飞书多维表格总表
 """
 
-import os
-import sys
-import json
-import time
-import random
 import argparse
-import requests # 🌟 新增 requests 用于拉取云端简历
+import json
+import os
+import random
+import sys
+import time
+
+import requests  # 🌟 新增 requests 用于拉取云端简历
+
 # 🌟 引入 Python 结构化粗筛引擎（双保险）
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
+from app.core.config import settings
+from app.core.feishu_utils import (
+    extract_feishu_text,
+    get_tenant_access_token,
+    grade_meets_threshold,
+)
+from app.core.llm_client import get_openai_client
+from app.services.feishu_service import get_new_leads_from_feishu, update_feishu_record
 from job_processor.structural_filter import StructuralFilterEngine
+
 # 🌟 引入外部搜索函数
 # 🌟 引入外部搜索函数
 from .ai_scorer import deep_evaluate_resume, get_user_preferences
-from app.core.feishu_utils import grade_meets_threshold
-from .company_intel import fetch_company_intel  # 公司情报统一入口：Serper 主引擎 + Tavily 降级
-from .engine_facade import process_resume_rewrite, process_greeting_generation
-from app.core.feishu_utils import extract_feishu_text, get_tenant_access_token
-from app.services.feishu_service import update_feishu_record, get_new_leads_from_feishu
-from app.core.config import settings
-from app.core.llm_client import get_openai_client
+from .company_intel import (
+    fetch_company_intel,  # 公司情报统一入口：Serper 主引擎 + Tavily 降级
+)
+from .engine_facade import process_greeting_generation, process_resume_rewrite
 
 # 🌟 配置统一走 settings 动态读取：sync_settings_to_runtime() 会原地更新 settings 单例，
 # 配置页保存后即时生效；不再在模块级冻结快照（旧快照会让 UI 配置永远读不到）
@@ -56,7 +64,7 @@ def load_resume():
         if not token:
             print("❌ 获取飞书 Token 失败，无法读取云端简历")
             return None
-            
+
         url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{settings.FEISHU_APP_TOKEN}/tables/{settings.FEISHU_TABLE_ID_RESUMES}/records/search"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         payload = {
@@ -67,7 +75,7 @@ def load_resume():
         }
         resp = requests.post(url, headers=headers, json=payload, timeout=10, proxies={"http": None, "https": None})
         items = resp.json().get("data", {}).get("items", [])
-        
+
         if items:
             import json
             raw_text = extract_feishu_text(items[0].get("fields", {}).get("结构化数据", ""))
@@ -77,7 +85,7 @@ def load_resume():
                 resume_text = json.dumps(data_dict, ensure_ascii=False)
             except json.JSONDecodeError:
                 resume_text = raw_text
-                
+
             if resume_text.strip():
                 print(f"✅ 云端简历读取成功，共 {len(resume_text)} 字符")
                 return resume_text
@@ -87,7 +95,7 @@ def load_resume():
         else:
             print("❌ 未在飞书中找到处于【启用】状态的简历！请前往控制台设置。")
             return None
-            
+
     except Exception as e:
         print(f"❌ 读取云端简历出错: {e}")
         return None
@@ -152,9 +160,15 @@ JSON 必须包含且仅包含以下字段：
 _NEUTRAL_DIMS = ("company_stage",)
 
 def get_dynamic_weights() -> dict:
-    import sqlite3
     import os
-    db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "job_hunter.db")
+    import pathlib
+    import sqlite3
+
+    # db_paths 阀门：打包态主库在用户数据目录，硬编码安装目录锚点会静默读空（与下方阈值读取同源）
+    from app.core.db_paths import job_hunter_db_path
+
+    db_path = str(job_hunter_db_path(
+        pathlib.Path(__file__).resolve().parent.parent / "data" / "job_hunter.db"))
     # 默认权重
     weights = {
         "role_match":     1.0,
@@ -185,25 +199,77 @@ def get_dynamic_weights() -> dict:
     return weights
 
 def get_auto_eval_threshold() -> str:
-    import sqlite3
     import os
-    db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "job_hunter.db")
+    import pathlib
+    import sqlite3
+
+    # 2026-10-08 路径修复：此前硬编码 backend/data 相对路径，打包形态（JOBHUNTER_DATA_DIR
+    # 注入后）该文件不存在 → 永远命中「不存在 → A」兜底——用户在初评抽屉设置的阈值从未被
+    # 读到（设置显示 B、运行按 A 的双标根因；波次漏斗/全链路分流/单岗三通道共用本函数）。
+    # 改走全仓唯一真源 job_hunter_db_path（JOBHUNTER_DB_PATH > JOBHUNTER_DATA_DIR/job_hunter.db > 锚点）。
+    from app.core.db_paths import job_hunter_db_path
+    db_path = str(job_hunter_db_path(
+        pathlib.Path(__file__).resolve().parent.parent / "data" / "job_hunter.db"))
     if not os.path.exists(db_path):
+        print(f"🎚️ 自动化阈值读取: A（库不存在，按默认兜底: {db_path}）")
         return "A"
+    threshold = "A"
     try:
         conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT rule FROM job_preferences WHERE type='自动化阈值' AND status='启用' LIMIT 1")
-        row = cursor.fetchone()
-        conn.close()
-        if row and row[0]:
-            return row[0].strip().upper()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT rule FROM job_preferences WHERE type='自动化阈值' AND status='启用' LIMIT 1")
+            row = cursor.fetchone()
+            if row and row[0]:
+                threshold = row[0].strip().upper()
+        finally:
+            conn.close()
     except Exception as e:
-        print(f"⚠️ 读取自动化阈值失败: {e}")
-    return "A"
+        print(f"⚠️ 读取自动化阈值失败（按 A 兜底）: {e}")
+        threshold = "A"
+    # 读取留痕：grade_meets_threshold 对未知阈值会静默回退 A——没有这行，
+    # 「配置写进去了却没生效」类问题无从当场暴露
+    print(f"🎚️ 自动化阈值读取: {threshold}（db={db_path}）")
+    return threshold
 
 # 采用「中性/奖励」逻辑的维度（信息缺失时默认 3 分，不扣分）
 _NEUTRAL_DIMS = ("company_stage",)
+
+
+def _repair_json_text(raw: str) -> str | None:
+    """对「差一个字符」的近失误 JSON 做廉价修复（2026-10-10 F级伪造事故根治）。
+
+    事故实录：LLM 输出内容完整、评级 B 的 JSON，仅最后一段 rationale 漏了闭引号
+    （`。}}` 应为 `。"}}`），json.loads 报 Unterminated string 即被判死——修复成本
+    远低于重试与误投代价。启发式按代价从低到高依次尝试，任一能解析即返回：
+    补闭引号 → 补右括号 → 引号+括号组合 → 截到最后完整键。
+    修不好返回 None（交由上层重试 LLM）。
+    """
+    # 尾部系统性枚举：丢闭引号 / 缺右括号 / 两者组合（事故实录：`。"}}` 少闭引号
+    # → 需要补 `"}}` 两字符组合，单一后缀补丁救不回）
+    candidates: list[str] = []
+    for quote in ('', '"'):
+        for brace in ('', '}', '}}', '}}}'):
+            for bracket in ('', ']'):
+                cand = raw + quote + brace + bracket
+                if cand != raw:
+                    candidates.append(cand)
+    # 截到最后一个完整键值对再补全（处理半截字符串/半截键）
+    last_quote = raw.rfind('"')
+    if last_quote > 0:
+        for tail in ('}', '"}'):
+            candidates.append(raw[:last_quote + 1] + tail)
+    for cand in candidates:
+        try:
+            json.loads(cand)
+            return cand
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+_PARSE_FAILED_GRADE = ""  # 解析失败时 grade 置空串：任何非空字母都会被下游当成真实评级分流
+_EVAL_PARSE_MAX_RETRY = 2  # 廉价修复失败后的 LLM 原样重试次数
 
 
 def _call_10dim_evaluation(resume_text: str, jd_text: str, company_intel: str = "", preferences_text: str = "") -> dict:
@@ -226,29 +292,9 @@ def _call_10dim_evaluation(resume_text: str, jd_text: str, company_intel: str = 
     _SCORE_KEYS = ["role_match","skills_align","seniority","compensation",
                    "interview_prob","company_stage","market_fit","growth"]
     _empty_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    try:
-        response = get_openai_client().chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.1,
-        )
-        raw = (response.choices[0].message.content or "").strip()
-        usage = response.usage
-        cached = 0
-        if hasattr(usage, "prompt_tokens_details") and usage.prompt_tokens_details:
-            cached = getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
-        elif isinstance(usage, dict):
-            details = usage.get("prompt_tokens_details") or {}
-            cached = details.get("cached_tokens", 0) if isinstance(details, dict) else 0
-        usage_dict = {
-            "prompt_tokens": getattr(usage, "prompt_tokens", 0),
-            "completion_tokens": getattr(usage, "completion_tokens", 0),
-            "total_tokens": getattr(usage, "total_tokens", 0),
-            "cached_tokens": cached,
-        } if usage else _empty_usage
+
+    def _parse_eval_json(raw: str):
+        """剥 code fence 后解析；失败先走廉价修复（差一字符的近失误直接救回）。"""
         _prefix_json = "```json"
         _suffix = "```"
         if raw.startswith(_prefix_json):
@@ -259,25 +305,76 @@ def _call_10dim_evaluation(resume_text: str, jd_text: str, company_intel: str = 
             raw = raw[:-3]
         raw = raw.strip()
         try:
-            return json.loads(raw), usage_dict
-        except json.JSONDecodeError:
-            print(f"⚠️ 8维评估解析失败，原始文本:\n{raw}")
-            return {
-                "grade": "F",
-                "scores": {k: 1 for k in _SCORE_KEYS},
-                "score_rationales": {k: "AI解析失败" for k in _SCORE_KEYS},
-            }, usage_dict
-    except Exception as e:
-        print(f"\n❌ [_call_10dim_evaluation] API 调用失败，完整错误详情：")
-        print(f"错误类型: {type(e).__name__}")
-        print(f"错误内容: {e}")
-        import traceback
-        traceback.print_exc()
-        return {
-            "grade": "F",
-            "scores": {k: 1 for k in _SCORE_KEYS},
-            "score_rationales": {k: "AI解析失败" for k in _SCORE_KEYS},
-        }, _empty_usage
+            return json.loads(raw), None
+        except json.JSONDecodeError as first_err:
+            repaired = _repair_json_text(raw)
+            if repaired is not None:
+                print(f"   🔧 [JSON修复] 原始输出存在轻微格式瑕疵（{first_err.msg}），廉价修复成功")
+                try:
+                    return json.loads(repaired), None
+                except json.JSONDecodeError:
+                    pass
+            print(f"⚠️ 8维评估解析失败（修复未果），原始文本:\n{raw[:600]}")
+            return None, f"{first_err.msg} (pos {first_err.pos})"
+
+    total_usage_acc = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cached_tokens": 0}
+    last_err = ""
+    last_err_kind = ""
+    last_raw = ""
+    # 1 次原始请求 + 最多 N 次重试：解析失败先救原文（零成本），救不回再原样重试
+    for attempt in range(1 + _EVAL_PARSE_MAX_RETRY):
+        try:
+            # caller="ai_evaluator"：进入闸门批量通道（wave/executor/automation 消费方均为批量链路）
+            response = get_openai_client(caller="ai_evaluator").chat.completions.create(
+                model=settings.OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.1,
+            )
+            raw = (response.choices[0].message.content or "").strip()
+            usage = response.usage
+            cached = 0
+            if hasattr(usage, "prompt_tokens_details") and usage.prompt_tokens_details:
+                cached = getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
+            elif isinstance(usage, dict):
+                details = usage.get("prompt_tokens_details") or {}
+                cached = details.get("cached_tokens", 0) if isinstance(details, dict) else 0
+            total_usage_acc["prompt_tokens"] += getattr(usage, "prompt_tokens", 0) or 0
+            total_usage_acc["completion_tokens"] += getattr(usage, "completion_tokens", 0) or 0
+            total_usage_acc["total_tokens"] += getattr(usage, "total_tokens", 0) or 0
+            total_usage_acc["cached_tokens"] += cached
+
+            parsed, parse_err = _parse_eval_json(raw)
+            if isinstance(parsed, dict):
+                return parsed, total_usage_acc
+            if parsed is not None:
+                parse_err = f"顶层类型 {type(parsed).__name__} 非 dict"
+                parsed = None
+            last_err = parse_err or "unknown parse error"
+            last_raw = raw
+            print(f"   🔁 [重试 {attempt + 1}/{1 + _EVAL_PARSE_MAX_RETRY}] 8维评估 JSON 解析失败（{last_err}），原样重试 LLM…")
+        except Exception as e:
+            # 治理层拒绝/上游异常自带面向用户的 user_msg（如「并发槽位已满…被闸门拒绝」
+            # 「触发速率限制…」），优先透传给用户可见链路，而非只留在服务端日志
+            err_kind = getattr(e, "kind", None)
+            user_msg = getattr(e, "user_msg", "") or ""
+            last_err_kind = str(getattr(err_kind, "value", err_kind) or "unknown")
+            last_err = f"API调用失败: {user_msg or f'{type(e).__name__}: {e}'}"
+            print(f"\n❌ [_call_10dim_evaluation] API 调用失败（尝试 {attempt + 1}/{1 + _EVAL_PARSE_MAX_RETRY}）：{last_err}")
+
+    # 结构化失败：grade 置空串，绝不伪造评级（伪造 F 会被海投轨当成真实低分自动投递——
+    # 2026-10-10 蛙蔻事故：AI 眼中的 B 级岗位被通用简历投了出去）
+    return {
+        "grade": _PARSE_FAILED_GRADE,
+        "scores": {k: 1 for k in _SCORE_KEYS},
+        "score_rationales": {k: "AI解析失败" for k in _SCORE_KEYS},
+        "parse_failed": True,
+        "parse_error": last_err,
+        "error_kind": last_err_kind,
+        "raw_snippet": last_raw[:200],
+    }, total_usage_acc
 
 
 def warmup_eval_cache(resume_text: str, preferences_text: str = "") -> dict:
@@ -294,7 +391,7 @@ def warmup_eval_cache(resume_text: str, preferences_text: str = "") -> dict:
     user_prompt = "\n\n".join(parts)
 
     try:
-        response = get_openai_client().chat.completions.create(
+        response = get_openai_client(caller="ai_evaluator").chat.completions.create(
             model=settings.OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -418,6 +515,26 @@ def evaluate_single_job(job_data, resume_text, company_intel: str = "", preferen
         }
 
         grade = ai_result.get("grade", "F")
+        if ai_result.get("parse_failed") or ai_result.get("api_failed"):
+            # 结构化失败短路：不写综合评级、不走高低分轨（伪造 F 曾致 B级岗位被自动投出）、
+            # 跟进状态置「AI评估失败」交由上层进执行失败 tab 可重试
+            from app.core.feishu_utils import FOLLOW_STATUS_EVAL_FAILED
+            fail_reason = ai_result.get("parse_error") or "LLM 调用失败"
+            print(f"   🛑 [评估失败] 8维评估未能产出有效评级（{fail_reason}），岗位转「{FOLLOW_STATUS_EVAL_FAILED}」待重试，绝不伪造评级分流")
+            _report_progress(4, 4, "评估失败", f"🛑 8维评估失败（{fail_reason}），已挂起待重试")
+            return {
+                "success": False,
+                "parse_failed": True,
+                "record_id": record_id,
+                "error": f"8维评估JSON解析失败: {fail_reason}",
+                "grade": "",
+                "ai_score": 0,
+                "update_data": {
+                    "跟进状态": FOLLOW_STATUS_EVAL_FAILED,
+                    "AI评估详情": f"⚠️ AI评估解析失败（已自动修复与重试仍未成功）：{fail_reason}\n原文片段: {str(ai_result.get('raw_snippet') or '')[:120]}",
+                },
+                "status": FOLLOW_STATUS_EVAL_FAILED,
+            }
         scores = ai_result.get("scores", {})
         rationales = ai_result.get("score_rationales", {})
         try:
@@ -443,7 +560,7 @@ def evaluate_single_job(job_data, resume_text, company_intel: str = "", preferen
         raw_total = sum(int(scores.get(k, 1)) for k in current_weights)
         ai_total = int(weighted_sum / max_weighted * 100)
         raw_pct = int(raw_total / 40 * 100)
-        
+
         print(f"\n   ---------------- [AI 诊断白盒透视] ----------------")
         print(f"   {rationales_text}")
         print(f"   -------------------------------------------------")
@@ -471,7 +588,7 @@ def evaluate_single_job(job_data, resume_text, company_intel: str = "", preferen
         # ── 步骤 2: 高分轨/低分轨分流 ──
         threshold = get_auto_eval_threshold()
         trigger_deep_eval = False
-        
+
         if task_mode == "eval_only":
             print(f"   🌊 [初评模式] 单岗位 8 维初评完毕: {grade}级 ({ai_total}分)，交由流水线漏斗统一门禁分流")
         else:
@@ -502,7 +619,7 @@ def evaluate_single_job(job_data, resume_text, company_intel: str = "", preferen
                 # 动态判断是多Agent还是Skill模式
                 current_mode = "multi" if "multi" in task_mode else "skill"
                 print(f"[{job_title}] -> 开始通过 Engine Facade 进行 {current_mode.upper()} 模式简历定制改写...")
-                
+
                 rewrite_result, rewrite_usage = process_resume_rewrite(
                     jd_text=full_jd_info, 
                     diagnosis_dict=deep_result, 
@@ -661,7 +778,7 @@ def run_smart_evaluation(target_records=None, task_mode="auto"):
             # Step 2：获取诊断报告作为改写的上下文依据（优先从飞书读取历史数据，省去 Token 开销）
             raw_fields = job_data.get("_raw_fields", {}) or {}
             existing_ats = extract_feishu_text(raw_fields.get("核心能力词典", ""))
-            
+
             if existing_ats:
                 print("   🔍 检测到飞书已存在深度评估结果，直接复用其作为改写上下文...")
                 deep_result = {
@@ -686,7 +803,7 @@ def run_smart_evaluation(target_records=None, task_mode="auto"):
             # Step 3：用诊断报告驱动简历改写
             current_mode = "multi" if "multi" in task_mode else "skill"
             print(f"[{job_title}] -> 开始通过 Engine Facade 进行 {current_mode.upper()} 模式简历定制改写...")
-            
+
             rewrite_res, _ = process_resume_rewrite(
                 jd_text=full_jd_info, 
                 diagnosis_dict=deep_result, 
@@ -707,7 +824,7 @@ def run_smart_evaluation(target_records=None, task_mode="auto"):
                 greeting_val = str(greeting_res)
             else:
                 greeting_val = ""
-            
+
             # 如果大模型返回的是字典，必须用 dumps 转为带双引号的合法 JSON，否则转为纯字符串
             final_rewrite = json.dumps(rewrite_res, ensure_ascii=False) if isinstance(rewrite_res, dict) else str(rewrite_res)
             from ai_agents.markdown_to_json import convert_and_stitch_resume
@@ -853,7 +970,7 @@ def run_smart_evaluation(target_records=None, task_mode="auto"):
             status_label = str(result.get("status") or "")
             if "人工复核" in status_label or "待人工复核" in status_label:
                 stats["manual_review"] += 1
-                
+
             # 🌟 核心修复：收集成功的岗位明细，喂给 main.py 生成飞书卡片
             stats["details"].append({
                 "company": job_data.get("company", "未知"),
@@ -861,11 +978,11 @@ def run_smart_evaluation(target_records=None, task_mode="auto"):
                 "score": score,
                 "status": status_label
             })
-            
+
         else:
             print(f"   ❌ 评估失败: {result.get('error', '未知错误')}")
             fail_count += 1
-            
+
             # 🌟 核心修复：收集失败的岗位明细
             stats["details"].append({
                 "company": job_data.get("company", "未知"),
@@ -902,17 +1019,17 @@ def run_single_job_evaluation(record_id, table_id=None):
     print(f"\n{'='*60}")
     print(f"🌟 [单岗位模式] 开始处理 Record ID: {record_id}")
     print(f"{'='*60}")
-    
+
     resume_text = load_resume()
     if not resume_text:
         return
-    
+
     try:
         token = get_tenant_access_token()
         if not token:
             print("❌ 飞书鉴权失败")
             return
-        
+
         import requests
         target_table_id = settings.FEISHU_TABLE_ID_JOBS
         url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{settings.FEISHU_APP_TOKEN}/tables/{target_table_id}/records/{record_id}"
@@ -920,17 +1037,17 @@ def run_single_job_evaluation(record_id, table_id=None):
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"
         }
-        
+
         response = requests.get(url, headers=headers, timeout=15, proxies={"http": None, "https": None})
         data = response.json()
-        
+
         if data.get("code") != 0:
             print(f"❌ 拉取记录失败: {data.get('msg')}")
             return
-        
+
         record = data.get("data", {}).get("record", {})
         fields = record.get("fields", {})
-        
+
         job_data = {
             "record_id": record_id,
             "company": extract_feishu_text(fields.get("公司名称", "")) or "未知公司",
@@ -941,13 +1058,13 @@ def run_single_job_evaluation(record_id, table_id=None):
             "experience": extract_feishu_text(fields.get("经验要求", "")) or "未知",
             "education": extract_feishu_text(fields.get("学历要求", "")) or "未知",
         }
-        
+
         print(f"✅ 成功拉取岗位: {job_data['company']} - {job_data['job_title']}")
-        
+
     except Exception as e:
         print(f"❌ 拉取岗位数据失败: {e}")
         return
-    
+
     # 🚀 新增：在调用评估前，先调用外部 API 抓取情报
     company_name = job_data.get("company", "")
     company_intel = ""
@@ -971,23 +1088,23 @@ def run_single_job_evaluation(record_id, table_id=None):
             record_id,
             result["update_data"]
         )
-        
+
         if is_updated:
             print(f"\n✅ 成功处理岗位！状态: {result['status']}, 得分: {result['ai_score']}")
         else:
             print(f"\n❌ 飞书回写失败")
     else:
         print(f"\n❌ 评估失败: {result.get('error', '未知错误')}")
-    
+
     print(f"{'='*60}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='AI 岗位评估引擎')
     parser.add_argument('--record_id', type=str, help='飞书记录 ID')
     parser.add_argument('--table_id', type=str, help='(已废弃) 飞书表格 ID，为兼容保留')
-    
+
     args = parser.parse_args()
-    
+
     if args.record_id:
         run_single_job_evaluation(args.record_id)
     else:

@@ -247,7 +247,9 @@ def test_build_master_pipeline_card_injects_record_ids():
 
     action_el = next(e for e in card["elements"] if e.get("tag") == "action")
     actions = action_el["actions"]
-    assert len(actions) == 3
+    assert len(actions) == 4  # 2026-10-10 新增第四分流按钮「自动投递详情」
+    delivered_btn = next(a for a in actions if a["value"]["action"] == "open_delivered_card")
+    assert delivered_btn["value"].get("record_ids", []) == []  # 未传 delivered ids 时 value 无该键（与 None 语义一致）
 
     btn_ab = next(a for a in actions if a["value"]["action"] == "open_ab_card")
     # 容量截断保护：25 条截断为前 20 条

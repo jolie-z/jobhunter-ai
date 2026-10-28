@@ -313,6 +313,29 @@ describe("Job51Tab Component Integration", () => {
     })
   })
 
+  it("增量保存：删除工作经历后 POST 载荷只含被改的 works 模块（2026-10-23 模块级合并配套）", async () => {
+    await renderAsync(<Job51Tab data={mock51jobData as any} loading={false} onRefresh={vi.fn()} />)
+
+    const deleteBtns = screen.getAllByText("删除")
+    fireEvent.click(deleteBtns[1])
+
+    await waitFor(() => {
+      expect(screen.getByText("确认删除工作经历「某知名科技公司」？")).toBeDefined()
+    })
+    fireEvent.click(screen.getByText("确认删除"))
+
+    await waitFor(() => {
+      const saveCall = (global.fetch as any).mock.calls.find(
+        (c: unknown[]) => String(c[0]).includes("/api/resume-editor/save/51job"),
+      )
+      expect(saveCall).toBeTruthy()
+      const body = JSON.parse(saveCall![1].body)
+      // 只发被改的 works 模块；name/gender 等未提及模块不在载荷里（由后端合并保留）
+      expect(Object.keys(body)).toEqual(["works"])
+      expect(body.works.current_value).toHaveLength(0)
+    })
+  })
+
   it("handles intentions industry editing, displaying, and dual-field synchronization", async () => {
     const dataWithIndustry = {
       ...mock51jobData,

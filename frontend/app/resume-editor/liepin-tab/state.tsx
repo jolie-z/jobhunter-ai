@@ -27,6 +27,7 @@ import { LiepinCatalogue } from "@/components/ui/liepin-catalogue"
 import { LIEPIN_WORK_STATUS, LIEPIN_POLITICAL_STATUS, LIEPIN_DEGREE_OPTIONS, LIEPIN_LANGUAGES, LIEPIN_PROFICIENCY_LEVELS, LIEPIN_LANG_LEVELS } from "@/lib/liepin-options"
 import { ReportWarnings, ReportUnfilled, ChangedBadge, ModuleChangeSummary, ModuleReportNotice, type PlatformReport } from "../agent-report-shared"
 import { savePlatformData, fetchPlatformReport } from "../api-client"
+import { buildIncrementalSavePayload } from "../incremental-save"
 import { DynamicFieldSlot } from "@/components/ui/dynamic-field-slot"
 
 import { LIEPIN_MODULES, LIEPIN_MODULE_MAP, LIEPIN_NOTICE_MAP, SectionHeader, LiepinReportWarningsContext, type ResumeData, type ResumeField, type LiepinTabProps, type WritebackFeedbackState, type DeleteConfirmTarget, MODULE_DEFAULT_SELECTED,
@@ -161,7 +162,8 @@ export function useLiepinTabState(props: LiepinTabProps) {
   const persistData = async (updatedData: ResumeData): Promise<boolean> => {
     setSaving(true)
     try {
-      const { ok, message } = await savePlatformData(API_BASE, "liepin", updatedData)
+      // 增量保存：只发与改前基线 localData 深比较有差异的模块，未发模块由后端合并保留
+      const { ok, message } = await savePlatformData(API_BASE, "liepin", buildIncrementalSavePayload(updatedData, localData))
       if (ok) {
         setLocalData(updatedData)
         showToast("保存成功")

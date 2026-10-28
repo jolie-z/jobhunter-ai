@@ -31,15 +31,21 @@ import sys
 import time
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_BACKEND_DIR = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
+# DO NOT MOVE: 本脚本独立拉起时 sys.path[0] 只有 platforms/，必须先插 backend 根，
+# 下一行 from resume_editor.paths import 才能成立（禁止改成裸 import paths）
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+from resume_editor.paths import DATA_DIR, fields_path, writeback_path  # noqa: E402
+
 sys.path.insert(0, _SCRIPT_DIR)
 from browser_common import connect_page, get_platform_port, dismiss_overlay_popup, wait_resume_filled
 
 PORT = get_platform_port("zhilian")
 RESUME_URL = "https://i.zhaopin.com/resume"
-DATA_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "data")
-SNAPSHOT_PATH = os.path.join(DATA_DIR, "zhilian_writeback.json")
-FIELDS_PATH = os.path.join(DATA_DIR, "zhilian_fields.json")
-OFFICIAL_NOW_PATH = os.path.join(DATA_DIR, "zhilian_official_now.json")
+SNAPSHOT_PATH = writeback_path("zhilian")   # 用户数据：打包态落用户数据目录
+FIELDS_PATH = fields_path("zhilian")
+OFFICIAL_NOW_PATH = os.path.join(DATA_DIR, "zhilian_official_now.json")   # 官网简历 dump（个人数据），同属用户数据区
 
 # 可回写模块（key 对应 zhilian_fields.json 顶层键）
 ALL_MODULES = ["basic_info", "job_status", "self_evaluation", "wanna", "work_experience", "education",

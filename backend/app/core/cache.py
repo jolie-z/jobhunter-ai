@@ -7,6 +7,9 @@ from typing import Any
 
 from app.core.config import BASE_DIR
 
+# M2 收口：JOBHUNTER_DATA_DIR 注入时落用户数据目录
+from app.core.db_paths import writable_path
+
 
 class JobCache:
     """岗位列表缓存：内存 + 磁盘快照 + 脏标记。
@@ -27,7 +30,7 @@ class JobCache:
     _dirty: bool = False
     _lock: asyncio.Lock = asyncio.Lock()
 
-    _snapshot_path: Path = BASE_DIR / "data" / "job_cache_snapshot.json"
+    _snapshot_path: Path = writable_path(BASE_DIR / "data" / "job_cache_snapshot.json", "job_cache_snapshot.json")
     _disk_loaded: bool = False
     _last_disk_write: float = 0
     _DISK_WRITE_INTERVAL: float = 10.0  # 补丁类更新的落盘节流（秒），全量 set() 不节流

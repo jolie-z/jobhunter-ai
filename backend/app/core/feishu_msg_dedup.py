@@ -19,11 +19,18 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
+# M2 收口：JOBHUNTER_DATA_DIR 注入时落用户数据目录
+from app.core.db_paths import writable_path
+
 _MAX_SEEN = 5000
 _TTL_SECONDS = 30 * 60
 
 # backend/app/core/feishu_msg_dedup.py → parents[2] = backend/
-_PERSIST_PATH = Path(__file__).resolve().parents[2] / "data" / "feishu_seen_msg_ids.json"
+# M2 收口：JOBHUNTER_DATA_DIR 注入时落用户数据目录
+_PERSIST_PATH = writable_path(
+    Path(__file__).resolve().parents[2] / "data" / "feishu_seen_msg_ids.json",
+    "feishu_seen_msg_ids.json",
+)
 
 _seen: "OrderedDict[str, float]" = OrderedDict()
 _lock = threading.Lock()

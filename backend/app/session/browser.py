@@ -13,6 +13,9 @@ import subprocess
 import time
 from pathlib import Path
 
+# M2 收口：JOBHUNTER_DATA_DIR 注入时落用户数据目录
+from app.core.db_paths import writable_path
+
 from .models import PlatformConfig
 
 logger = logging.getLogger(__name__)
@@ -30,7 +33,13 @@ _CDP_READY_TIMEOUT_SECS = 30
 
 # 每平台 Edge 运行日志（临终遗言落盘，关闭 2026-09-25 排查确认的"日志黑洞"）：
 # backend/logs/edge_<platform>.log
-_LOGS_DIR = Path(__file__).resolve().parents[2] / "logs"
+# M2 收口：JOBHUNTER_DATA_DIR 注入时落 <DATA_DIR>/logs/
+_LOGS_DIR = writable_path(Path(__file__).resolve().parents[2] / "logs", "logs")
+# 打包只读形态下 logs 目录不存在：监护进程打开日志文件前必须确保目录在
+try:
+    _LOGS_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
 _EDGE_LOG_MAX_BYTES = 5 * 1024 * 1024
 
 
@@ -424,6 +433,19 @@ def get_all_platform_sessions() -> list:
                 "is_alive": False,
             })
         else:
+            # CDP 命令通道探活（2026-10-08 51job 事故）：HTTP /json 活着但命令永不响应的
+            # 僵尸 Edge 曾全程显示 healthy——先探通道再判登录，僵死直接亮红而非误报绿
+            from .cdp_probe import probe_cdp_channel
+            if probe_cdp_channel(cfg.port) == "zombie":
+                results.append({
+                    "platform": key,
+                    "display_name": cfg.display_name,
+                    "port": cfg.port,
+                    "state": "zombie",
+                    "message": "CDP 命令通道僵死（HTTP 通但命令不应答），下次任务预检将自动重启",
+                    "is_alive": False,
+                })
+                continue
             cdp_status = check_session_via_cdp(cfg)
             state_val = cdp_status.state.value if hasattr(cdp_status.state, "value") else str(cdp_status.state)
             message = cdp_status.message or "已连接"

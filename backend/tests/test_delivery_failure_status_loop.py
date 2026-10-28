@@ -432,14 +432,56 @@ async def test_feishu_scheduled_pull_excludes_delivery_failed_and_keeps_quota_sk
         # 核心断言 3：即便引擎撞墙，也豁免翻转门牌为「投递失败」，保留原「待投递」
         assert "跟进状态" not in fields_engine
 
-    # 4. 验证 mark_job_delivery_failed 普通真实失败：正常翻转门牌为「投递失败」
+    # 4. 验证 mark_job_delivery_failed 持久性失败：严格翻转门牌为「投递失败」
+    # （2026-10-08 语义更新：transient/unknown 失败改为保留「待投递」自愈重试，见 case 5/6；
+    #   此处改用持久性错误文本验证出队路径不回归）
     feishu_service._recent_failed_writes.clear()
     with patch("app.services.feishu_service.update_feishu_record", return_value=True) as mock_update_normal_fail:
-        ok_normal = feishu_service.mark_job_delivery_failed("rec_normal_fail_01", "❌ BOSS 投递受阻：网络连接超时")
+        ok_normal = feishu_service.mark_job_delivery_failed("rec_normal_fail_01", "❌ BOSS 投递引擎执行失败")
         assert ok_normal is True
         mock_update_normal_fail.assert_called_once()
         fields_normal = mock_update_normal_fail.call_args[0][1]
-        # 核心断言 4：普通失败必须严格写入「跟进状态: 投递失败」
+        # 核心断言 4：持久性失败必须严格写入「跟进状态: 投递失败」
         assert fields_normal.get("跟进状态") == "投递失败"
         assert "自动投递失败日志" in fields_normal
+
+    # 5. 验证 mark_job_delivery_failed 暂时性失败首次（2026-10-08 自愈闭环）：
+    #    登录失效类 transient 未达重试上限 → 保留「待投递」门牌，仅写失败日志
+    #    （背景：15:30 猎聘事故中 EngineGuardError 命中「浏览器」关键词归类 transient，
+    #     却被旧逻辑直接写「投递失败」出队，L1 分诊放行重试从未生效过）
+    feishu_service._recent_failed_writes.clear()
+    _rs.remove_delivery_failure("rec_transient_keep_01")
+    try:
+        with patch("app.services.feishu_service.update_feishu_record", return_value=True) as mock_update_transient:
+            ok_keep = feishu_service.mark_job_delivery_failed("rec_transient_keep_01", "[环境] 端口 9226 无监听进程，fail-closed 拒绝")
+            assert ok_keep is True
+            mock_update_transient.assert_called_once()
+            fields_keep = mock_update_transient.call_args[0][1]
+            # 核心断言 5：transient 首次失败保留「待投递」，岗位留在波次视野内自愈重试
+            assert "跟进状态" not in fields_keep
+            assert "自动投递失败日志" in fields_keep
+    finally:
+        _rs.remove_delivery_failure("rec_transient_keep_01")
+
+    # 6. 验证暂时性失败达重试上限（failure_count >= MAX_AUTO_RETRIES）：翻转「投递失败」出队
+    feishu_service._recent_failed_writes.clear()
+    _rs.remove_delivery_failure("rec_transient_cap_02")
+    try:
+        from datetime import datetime, timedelta
+        _rs.record_delivery_failure("rec_transient_cap_02", "首次失败")
+        # 把首次失败时间回拨 60 秒，越过 15 秒防抖窗口（同岗 15 秒内两次失败合并计一次是既有设计）
+        prev = _rs._delivery_failures["rec_transient_cap_02"]
+        prev["failed_at"] = (datetime.now() - timedelta(seconds=60)).strftime("%Y-%m-%d %H:%M:%S")
+        _rs.record_delivery_failure("rec_transient_cap_02", "第二次失败")
+        assert _rs.get_delivery_failures()["rec_transient_cap_02"]["failure_count"] >= 2
+
+        with patch("app.services.feishu_service.update_feishu_record", return_value=True) as mock_update_capped:
+            ok_capped = feishu_service.mark_job_delivery_failed("rec_transient_cap_02", "网络连接超时")
+            assert ok_capped is True
+            mock_update_capped.assert_called_once()
+            fields_capped = mock_update_capped.call_args[0][1]
+            # 核心断言 6：transient 达上限后停止自动重试，写入「投递失败」待人工处置
+            assert fields_capped.get("跟进状态") == "投递失败"
+    finally:
+        _rs.remove_delivery_failure("rec_transient_cap_02")
 

@@ -109,3 +109,29 @@ def should_skip_auto_delivery(failure: dict) -> tuple:
     if count >= MAX_AUTO_RETRIES:
         return True, f"暂时性故障已连续失败 {count} 次，停止自动发射待人工处置"
     return False, ""
+
+
+def should_retry_delivery(err_text: str, job_id: str) -> bool:
+    """飞书门牌分流判据（mark_job_delivery_failed 用）：该失败是否保留「待投递」走自动重试。
+
+    背景（2026-10-08 猎聘 15:30 事故）：此前环境类失败一律写「投递失败」出队，而波次
+    只扫「待投递」——L1 分诊的 transient 自动重试与 L3 诊断（failure_count≥2）从未
+    生效过（全量日志零命中）。本判据让环境类失败复刻 51job 配额模式：保留门牌、仅记
+    失败日志，岗位留在波次视野内自愈重试。
+
+    True  = transient/unknown 且本地台账 failure_count 未达 MAX_AUTO_RETRIES。计数由
+            record_delivery_failure 在每次失败登记时自增（15 秒防抖、SQLite 持久化），
+            本判据只消费——调用时序上登记先于回写，故首次失败 count=1（放行重试），
+            第二次失败 count=2（达上限，出队转人工）。
+    False = persistent，或已达重试上限。
+    判定链路任何异常保守返回 False：宁可出队等人工，不可误留空转。
+    """
+    try:
+        if classify_delivery_failure(err_text) == "persistent":
+            return False
+        from app.automation import run_snapshot as _rs
+        failure = (_rs.get_delivery_failures() or {}).get(str(job_id or "")) or {}
+        count = int(failure.get("failure_count") or 0)
+        return count < MAX_AUTO_RETRIES
+    except Exception:
+        return False

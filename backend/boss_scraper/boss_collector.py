@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import html
 import os
+import re
 import sys
 import time
 import random
@@ -16,10 +18,13 @@ if PROJECT_ROOT not in sys.path:
 from DrissionPage import ChromiumPage, ChromiumOptions
 
 from engine_guard import verify_browser_identity
+from app.core.db_paths import job_hunter_db_path, writable_path
+from app.core.utils import collapse_blank_lines
 
 BOSS_DEBUG_PORT = 19222
-DB_PATH = os.path.join(PROJECT_ROOT, 'data', 'job_hunter.db')
-PROFILE_DIR = os.path.join(PROJECT_ROOT, "data", "profiles", "boss")
+# db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
+DB_PATH = job_hunter_db_path(os.path.join(PROJECT_ROOT, 'data', 'job_hunter.db'))
+PROFILE_DIR = writable_path(os.path.join(PROJECT_ROOT, "data", "profiles", "boss"), "profiles/boss")
 os.makedirs(PROFILE_DIR, exist_ok=True)
 
 # ==========================================
@@ -241,11 +246,39 @@ def _parse_job_salary(raw_salary, default_salary, json_job):
     return raw_salary
 
 def _extract_clean_jd(detail_box):
-    """从详情容器中提取并清洗职位描述(JD)的水印"""
+    """从详情容器中提取并清洗职位描述(JD)的水印
+
+    2026-10-07 排版修复：旧写法 jd_ele.text 基于 textContent，BOSS 详情 HTML 的
+    <p>/<br>/<li> 分段边界不产生换行 → JD 存库就是一整行，前端渲染成一团
+    （51job/智联保留了换行所以正常，用户真机对比实证）。改从 HTML 提取：
+    <br> 与块级闭合标签转换行 → 剥余标签 → 实体解码 → 逐行清洗 → 折叠 3+ 空行。
+    """
     jd_ele = detail_box.ele('css:.job-detail-body .desc', timeout=2)
-    if jd_ele and jd_ele.text:
-        return jd_ele.text.replace('kanzhun', '').replace('BOSS直聘', '').replace('BOSS', '').replace('boss', '').replace('来自', '').replace('直聘', '')
-    return ""
+    if not jd_ele:
+        return ""
+    raw = ""
+    is_html = True
+    try:
+        raw = jd_ele.html or ""  # DrissionPage 元素 html 属性：含完整标签结构
+    except Exception:
+        raw = ""
+    if not raw.strip():
+        raw = jd_ele.text or ""  # 兜底：拿不到 html 时退回旧行为（无换行总比丢内容强）
+        is_html = False  # R8 复审 P2：纯文本来源不做标签剥除，防 "薪资<20k" 之类正文被误吞
+
+    if is_html and "<" in raw:
+        # R8 复审 P2：先剥 script/style 块，防其内部文本残留正文
+        text = re.sub(r'(?is)<(?:script|style)[^>]*>.*?</(?:script|style)>', '', raw)
+        text = re.sub(r'(?i)<br\s*/?>', '\n', text)
+        text = re.sub(r'(?i)</(?:p|div|li|ul|ol|tr|section|h[1-6]|dd|dt)>', '\n', text)
+        text = re.sub(r'<[^>]+>', '', text)
+        text = html.unescape(text)
+    else:
+        text = raw
+
+    for w in ('kanzhun', 'BOSS直聘', 'BOSS', 'boss', '来自', '直聘'):
+        text = text.replace(w, '')
+    return collapse_blank_lines(text.splitlines())
 
 def _get_fallback_address(detail_box, job_city, json_job):
     """提取兜底的地区信息"""

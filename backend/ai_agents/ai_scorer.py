@@ -1,18 +1,20 @@
-import os
-import sys
 import json
+import os
 import re
-import time
+import sys
 import threading
-import requests
+import time
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
+
+import requests
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from app.core.config import settings
+from app.core.db_paths import writable_path
 from app.core.llm_client import get_openai_client
 
 # 🌟 配置统一走 settings 动态读取（sync_settings_to_runtime 原地更新单例，配置页保存即生效）；
@@ -32,18 +34,18 @@ def sanitize_llm_output(raw_text: str) -> dict:
         "rewrite_rationale": {},
         "missing_data_requests": []
     }
-    
+
     cleaned_text = raw_text.strip()
-    
+
     # 绕过各种奇怪的解析Bug
     prefix_pattern = r"^`{3}(?:json)?\s*"
     suffix_pattern = r"\s*`{3}$"
     cleaned_text = re.sub(prefix_pattern, "", cleaned_text, flags=re.IGNORECASE)
     cleaned_text = re.sub(suffix_pattern, "", cleaned_text)
-    
+
     try:
         data = json.loads(cleaned_text)
-        
+
         resume_data = data.get("rewritten_resume", "")
         if isinstance(resume_data, dict):
             md_lines = []
@@ -61,16 +63,16 @@ def sanitize_llm_output(raw_text: str) -> dict:
                     md_lines.append(str(v))
                 md_lines.append("")
             result["rewritten_resume"] = "\n".join(md_lines)
-            
+
         elif isinstance(resume_data, str):
             result["rewritten_resume"] = resume_data.replace('\\n', '\n')
-            
+
         result["rewrite_rationale"] = data.get("rewrite_rationale", {})
         result["missing_data_requests"] = data.get("missing_data_requests", [])
-        
+
     except json.JSONDecodeError:
         result["rewritten_resume"] = raw_text
-        
+
     return result
 
 
@@ -78,27 +80,32 @@ def sanitize_llm_output(raw_text: str) -> dict:
 # 实时拉取飞书偏好表中的求职底线
 # ==========================================
 def get_user_preferences() -> str:
-    import sqlite3
     import os
+    import sqlite3
+
     # 🌟 改为直连本地 SQLite 数据库，避免每次调用请求飞书造成严重延迟和限流
-    db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "job_hunter.db")
+    # db_paths 阀门：打包态主库在用户数据目录，硬编码安装目录锚点会静默读空
+    from app.core.db_paths import job_hunter_db_path
+
+    db_path = str(job_hunter_db_path(
+        Path(__file__).resolve().parent.parent / "data" / "job_hunter.db"))
     if not os.path.exists(db_path):
         return ""
-        
+
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        
+
         # 检查表是否存在
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='job_preferences'")
         if not cursor.fetchone():
             return ""
-            
+
         cursor.execute("SELECT type, rule FROM job_preferences WHERE status = '启用'")
         rows = cursor.fetchall()
         conn.close()
-        
+
         bonuses, visions = [], []
         for r in rows:
             p_type = r["type"]
@@ -109,7 +116,7 @@ def get_user_preferences() -> str:
                 bonuses.append(rule)
             elif p_type == "职业愿景":
                 visions.append(rule)
-                
+
         if not (bonuses or visions):
             return ""
 
@@ -189,7 +196,8 @@ def deep_evaluate_resume(resume_text: str, jd_text: str, ai_result: dict = None)
     }
 
     try:
-        response = get_openai_client().chat.completions.create(
+        # caller="ai_scorer"：进入闸门批量通道（wave_pipeline / executor 消费方均为批量链路）
+        response = get_openai_client(caller="ai_scorer").chat.completions.create(
             model=settings.OPENAI_MODEL,
             response_format={"type": "json_object"},
             messages=[
@@ -219,7 +227,7 @@ def deep_evaluate_resume(resume_text: str, jd_text: str, ai_result: dict = None)
             "total_tokens": getattr(usage, "total_tokens", 0),
             "cached_tokens": cached,
         } if usage else _empty_usage
-        
+
         _prefix_json = "`" * 3 + "json"
         _suffix = "`" * 3
         if raw.startswith(_prefix_json): raw = raw[7:]
@@ -269,7 +277,8 @@ def warmup_deep_eval_cache(resume_text: str) -> dict:
         f"请严格按照 System 规则，对上述候选人与目标岗位进行深度审计画像，仅输出纯净 JSON 对象。"
     )
     try:
-        response = get_openai_client().chat.completions.create(
+        # caller="ai_scorer"：进入闸门批量通道（wave_pipeline / executor 消费方均为批量链路）
+        response = get_openai_client(caller="ai_scorer").chat.completions.create(
             model=settings.OPENAI_MODEL,
             response_format={"type": "json_object"},
             messages=[
@@ -333,7 +342,11 @@ def parse_resume_markdown(md_text: str) -> List[Dict]:
 # ==========================================
 # 同公司多岗位（改名重发/多平台）共享一份情报：14 天内同公司只搜一次，省 API 调用
 _TAVILY_CACHE_TTL = 14 * 86400
-_TAVILY_CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "tavily_company_cache.json"
+# db_paths 阀门：缓存写盘禁止落安装目录（resources 内），否则自动更新即清空
+_TAVILY_CACHE_PATH = writable_path(
+    Path(__file__).resolve().parent.parent / "data" / "tavily_company_cache.json",
+    "tavily_company_cache.json",
+)
 _tavily_cache_lock = threading.Lock()
 _tavily_cache: dict = {}
 

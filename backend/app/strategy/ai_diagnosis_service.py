@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import ValidationError
 
 import common.config as _ccfg
+from app.core.llm_usage import log_prompt_cache_hit
 from app.core.resume_structurer import ResumeData, parse_resume_to_json
 from app.strategy.config_service import get_active_resume_text_async
 from app.strategy.schemas import (
@@ -62,6 +63,22 @@ def _parse_json_safely(content) -> Any:
             return json.loads(content)
         except Exception:
             raise ValueError(f"Extracted json string is not valid JSON. Content: {content[:100]}...")
+
+
+def _ats_messages(system_prompt: str, resume_json_text: str, target_experience: str) -> list:
+    """稳定前缀优先：[0] system（规则+画像+格式约束）同一 jd_report_context 下跨条目
+    字节一致，可被网关前缀缓存跨调用复用；[1] user 承载按条目变化的简历 AST 与目标经历，
+    不得前移。命中量由 log_prompt_cache_hit 观测（见 app/core/llm_usage.py）。
+    """
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": (
+            f"【全局完整简历结构（仅供参考，帮助你了解候选人全貌与技能掌握情况）】：\n"
+            f"{resume_json_text}\n\n"
+            f"【请仅对以下目标经历原始文本进行靶向改写】：\n"
+            f"{target_experience}"
+        )},
+    ]
 
 
 async def ats_align_experience_service(payload: AtsAlignRequest) -> dict:
@@ -147,32 +164,24 @@ async def ats_align_experience_service(payload: AtsAlignRequest) -> dict:
     )
 
     resume_json_text = json.dumps(resume_json, ensure_ascii=False, indent=2)
-    user_prompt = (
-        f"【全局完整简历结构（仅供参考，帮助你了解候选人全貌与技能掌握情况）】：\n"
-        f"{resume_json_text}\n\n"
-        f"【请仅对以下目标经历原始文本进行靶向改写】：\n"
-        f"{payload.original_experience}"
-    )
 
     logger.info(
         f"[Step 3] 拼装 LLM Prompt 完成。⏱️ [计时] Prompt 体积: System={len(system_prompt)}字符"
-        f"(含JD画像 {len(payload.jd_report_context)}字符), User={len(user_prompt)}字符"
+        f"(含JD画像 {len(payload.jd_report_context)}字符), User={len(resume_json_text) + len(payload.original_experience)}字符"
         f"(简历AST {len(resume_json_text)}字符 + 目标经历 {len(payload.original_experience)}字符)"
     )
 
     def call_llm():
         response = client.chat.completions.create(
             model=_ccfg.OPENAI_MODEL if _ccfg.OPENAI_MODEL else "gpt-4o",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            messages=_ats_messages(system_prompt, resume_json_text, payload.original_experience),
             temperature=0.3,
         )
-        return response.choices[0].message.content or ""
+        return response.choices[0].message.content or "", getattr(response, "usage", None)
 
     t_llm = time.time()
-    response_text = await asyncio.to_thread(call_llm)
+    response_text, usage = await asyncio.to_thread(call_llm)
+    log_prompt_cache_hit("ats_align_experience_service", usage)
     t_llm_cost = time.time() - t_llm
     logger.info(
         f"[Step 4] ✅ LLM 靶向手术完成！⏱️ [计时] LLM调用#2(靶向改写): {t_llm_cost:.2f}秒，"

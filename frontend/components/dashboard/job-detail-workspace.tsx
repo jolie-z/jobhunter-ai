@@ -48,7 +48,9 @@ import {
   Clock,
   Target,
   Flame,
+  BookOpen,
 } from "lucide-react"
+import { CUSTOM_PANEL_GUIDE_URL, openGuide } from "@/lib/guide-urls"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
@@ -110,6 +112,7 @@ import { useResumeV2Store } from "@/hooks/use-resume-v2-store"
 import { resumeDataToResumeDataV2 } from "@/lib/resume-converter"
 import type { ResumeDataV2 } from "@/types/resume"
 import { buildResumeExportRequest } from "@/lib/resume-export"
+import { fetchActiveResumeAvatar } from "@/lib/resume-avatar"
 
 // 兼容转发：历史引用方从这里 import API_BASE，权威出口已收敛到 lib/api
 export { API_BASE }
@@ -146,6 +149,7 @@ interface JobDetailWorkspaceProps {
   onPrevious: () => void
   onNext: () => void
   dynamicStatuses: string[]
+  onResumeDirtyChange?: (dirty: boolean) => void
   onRefreshJobs?: () => Promise<void>
   // 🌟 新增：多 Agent 并发状态流与日志流 TS 声明
   processingJobs?: Record<string, string>
@@ -271,10 +275,21 @@ export function JobDetailWorkspace({
   processingJobs,
   jobLiveLogs,
   globalTaskStatus,
+  onResumeDirtyChange,
 }: JobDetailWorkspaceProps) {
   const [status, setStatus] = useState(job?.followStatus || "")
   const setResumeDataV2 = useResumeV2Store(state => state.setResumeData)
   const resumeDataV2 = useResumeV2Store(state => state.resumeData)
+  // 🌟 2026-10-07 未保存提醒：hydration 完成时建立基线快照；保存/导出成功会经
+  // onUpdateJob 触发本 effect 重装载从而自然刷新基线；store 内容偏离基线 = 有未保存修改
+  // 脏检测基线已迁入 useResumeV2Store（savedBaseline）：与 setResumeData 同事务更新，
+  // 杜绝「完成回调铺画布走 store、基线走 prop 回流」双通道竞态（2026-10-11 退出提醒误报根因）
+  const savedBaseline = useResumeV2Store((s) => s.savedBaseline)
+  const setSavedBaseline = useResumeV2Store((s) => s.setSavedBaseline)
+  // 装载必须走同事务 action：store 写入会经 enrichResumeWithKeys 注入 _key，
+  // 基线若取转换前的原始对象，来源 JSON 不含 _key 时装载即恒 dirty（2026-10-19 误报根因）
+  const setResumeDataWithBaseline = useResumeV2Store((s) => s.setResumeDataWithBaseline)
+  const [isResumeDirty, setIsResumeDirty] = useState(false)
   // For V1 fallback rendering (if any old component still needs it, though we will phase them out)
   const [resumeData, setResumeData] = useState<ResumeData>(DEFAULT_RESUME)
 
@@ -418,17 +433,58 @@ export function JobDetailWorkspace({
             };
           }
         }
+        // 🌟 照片基线兜底（2026-10-22 未保存误报根因修复）：画布缺照片时按 PersonalInfo
+        // 同源（启用底稿照片，lib/resume-avatar）在基线建立前回填——基线与组件将展示的
+        // 照片严格同形，组件侧同步写退化为等值 no-op，从源头消除「零编辑即 dirty」。
+        // 仅画布 personalInfo 存在且缺照片时多发一次请求（personalInfo 整体缺失不凭空造结构），常规路径零开销
+        if (finalDataV2.personalInfo && !finalDataV2.personalInfo.avatar_url) {
+          const activeAvatar = await fetchActiveResumeAvatar()
+          if (activeAvatar) {
+            finalDataV2.personalInfo = { ...finalDataV2.personalInfo, avatar_url: activeAvatar }
+          }
+        }
         finalDataV2 = injectDynamicJobTitleV2(finalDataV2);
-        setResumeDataV2(finalDataV2);
+        // 🌟 基线快照与 store 写入同事务、同形态（转换后）；保存/导出成功会经 onUpdateJob 改
+        // aiRewriteJson/manualRefinedResume 触发本 effect 重装载，从而自然刷新基线
+        setResumeDataWithBaseline(finalDataV2);
+        setIsResumeDirty(false);
       }
     };
-    
+
     loadData();
-    
+
     return () => {
       setResumeDataV2(null);
+      setSavedBaseline(""); // R8 复审 P2：防跨岗位切换的瞬态快照残留
     }
   }, [job?.id, job?.aiRewriteJson, job?.manualRefinedResume, job?.jobTitle])
+
+  // 🌟 未保存检测：store 内容偏离基线 = 有未保存修改
+  useEffect(() => {
+    if (!savedBaseline) {
+      setIsResumeDirty(false);
+      return;
+    }
+    setIsResumeDirty(Boolean(resumeDataV2) && JSON.stringify(resumeDataV2) !== savedBaseline);
+  }, [resumeDataV2, savedBaseline]);
+
+  // 🌟 离开提醒①：刷新/关闭标签页走浏览器原生确认
+  useEffect(() => {
+    if (!isResumeDirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isResumeDirty]);
+
+  // 🌟 离开提醒②：脏状态上抛 page 层，供切换岗位/返回列表/切主 Tab 时拦截确认；
+  // 组件卸载（返回列表/切换岗位）时防御性上报"不脏"，防父层脏标志滞留误拦（R8 复审 P1）
+  useEffect(() => {
+    onResumeDirtyChange?.(isResumeDirty);
+    return () => onResumeDirtyChange?.(false);
+  }, [isResumeDirty, onResumeDirtyChange]);
 
   const handlePolishSelected = useCallback(
     async (instruction: string) => {
@@ -681,6 +737,15 @@ export function JobDetailWorkspace({
                 </button>
               )
             })}
+            {/* 📖 定制面板与微操指南 */}
+            <button
+              onClick={() => openGuide(CUSTOM_PANEL_GUIDE_URL)}
+              className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-all ml-1 border border-transparent hover:border-blue-200"
+              title="打开定制面板与简历微操终极指南"
+            >
+              <BookOpen className="size-3.5 text-blue-500" />
+              <span className="hidden md:inline">微操指南</span>
+            </button>
           </div>
         </div>
       </header>

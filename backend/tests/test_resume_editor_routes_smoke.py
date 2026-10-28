@@ -29,6 +29,7 @@ def isolated_data_dir(tmp_path, monkeypatch):
     """
     from app.api.resume_editor import (
         agent_map_routes,
+        agent_map_tasks,
         common,
         editor_routes,
         platforms_routes,
@@ -36,10 +37,17 @@ def isolated_data_dir(tmp_path, monkeypatch):
     )
 
     data_dir = str(tmp_path)
-    for mod in (common, editor_routes, platforms_routes, unified_routes, agent_map_routes):
+    # agent_map_tasks：Phase 4 映射异步引擎，同步/异步路径的 fields 读取统一经其 DATA_DIR
+    for mod in (common, editor_routes, platforms_routes, unified_routes, agent_map_routes, agent_map_tasks):
         if hasattr(mod, "DATA_DIR"):
             monkeypatch.setattr(mod, "DATA_DIR", data_dir)
     monkeypatch.setattr(common, "UNIFIED_PATH", str(tmp_path / "unified_resume.json"))
+    # 读锚点（只读字典 DICT_DIR，2026-10-26 读/写拆分）同样隔离为空目录：
+    # e04/e07 的"字典缺失 → 404"语义依赖它，否则会读到仓库内真实字典返回 200
+    dict_dir = str(tmp_path / "dicts")
+    for mod in (common, editor_routes):
+        if hasattr(mod, "DICT_DIR"):
+            monkeypatch.setattr(mod, "DICT_DIR", dict_dir)
 
     # 平台子系统独立自算的路径常量（模块级，import 时已绑定）
     import resume_editor.agent_mapper as am
@@ -51,6 +59,7 @@ def isolated_data_dir(tmp_path, monkeypatch):
     import resume_editor.platforms.zhilian_probe_healer as zhilian_ph
 
     monkeypatch.setattr(am, "DATA_DIR", data_dir)
+    monkeypatch.setattr(am, "DICT_DIR", dict_dir)
     monkeypatch.setattr(am, "REPORT_FILE", str(tmp_path / "agent_map_reports.json"))
     monkeypatch.setattr(sde, "DATA_DIR", data_dir)
     monkeypatch.setattr(sde, "SNAPSHOTS_DIR", str(tmp_path / "schema_snapshots"))
@@ -293,7 +302,8 @@ def test_a01_generate_unknown_platform_400():
 
 
 def test_a02_generate_missing_fields_data(isolated_data_dir):
-    res = client.post("/api/agent-map/generate", json={"platforms": ["boss"]})
+    # Phase 4 后默认异步（秒回 task_id）；本用例验证同步契约，显式 mode=sync（保留一个版本周期）
+    res = client.post("/api/agent-map/generate", json={"platforms": ["boss"], "mode": "sync"})
     assert res.status_code == 200
     body = res.json()
     assert body["success"] is False  # 平台 fields 缺失：顶层聚合响亮失败

@@ -12,12 +12,16 @@ import os
 import sqlite3
 from datetime import datetime
 
+# JOBHUNTER_DB_PATH 主库覆盖阀门（M1 子项②）
+from app.core.db_paths import job_hunter_db_path
+
 logger = logging.getLogger("pipeline_config")
 
-DB_PATH = os.path.join(
+# JOBHUNTER_DB_PATH 显式覆盖：未设 env 保持 backend/data 锚点原样
+DB_PATH = job_hunter_db_path(os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "data", "job_hunter.db"
-)
+))
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS pipeline_scrape_config (

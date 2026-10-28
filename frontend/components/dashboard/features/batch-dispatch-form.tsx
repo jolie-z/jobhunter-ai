@@ -9,8 +9,10 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useCrawlerTaskStore } from "@/store/crawler-task-store"
 import { toast } from "sonner"
+import { getApiBase } from "@/lib/api"
 
-const API_BASE_URL = "http://127.0.0.1:8000/api"
+// 基址运行时解析（M1 收口）：Getter 形式为桌面壳 M2 动态端口预留 seam
+const getApiBaseUrl = () => getApiBase() + "/api"
 
 const ALL_PLATFORMS = [
   { id: "boss", label: "BOSS直聘" },
@@ -43,7 +45,7 @@ export function BatchDispatchForm({ onDispatched }: BatchDispatchFormProps) {
 
   // 拉取标准薪资档位
   useEffect(() => {
-    fetch(`${API_BASE_URL}/v1/crawlers/salary-tiers`)
+    fetch(`${getApiBaseUrl()}/v1/crawlers/salary-tiers`)
       .then(res => res.ok ? res.json() : null)
       .then(data => { if (data?.tiers) setSalaryTiers(data.tiers) })
       .catch(() => {})
@@ -69,7 +71,7 @@ export function BatchDispatchForm({ onDispatched }: BatchDispatchFormProps) {
 
     setDispatchLoading(true)
     try {
-      const res = await fetch(`${API_BASE_URL}/v1/crawlers/dispatch`, {
+      const res = await fetch(`${getApiBaseUrl()}/v1/crawlers/dispatch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

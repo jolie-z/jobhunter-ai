@@ -19,6 +19,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { cn } from "@/lib/utils"
 import { ReportWarnings, ReportUnfilled, ModuleChangeSummary, ModuleReportNotice, type PlatformReport } from "../agent-report-shared"
 import { savePlatformData, fetchPlatformReport } from "../api-client"
+import { buildIncrementalSavePayload } from "../incremental-save"
 import { DynamicFieldSlot } from "@/components/ui/dynamic-field-slot"
 import { JobTitleSelector } from "@/components/ui/job-title-selector"
 import { IndustrySelector } from "@/components/ui/industry-selector"
@@ -266,10 +267,14 @@ export function useBossTabState({ data, loading, onRefresh, onSave, reportVersio
     }
   }
 
-  // 持久化数据到后端
+  // 持久化数据到后端（增量保存：只发与改前基线 localData 深比较有差异的模块，未发模块由后端合并保留）
   const persistData = async (updatedData: ResumeData): Promise<boolean> => {
-    const { ok, message } = await savePlatformData(API_BASE, "boss", updatedData)
-    if (!ok) showToast(`保存失败: ${message}`, "error")
+    const { ok, message } = await savePlatformData(API_BASE, "boss", buildIncrementalSavePayload(updatedData, localData))
+    if (!ok) {
+      showToast(`保存失败: ${message}`, "error")
+      return ok
+    }
+    setLocalData(updatedData) // 基线随保存生效刷新，连续编辑不退化为累积增量
     return ok
   }
   // 开始编辑
@@ -278,7 +283,7 @@ export function useBossTabState({ data, loading, onRefresh, onSave, reportVersio
     setEditValue(currentValue)
   }
 
-  // 保存编辑
+  // 保存编辑（经 persistData 增量保存：只发被改模块，未改模块由后端合并保留）
   const saveEdit = async (fieldName: string) => {
     if (!localData) return
 
@@ -292,21 +297,12 @@ export function useBossTabState({ data, loading, onRefresh, onSave, reportVersio
         },
       }
 
-      const response = await fetch(`${API_BASE}/api/resume-editor/save/boss`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(updatedData),
-      })
-
-      const result = await response.json()
-      if (result.success) {
-        setLocalData(updatedData)
+      const ok = await persistData(updatedData)
+      if (ok) {
         setEditingField(null)
         setEditValue(null)
         if (onSave) onSave(updatedData)
         showToast("保存成功")
-      } else {
-        showToast(`保存失败: ${result.message}`, "error")
       }
     } catch (error) {
       showToast(`保存失败: ${error}`, "error")

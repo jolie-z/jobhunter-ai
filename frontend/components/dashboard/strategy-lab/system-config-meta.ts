@@ -11,6 +11,8 @@ export interface Tutorial {
   intro: string
   steps: TutorialStep[]
   tip?: string
+  /** 置 true 时教程弹窗内出现「打开完整图文教程」按钮（在线版外链，见 feishu-guide-link.tsx） */
+  fullGuide?: boolean
 }
 
 export interface GroupMeta {
@@ -52,7 +54,8 @@ export const GROUP_META: Record<string, GroupMeta> = {
     diagnose: true,
     tutorial: {
       title: "飞书密钥与数据表配置教程",
-      intro: "飞书多维表格（Bitable）是系统的数据中枢，岗位、简历、策略、偏好都存在这里。需要先创建一个飞书应用拿到凭证，再拿到各张表的 ID。新手推荐按 docs/feishu-setup.md 完整手册一步步来。",
+      intro: "飞书多维表格（Bitable）是系统的数据中枢，岗位、简历、策略、偏好都存在这里。需要先创建一个飞书应用拿到凭证，再拿到各张表的 ID。新手点下方「打开完整图文教程」，从零到 ping 通约 10–15 分钟（含逐字段字典与排错 FAQ）。",
+      fullGuide: true,
       steps: [
         { title: "创建自建应用", desc: "打开飞书开放平台 open.feishu.cn → 开发者后台 → 创建企业自建应用。" },
         { title: "拿 App ID / App Secret", desc: "进入应用的「凭证与基础信息」页面，复制 App ID（cli_ 开头）和 App Secret。" },
@@ -138,7 +141,8 @@ export const FEISHU_CHATOPS_CHECKLIST: ChatOpsChecklistItem[] = [
 
 export const FEISHU_CHATOPS_TUTORIAL: Tutorial = {
   title: "飞书聊天指令功能启用教程",
-  intro: "启用后，你可以在飞书群里 @机器人 用自然语言指挥求职助理 Agent（如「看看整体数据」「发今天的日报」「帮这个岗位评估一下」）。无需公网 IP、域名或内网穿透。完整图文手册见 docs/feishu-setup.md。",
+  intro: "启用后，你可以在飞书群里 @机器人 用自然语言指挥求职助理 Agent（如「看看整体数据」「发今天的日报」「帮这个岗位评估一下」）。无需公网 IP、域名或内网穿透。完整图文教程点下方按钮打开（含 @机器人 指令话术与排错 FAQ）。",
+  fullGuide: true,
   steps: [
     { title: "确认飞书凭证已填写", desc: "在上方「飞书」分组中填入 App ID（cli_ 开头）和 App Secret。这是 WebSocket 长连接鉴权的基础。" },
     { title: "开启机器人能力", desc: "打开飞书开放平台 open.feishu.cn → 开发者后台 → 你的应用 → 左侧「添加应用能力」→ 勾选「机器人」→ 保存。" },

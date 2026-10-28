@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from typing import Any
 
 GLOBAL_TASK_STATE: dict[str, Any] = {
@@ -9,6 +10,32 @@ GLOBAL_TASK_STATE: dict[str, Any] = {
 
 task_status: dict[str, Any] = {}
 global_task_lock = asyncio.Lock()
+
+# 后台定时任务活动登记：T2/T3 定时投递等后台批量此前对前端完全不可见（不建 SSE 队列、
+# 不置 GLOBAL_TASK_STATE），用户在并发撞车时无从知晓系统正被谁占用。key 唯一对应一类
+# 后台活动，running=False 即注销；/api/tasks/status 聚合后供前端横幅提示。
+BACKGROUND_ACTIVITIES: dict[str, dict[str, Any]] = {}
+
+
+def set_background_activity(key: str, running: bool, *, label: str = "", detail: str = "") -> None:
+    """登记/更新/注销一条后台活动（线程安全仅指 dict 单操作，注册方自证串行调用）。"""
+    if not running:
+        BACKGROUND_ACTIVITIES.pop(key, None)
+        return
+    entry = BACKGROUND_ACTIVITIES.get(key) or {
+        "key": key,
+        "label": label or key,
+        "started_at": datetime.now().isoformat(),
+    }
+    if label:
+        entry["label"] = label
+    if detail:
+        entry["detail"] = detail
+    BACKGROUND_ACTIVITIES[key] = entry
+
+
+def get_background_activities() -> list[dict[str, Any]]:
+    return [dict(v) for v in BACKGROUND_ACTIVITIES.values()]
 
 
 class TaskChannel(asyncio.Queue):

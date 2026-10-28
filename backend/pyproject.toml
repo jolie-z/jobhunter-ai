@@ -2,7 +2,7 @@
 name = "app"
 version = "0.1.0"
 description = ""
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.10,<4.0"
 dependencies = [
     "fastapi[standard]<1.0.0,>=0.114.2",
     "python-multipart<1.0.0,>=0.0.27",
@@ -45,6 +45,7 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=3.1.1",
     "aiosqlite>=0.22.1",
     "chinese-calendar>=1.10",
+    "cryptography==46.0.3",
 ]
 
 [dependency-groups]

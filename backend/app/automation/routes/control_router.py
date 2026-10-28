@@ -61,16 +61,78 @@ async def trigger_autopilot_manual(req: TriggerRequest):
 
 @router.post("/abort")
 async def abort_pipeline(req: AbortRequest):
-    """终止当前运行中的全自动链路（优雅终止）。"""
+    """终止当前运行中的全自动链路（优雅终止）。
+
+    task_id 匹配守卫失败时的降级语义（2026-10-23 真机工单：终止静默失效）：
+    桌面单用户场景下「用户点了终止」的意图优先于 ID 精确匹配——传入 ID 与登记任务
+    不一致时，降级对当前登记任务下达终止并在响应中返回实际终止的 task_id；
+    当前无登记任务时返回 409 显式失败。失败路径一律打 WARNING 日志，不再静默。
+    """
     from app.api.routes.crawlers import stop_platform
     from app.automation import abort as abort_mod
+
+    current_tid = abort_mod.current_pipeline_task_id()
+    # 预检：当前无登记运行任务时，携带非空 task_id 的终止请求直接显式失败——
+    # 旧语义对不存在的任务也置 aborted 并返回成功，是「假受理」的另一形态。
+    # 空串不设限（防御性强制终止语义保留：仅置标志，下一轮链路 begin 时自然清除）
+    if not current_tid and req.task_id:
+        logger.warning(f"🛑 [abort] 终止请求 task_id={req.task_id!r}，但当前无登记运行任务，终止无对象")
+        raise HTTPException(
+            status_code=409,
+            detail="当前无运行中的链路任务，终止指令无对象（如任务刚结束请刷新页面）",
+        )
     ok = abort_mod.request_abort(req.task_id)
+    degraded = False
     if not ok:
-        return {"status": "success", "message": "终止指令与当前任务不匹配，已忽略", "aborted": False}
+        # 降级终止当前登记任务（桌面单用户语义：用户意图优先于 ID 匹配）。
+        # 返回值必须检查：读 current_tid 与降级置位之间存在毫秒级竞态窗口，
+        # 登记任务恰好收尾/切换时降级调用会 False——此时显式失败，绝不假受理
+        if not abort_mod.request_abort(current_tid):
+            logger.warning(
+                f"🛑 [abort] 降级终止 {current_tid} 竞态失败（传入 task_id={req.task_id!r}，"
+                f"任务已收尾或切换），本次终止未生效"
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=f"任务 {current_tid} 恰好在终止瞬间收尾/切换，终止未生效，请刷新后确认状态",
+            )
+        degraded = True
+        logger.warning(
+            f"🛑 [abort] 终止请求 task_id={req.task_id!r} 与当前登记任务 {current_tid} 不匹配，"
+            f"已降级终止当前登记任务"
+        )
+
     for p in abort_mod.KNOWN_PLATFORMS:
         stop_platform(p)
         abort_mod.request_platform_abort(p)
-    return {"status": "success", "message": "终止指令已下达，链路将在安全点收尾", "aborted": True}
+
+    # 在途投递急刹（2026-10-24 工单）：终止标志只能拦住「尚未唤起引擎」的投递，已经打开
+    # 浏览器/正在发送的岗位必须破门打断，否则会出现「已终止但打招呼语/简历图片仍真实送达」。
+    # 复用单岗取消的 delivery_interrupter：关闭活跃标签页迫使阻塞等待抛异常退出、释放串行锁。
+    interrupted: list[str] = []
+    try:
+        from app.automation import delivery_interrupter
+        from app.automation import run_snapshot as rs
+
+        for rid in sorted(rs.get_active_inflight_job_ids()):
+            if await asyncio.to_thread(delivery_interrupter.interrupt_active_job, rid):
+                interrupted.append(rid)
+        if interrupted:
+            logger.warning(f"🛑 [abort] 已破门打断在途投递岗位: {interrupted}")
+    except Exception as ie:
+        logger.warning(f"🛑 [abort] 在途投递破门打断异常（不阻断终止受理）: {ie}")
+
+    message = "终止指令已下达，链路将在安全点收尾"
+    if degraded:
+        message = f"传入 task_id 与当前任务不匹配，已按当前运行任务 {current_tid} 下达终止"
+    return {
+        "status": "success",
+        "message": message,
+        "aborted": True,
+        "task_id": current_tid,
+        "degraded": degraded,
+        "interrupted": interrupted,
+    }
 
 
 @router.post("/abort/platform/{platform}")

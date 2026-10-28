@@ -1,0 +1,167 @@
+{
+  "name": {
+    "label": "姓名",
+    "required": true,
+    "type": "text",
+    "current_value": "张三"
+  },
+  "phone": {
+    "label": "电话",
+    "required": true,
+    "type": "text",
+    "current_value": "13800138000"
+  },
+  "email": {
+    "label": "邮箱",
+    "required": false,
+    "type": "text",
+    "current_value": "zhangsan@example.com"
+  },
+  "wechat": {
+    "label": "微信号",
+    "required": false,
+    "type": "text",
+    "current_value": "wx_zhangsan"
+  },
+  "gender": {
+    "label": "性别",
+    "required": true,
+    "type": "radio",
+    "options": ["男", "女"],
+    "current_value": "男"
+  },
+  "job_status": {
+    "label": "求职状态",
+    "required": true,
+    "type": "select",
+    "options": [
+      "离职-随时到岗",
+      "在职-月内到岗",
+      "在职-考虑机会",
+      "在职-暂不考虑"
+    ],
+    "current_value": "离职-随时到岗"
+  },
+  "birth_month": {
+    "label": "出生年月",
+    "required": false,
+    "type": "yearmonth",
+    "current_value": "1995-06"
+  },
+  "work_start_date": {
+    "label": "参加工作时间",
+    "required": false,
+    "type": "yearmonth",
+    "current_value": "2018-07"
+  },
+  "experience_years": {
+    "label": "工作年限",
+    "required": false,
+    "type": "text",
+    "current_value": "5年经验"
+  },
+  "education_degree": {
+    "label": "学历",
+    "required": false,
+    "type": "text",
+    "current_value": "硕士"
+  },
+  "personal_advantage": {
+    "label": "个人优势",
+    "required": false,
+    "type": "textarea",
+    "max_length": 1000,
+    "current_value": "旧个人优势描述"
+  },
+  "expectations": {
+    "label": "求职期望",
+    "required": true,
+    "type": "array",
+    "current_value": [
+      {
+        "jobType": "fulltime",
+        "position": "资深后端架构师",
+        "city": "北京",
+        "salary": "30-50K"
+      }
+    ]
+  },
+  "work_experience": {
+    "label": "工作经历",
+    "required": true,
+    "type": "array",
+    "current_value": [
+      {
+        "company": "旧公司",
+        "industry": "互联网",
+        "department": "技术中心",
+        "position": "旧职位",
+        "startYear": "2019",
+        "startMonth": "7",
+        "endYear": "2021",
+        "endMonth": "5",
+        "content": "旧工作描述内容",
+        "achievement": "",
+        "skills": ["Python"],
+        "hideResume": false,
+        "workVocationalSkills": ["Python"]
+      }
+    ]
+  },
+  "projects": {
+    "label": "项目经历",
+    "required": false,
+    "type": "array",
+    "current_value": [
+      {
+        "project_name": "旧项目名称",
+        "project_role": "owner",
+        "project_link": "https://github.com/example/old",
+        "startYear": "2020",
+        "startMonth": "1",
+        "endYear": "2020",
+        "endMonth": "6",
+        "project_description": "旧项目描述",
+        "achievement": "旧成果"
+      }
+    ]
+  },
+  "education": {
+    "label": "教育经历",
+    "required": true,
+    "type": "array",
+    "current_value": [
+      {
+        "degree": "本科 / 全日制",
+        "degreeName": "全日制本科",
+        "eduType": "全日制",
+        "school": "旧大学",
+        "major": "计算机",
+        "startYear": "2014",
+        "endYear": "2018",
+        "campus_experience": "",
+        "thesisTitle": "",
+        "thesisDesc": ""
+      }
+    ]
+  },
+  "certificates": {
+    "label": "资格证书",
+    "required": false,
+    "type": "array",
+    "current_value": [
+      "大学英语六级"
+    ]
+  },
+  "overseas": {
+    "label": "驻外选项",
+    "required": false,
+    "type": "object",
+    "current_value": {
+      "countries": ["中国香港"],
+      "languages": ["英语"],
+      "duration": "1年",
+      "allowView": true
+    }
+  }
+}

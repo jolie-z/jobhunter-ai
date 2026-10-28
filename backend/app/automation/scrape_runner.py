@@ -33,10 +33,12 @@ def _get_raw_db_path() -> str:
     if fa and hasattr(fa, "RAW_DB_PATH"):
         return fa.RAW_DB_PATH
     import os
-    return os.path.join(
+
+    from app.core.db_paths import job_hunter_db_path
+    return str(job_hunter_db_path(os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
         "data", "job_hunter.db"
-    )
+    )))
 
 
 def _derive_search_from_config(config: dict[str, Any]) -> dict[str, Any]:

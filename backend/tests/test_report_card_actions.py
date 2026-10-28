@@ -133,10 +133,11 @@ async def test_recall_selected_rejected_dual_flow():
         db_path = tmp_db.name
         with sqlite3.connect(db_path) as conn:
             conn.execute(
-                "CREATE TABLE raw_jobs (rowid INTEGER PRIMARY KEY, feishu_record_id TEXT, job_link TEXT, process_status TEXT)"
+                "CREATE TABLE raw_jobs (rowid INTEGER PRIMARY KEY, feishu_record_id TEXT, job_link TEXT, process_status TEXT, "
+                "company_name TEXT DEFAULT '', job_title TEXT DEFAULT '')"
             )
-            conn.execute("INSERT INTO raw_jobs (rowid, feishu_record_id, job_link, process_status) VALUES (101, 'rec_101', 'https://example.com/job/101', '规则清洗淘汰')")
-            conn.execute("INSERT INTO raw_jobs (rowid, feishu_record_id, job_link, process_status) VALUES (102, '', '', 'AI排雷淘汰')")
+            conn.execute("INSERT INTO raw_jobs (rowid, feishu_record_id, job_link, process_status, company_name, job_title) VALUES (101, 'rec_101', 'https://example.com/job/101', '规则清洗淘汰', '回测公司', '数据工程师')")
+            conn.execute("INSERT INTO raw_jobs (rowid, feishu_record_id, job_link, process_status, company_name, job_title) VALUES (102, '', '', 'AI排雷淘汰', '回测公司B', '运维')")
 
         chat_id = "oc_test_chat_123"
         action_value = {"action": "recall_selected_rejected"}
@@ -167,7 +168,7 @@ async def test_recall_selected_rejected_dual_flow():
 
             assert mock_card.call_count == 1
             card = mock_card.call_args[0][1]
-            assert "误杀召回部分完成" in card["header"]["title"]["content"]
+            assert "误杀召回部分受理" in card["header"]["title"]["content"]  # P1-4:不再提前宣告「完成」
             assert "成功 1 / 失败 1" in card["header"]["title"]["content"]
             assert "AI 初步评估" in str(card)
 
@@ -179,10 +180,11 @@ async def test_confirm_trash_dual_sync():
         db_path = tmp_db.name
         with sqlite3.connect(db_path) as conn:
             conn.execute(
-                "CREATE TABLE raw_jobs (rowid INTEGER PRIMARY KEY, feishu_record_id TEXT, process_status TEXT)"
+                "CREATE TABLE raw_jobs (rowid INTEGER PRIMARY KEY, feishu_record_id TEXT, process_status TEXT, "
+                "company_name TEXT DEFAULT '', job_title TEXT DEFAULT '')"
             )
-            conn.execute("INSERT INTO raw_jobs (rowid, feishu_record_id, process_status) VALUES (201, 'rec_trash_1', '待归档')")
-            conn.execute("INSERT INTO raw_jobs (rowid, feishu_record_id, process_status) VALUES (202, '', '待归档')")
+            conn.execute("INSERT INTO raw_jobs (rowid, feishu_record_id, process_status, company_name, job_title) VALUES (201, 'rec_trash_1', '清洗淘汰', '归档公司A', '测试岗A')")
+            conn.execute("INSERT INTO raw_jobs (rowid, feishu_record_id, process_status, company_name, job_title) VALUES (202, '', '清洗淘汰', '归档公司B', '测试岗B')")
 
         chat_id = "oc_test_chat_123"
         action_value = {
@@ -201,8 +203,8 @@ async def test_confirm_trash_dual_sync():
             with sqlite3.connect(db_path) as conn:
                 st1 = conn.execute("SELECT process_status FROM raw_jobs WHERE feishu_record_id = 'rec_trash_1'").fetchone()[0]
                 st2 = conn.execute("SELECT process_status FROM raw_jobs WHERE rowid = 202").fetchone()[0]
-                assert st1 == "已淘汰"
-                assert st2 == "已淘汰"
+                assert st1 == "已确认淘汰"  # P0-1:归档词统一为「已确认淘汰」,不再写全库无读取方的「已淘汰」
+                assert st2 == "已确认淘汰"
 
             assert mock_card.call_count == 1
             card = mock_card.call_args[0][1]
@@ -438,7 +440,7 @@ def test_master_pipeline_card_structure():
         task_time="2026-09-17 09:00", duration_mins=28, total_scraped=20, hard_passed=20,
         hard_rejected=0, ai_passed=16, ai_rejected=4, precision_cnt=8,
         channel_counts={"BOSS直聘": 5, "猎聘": 5, "智联招聘": 5, "51job": 5},
-        grade_counts={"A": 2, "B": 6, "C": 4, "D/F": 3}, mass_review_cnt=4, other_review_cnt=0,
+        grade_counts={"A": 2, "B": 6, "C": 4, "D/F": 3}, mass_review_cnt=4, auto_delivered_cnt=0,
     )
 
     assert "全链路指挥中心 · 定时任务 · 09:00" in card["header"]["title"]["content"]
@@ -448,7 +450,7 @@ def test_master_pipeline_card_structure():
         task_time="2026-09-26 19:30", duration_mins=8, total_scraped=5, hard_passed=5,
         hard_rejected=0, ai_passed=5, ai_rejected=0, precision_cnt=2,
         channel_counts={"BOSS直聘": 0, "猎聘": 5, "智联招聘": 0, "51job": 0},
-        grade_counts={"A": 0, "B": 2, "C": 2, "D/F": 1}, mass_review_cnt=0, other_review_cnt=1,
+        grade_counts={"A": 0, "B": 2, "C": 2, "D/F": 1}, mass_review_cnt=0, auto_delivered_cnt=1,
         trigger_source="manual",
     )
     assert "全链路指挥中心 · 手动即时任务 · 19:30" in card_manual["header"]["title"]["content"]
@@ -477,16 +479,20 @@ def test_master_pipeline_card_structure():
     assert "51job" in card_str
     assert "A级" in card_str
     assert "精投岗位概览" in card_str
-    assert "海投撞门槛" in card_str
+    # 2026-10-23 口径修复：海投流转块改为「安检拦截待审批 + 真实已投递」双计数
+    assert "海投安检与投递" in card_str
+    assert "【已在待审批tab等待审批放行】" in card_str
+    assert "【已执行自动投递】" in card_str
 
-    # 校验 3 个跳转按钮
+    # 校验 4 个跳转按钮（2026-10-10 新增自动投递详情卡）
     action_el = next(e for e in card["elements"] if e.get("tag") == "action")
     actions = action_el["actions"]
-    assert len(actions) == 3
+    assert len(actions) == 4
     action_types = [a["value"]["action"] for a in actions]
     assert "open_ab_card" in action_types
     assert "open_mass_card" in action_types
     assert "open_rejected_card" in action_types
+    assert "open_delivered_card" in action_types
 
 
 def test_delivery_batch_card_structure():

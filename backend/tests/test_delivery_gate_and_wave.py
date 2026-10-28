@@ -8,7 +8,7 @@ import json
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -49,6 +49,30 @@ def test_gate_big_company_mass_blocked(monkeypatch):
         {"grade": "C", "platform": "boss", "feishu_fields": {"公司规模": "1000-5000人"}}
     )
     assert not ok and "门槛" in reason
+
+
+def test_gate_range_uses_upper_bound_5000_threshold(monkeypatch):
+    """2026-10-08 事故回归：区间规模此前只取下限，5000 门槛被「1000-9999人」的 1000 骗过
+    （兴趣岛/卡尔蔡司直接海投）。修复后按区间上限 9999 比较 → 拦截。"""
+    _patch_config(monkeypatch, {"mass_apply_max_headcount": 5000,
+                                "auto_deliver_platforms": BASE_CFG["auto_deliver_platforms"],
+                                "auto_deliver_grades": BASE_CFG["auto_deliver_grades"]})
+    ok, reason = wf.evaluate_delivery_gate(
+        {"grade": "C", "platform": "boss", "feishu_fields": {"公司规模": "1000-9999人"}}
+    )
+    assert not ok and "1000-9999人" in reason
+
+    # 对照：区间上限 < 门槛 → 放行（500-999人 上限 999 < 5000）
+    ok2, reason2 = wf.evaluate_delivery_gate(
+        {"grade": "C", "platform": "boss", "feishu_fields": {"公司规模": "500-999人"}}
+    )
+    assert ok2 and reason2 == ""
+
+    # 单值形态不受影响：「10000人以上」→ 10000 ≥ 5000 拦截
+    ok3, reason3 = wf.evaluate_delivery_gate(
+        {"grade": "C", "platform": "boss", "feishu_fields": {"公司规模": "10000人以上"}}
+    )
+    assert not ok3 and "门槛" in reason3
 
 
 def test_gate_grade_not_in_whitelist_blocked(monkeypatch):
@@ -242,3 +266,45 @@ def test_no_ghost_e_defaults_in_source():
         if '"C", "D", "E", "F"' in p.read_text(encoding="utf-8")
     ]
     assert offenders == [], f"默认白名单仍含幽灵 E: {offenders}"
+
+
+# ---------------- delivery_node 批次预检接线（2026-10-09） ----------------
+
+@pytest.mark.asyncio
+async def test_delivery_node_precheck_blocks_on_env_failure(monkeypatch):
+    """预检未就绪 → delivery_node 返回 [环境] 错误，投递引擎完全不被调用（CR R1 P2 补覆盖）。"""
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)  # 预检接线有 PYTEST 门，测试需摘除
+    state = {"record_id": "rec_pre_block", "job_id": "rec_pre_block", "platform": "猎聘",
+             "grade": "C", "feishu_fields": {}}
+    with patch("app.session.preflight.ensure_delivery_platforms_ready", new_callable=AsyncMock, return_value={"liepin": False}), \
+         patch("app.automation.workflow.deliver_liepin_job") as mock_deliver:
+        res = await wf.delivery_node(state)
+    assert "[环境]" in (res or {}).get("error", "")
+    mock_deliver.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delivery_node_precheck_pass_proceeds_to_engine(monkeypatch):
+    """预检就绪 → 照常进入投递引擎（接线不改变既有成功路径）。"""
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    mock_state = {
+        "record_id": "rec_pre_pass", "job_id": "rec_pre_pass", "platform": "boss",
+        "job_url": "https://www.zhipin.com/job_detail/test.html",
+        "company_name": "测试企业", "job_name": "AI产品经理", "grade": "B",
+        "is_custom": False, "image_items": [{"token": "tok", "name": "t.jpg"}],
+        "greeting": "您好", "feishu_fields": {},
+    }
+    mock_tool = MagicMock()
+    mock_tool.ainvoke = AsyncMock(return_value="❌ BOSS 投递引擎执行失败：网络连接超时")
+    from app.automation import run_snapshot as _rs
+    try:
+        with patch("app.session.preflight.ensure_delivery_platforms_ready", new_callable=AsyncMock, return_value={"boss": True}), \
+             patch("app.automation.workflow.deliver_boss_job", mock_tool), \
+             patch("app.services.feishu_service.mark_job_delivery_failed") as mock_mark_failed, \
+             patch("app.automation.workflow.update_feishu_status") as mock_update_status:
+            res = await wf.delivery_node(mock_state)
+            assert "error" in res
+            mock_tool.ainvoke.assert_called_once()  # 预检放行 → 引擎被调用
+            mock_mark_failed.assert_called_once()
+    finally:
+        _rs.remove_delivery_failure("rec_pre_pass")

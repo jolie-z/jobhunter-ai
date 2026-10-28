@@ -10,7 +10,16 @@ import type {
 
 interface ResumeV2State {
   resumeData: ResumeDataV2 | null
-  
+
+  // 脏检测基线（2026-10-11 迁入 store：此前在 workspace 的 useRef 里，异步完成链路
+  // （skill 改写 complete）只能走 prop 回流异步刷新基线，多级竞态下 store 与基线错开
+  // → 退出「未保存提醒」假阳性。与 setResumeData 同事务更新后链路确定性闭合）
+  savedBaseline: string
+  setSavedBaseline: (snapshot: string) => void
+  /** 铺画布+设基线同事务：基线取 withKeys 转换后的最终状态（原始 parsed_json 与
+      store 形态差 _key 注入，直接 stringify 原始对象会让 dirty 恒真——R1 P1） */
+  setResumeDataWithBaseline: (data: ResumeDataV2 | null) => void
+
   // Base setters
   setResumeData: (data: ResumeDataV2 | null) => void
   
@@ -116,8 +125,33 @@ const genItemKey = () => `itm_${Date.now().toString(36)}_${++_itemKeyCounter}`
 const withKeys = <T extends { _key?: string }>(items?: (T | null | undefined)[]): T[] =>
   ((items || []).filter(Boolean) as T[]).map(it => ({ ...it, _key: it._key || genItemKey() }))
 
+/** setResumeData 系共用的 withKeys 结构化转换（单一事实源，R2 P2 去重） */
+const enrichResumeWithKeys = (data: ResumeDataV2): ResumeDataV2 => ({
+  ...data,
+  workExperience: withKeys(data.workExperience),
+  personalProjects: withKeys(data.personalProjects),
+  archivedProjects: withKeys(data.archivedProjects),
+  archivedWorkExperience: withKeys(data.archivedWorkExperience),
+  education: data.education ? withKeys(data.education) : data.education,
+  moduleOrder: [...new Set(data.moduleOrder || [])],
+})
+
 export const useResumeV2Store = create<ResumeV2State>((set) => ({
   resumeData: null,
+  savedBaseline: "",
+
+  setSavedBaseline: (snapshot) => set({ savedBaseline: snapshot }),
+
+  setResumeDataWithBaseline: (data) =>
+    set((state) => {
+      const next = data ? enrichResumeWithKeys(data) : data
+      // 基线取转换后的最终状态（同事务），杜绝"原始 JSON vs store 形态"恒 dirty
+      return { resumeData: next, savedBaseline: JSON.stringify(next) }
+    }),
+
+  setResumeData: (data) => set({
+    resumeData: data ? enrichResumeWithKeys(data) : data
+  }),
 
   confirmModule: (moduleKey) =>
     set((state) => {
@@ -135,17 +169,6 @@ export const useResumeV2Store = create<ResumeV2State>((set) => ({
       };
     }),
 
-  setResumeData: (data) => set({
-    resumeData: data ? {
-      ...data,
-      workExperience: withKeys(data.workExperience),
-      personalProjects: withKeys(data.personalProjects),
-      archivedProjects: withKeys(data.archivedProjects),
-      archivedWorkExperience: withKeys(data.archivedWorkExperience),
-      education: data.education ? withKeys(data.education) : data.education,
-      moduleOrder: [...new Set(data.moduleOrder || [])],
-    } : data
-  }),
 
   updatePersonalInfo: (data) => 
     set((state) => {

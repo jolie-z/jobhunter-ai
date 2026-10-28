@@ -236,6 +236,118 @@ def test_artifacts_rejects_unsafe_job_id():
     print("✅ test_artifacts_rejects_unsafe_job_id passed!")
 
 
+def test_async_worker_strips_platform_prefix():
+    """锁住异步 worker 的 record_id 清洗（2026-10-09 RecordIdNotFound 事故）：
+    带平台前缀的组合键（如 51job-recXXX / liepin-recXXX）必须在进入任何飞书调用前剥成纯 record_id，
+    同时覆盖 clean_rid（简历库读取）与 clean_id（process_resume_rewrite 的 job_record_id 入参）两条链路。
+    直接以 async 调用路由函数驱动 worker（不起 TestClient/lifespan——app 启动会
+    set_pipeline_app 污染全局图实例，破坏后续 delivery 测试的 monkeypatch），
+    worker 用错误文本短路回写，只观察回写前的飞书读取与引擎入参。"""
+    import asyncio
+    import time as _time
+    from unittest.mock import patch
+    from app.strategy.routes import skill_agent_router
+    from app.strategy.routes.skill_agent_router import (
+        SkillRewriteAndSaveRequest,
+        skill_rewrite_async_api,
+    )
+
+    async def run():
+        calls = []
+        rewrite_kwargs = {}
+        src_json = '{"personalInfo": {"name": "张三"}, "workExperience": [{"title": "A"}]}'
+
+        async def fake_get_record(table_id, record_id):
+            calls.append((table_id, record_id))
+            return {"fields": {"结构化数据": src_json}}
+
+        def fake_rewrite(**kwargs):
+            rewrite_kwargs.update(kwargs)
+            from ai_agents.engine_facade import RewriteResult
+            return RewriteResult(markdown="❌ short-circuit", usage={}, engine="official")
+
+        with patch.object(skill_agent_router.feishu_client, "get_record", side_effect=fake_get_record), \
+             patch.object(skill_agent_router.feishu_client, "get_tenant_access_token", return_value=""), \
+             patch("app.strategy.skill_rewrite_service.process_resume_rewrite_detailed", side_effect=fake_rewrite):
+            resp = await skill_rewrite_async_api(SkillRewriteAndSaveRequest(
+                job_id="51job-recPrefixSmoke1",
+                resume_record_id="liepin-recResumeSmoke1",
+                jd_text="招聘 AI Agent 工程师",
+                job_name="清洗回归",
+                include_diagnosis=True,
+            ))
+            assert resp["status"] == "success"
+
+            deadline = _time.time() + 15  # 全量组合跑时 CPU 忙,worker 调度可能显著延迟(5s 窗曾偶发超时)
+            while _time.time() < deadline and not calls:
+                await asyncio.sleep(0.05)
+            assert calls, "worker 未在超时内执行简历库读取"
+            # 简历库模式：唯一 get_record 落在简历表，且带前缀的 resume_record_id 已剥成纯 rec id
+            table_id, record_id = calls[0]
+            assert record_id == "recResumeSmoke1", f"resume_record_id 前缀未剥离: {record_id!r}"
+            # 岗位模式入参（job_record_id）同样必须已是纯 rec id
+            assert rewrite_kwargs.get("job_record_id") == "recPrefixSmoke1", \
+                f"job_id 前缀未剥离: {rewrite_kwargs.get('job_record_id')!r}"
+
+    asyncio.run(run())
+    print("✅ test_async_worker_strips_platform_prefix passed!")
+
+
+def test_load_job_diagnosis_priority_and_fallback():
+    """锁住共享诊断读取：合成报告优先解析；缺失时退回 6 个分字段；record 缺失返回 None；飞书异常透传。"""
+    import asyncio
+    from unittest.mock import patch
+    from app.strategy.routes import skill_agent_router
+    from app.strategy.routes.skill_agent_router import _load_job_diagnosis
+
+    composite = {"dream_picture": "合成画像"}
+    split_fields = {
+        "理想画像与能力信号": "画像A",
+        "核心能力词典": "词典B",
+        "简历逐行审计": "审计C",
+        "高杠杆匹配点": "杠杆D",
+        "致命硬伤与毒点": "毒点E",
+        "破局行动计划": "计划F",
+    }
+
+    async def run():
+        with patch.object(skill_agent_router.feishu_client, "get_record",
+                          return_value={"fields": {"深度分析诊断报告(AI)": '{"dream_picture": "合成画像"}'}}):
+            record, diag = await _load_job_diagnosis("recCompose01")
+            assert record is not None and diag == composite
+
+        with patch.object(skill_agent_router.feishu_client, "get_record",
+                          return_value={"fields": dict(split_fields)}):
+            _, diag = await _load_job_diagnosis("recSplit01")
+            assert diag == {
+                "dream_picture": "画像A",
+                "ats_ability_analysis": "词典B",
+                "resume_audit": "审计C",
+                "strong_fit_assessment": "杠杆D",
+                "risk_red_flags": "毒点E",
+                "deep_action_plan": "计划F",
+            }
+
+        with patch.object(skill_agent_router.feishu_client, "get_record", return_value=None):
+            record, diag = await _load_job_diagnosis("recMissing01")
+            assert record is None and diag == {}
+
+        async def boom(table_id, record_id):
+            raise RuntimeError("feishu down")
+
+        with patch.object(skill_agent_router.feishu_client, "get_record", side_effect=boom):
+            try:
+                await _load_job_diagnosis("recBoom01")
+                raise AssertionError("飞书异常应透传而非吞掉")
+            except RuntimeError:
+                pass
+
+        assert await _load_job_diagnosis("") == (None, {})
+
+    asyncio.run(run())
+    print("✅ test_load_job_diagnosis_priority_and_fallback passed!")
+
+
 if __name__ == "__main__":
     print("🚀 Running Skill Artifacts & Fill API Tests...")
     test_skill_dirs_core_logic()
@@ -243,3 +355,27 @@ if __name__ == "__main__":
     test_fill_resume_from_markdown_api()
     test_skill_rewrite_async_and_logs_api()
     print("\n🎉 ALL SKILL ARTIFACTS TESTS 100% PASSED!")
+
+
+def test_list_artifacts_includes_json_outputs():
+    """契约支持 json/txt 产物；产物库列表不能只扫 *.md。"""
+    from ai_agents.skills.skill_dirs import (
+        delete_job_results,
+        list_job_skill_artifacts,
+        save_skill_result,
+    )
+
+    job_id = "recJsonArtifact20261025"
+    try:
+        save_skill_result(
+            job_record_id=job_id,
+            skill_id="json_skill",
+            files=[{"name": "result.json", "content": '{"ok": true}'}],
+            token_usage={},
+            replace_existing=True,
+            meta_extra={"final_artifact": "result.json", "result_kind": "json"},
+        )
+        items = list_job_skill_artifacts(job_id, "json_skill")
+        assert any(i["name"] == "result.json" and i["is_final"] for i in items)
+    finally:
+        delete_job_results(job_id)

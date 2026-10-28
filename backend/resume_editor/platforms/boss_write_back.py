@@ -31,14 +31,12 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from resume_editor.backwrite_report_system import create_backwrite_report
+from resume_editor.paths import DATA_DIR, WRITEBACK_LOGS_DIR, ensure_data_dir, fields_path, writeback_path  # noqa: F401
 from resume_editor.platforms.skill_mapper import map_skills
 
-# Add backend dir to path for imports
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_BACKEND_DIR = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
-DATA_DIR = os.path.join(_BACKEND_DIR, "resume_editor", "data")
-FIELDS_PATH = os.path.join(DATA_DIR, "boss_fields.json")
-SNAPSHOT_PATH = os.path.join(DATA_DIR, "boss_writeback.json")
+# 用户数据路径一律走 resume_editor.paths 真源（打包态落用户数据目录，安装目录更新即清空）
+FIELDS_PATH = fields_path("boss")
+SNAPSHOT_PATH = writeback_path("boss")
 
 PORT = 19222
 RESUME_URL = "https://www.zhipin.com/web/geek/resume"
@@ -978,9 +976,11 @@ def run_write_back(dry_run=False, selected_paths=None):
     succ = sum(1 for r in results if r["ok"])
     print(f"\n  回写完成：{succ}/{len(results)} 成功")
     
-    #  Generate detailed backwrite report
+    #  Generate detailed backwrite report（含个人简历内容：写用户数据目录的回写日志区，不再写 backend 根；
+    #  打包态全新安装该目录尚不存在，先预建）
+    ensure_data_dir()
     report_file = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        WRITEBACK_LOGS_DIR,
         f"boss_writeback_report_{time.strftime('%Y%m%d_%H%M%S')}.html",
     )
     report = create_backwrite_report({"actions": plan.get("actions", []), "skipped": plan.get("skipped", [])}, results, report_file)

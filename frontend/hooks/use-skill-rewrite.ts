@@ -26,6 +26,89 @@ export interface SkillRewriteResult {
   parsed_json: Record<string, any>
   markdown: string
   usage: Record<string, any>
+  partial?: boolean
+  artifact_count?: number
+  expected_artifact_count?: number
+  engine?: "official" | "agent"
+  result_kind?: "resume" | "markdown" | "json"
+  has_resume_output?: boolean
+  archive_error?: string
+}
+
+export interface SkillOutputSpec {
+  filename: string
+  title?: string
+  required?: boolean
+  is_final?: boolean
+  kind?: string
+  is_resume?: boolean
+}
+
+export interface SkillContractSummary {
+  engine: "official" | "agent"
+  output_kind: "resume" | "markdown" | "json"
+  expected_output_count: number
+  has_resume_output: boolean
+  final_artifact?: string | null
+  postprocess?: string
+  final_source?: string
+}
+
+export interface SkillTokenEstimate {
+  point: number
+  low: number
+  high: number
+  source: "history" | "heuristic"
+  sample_count?: number
+}
+
+export interface SkillScanReport {
+  skill_id: string
+  name?: string
+  is_package?: boolean
+  references_count?: number
+  contract: {
+    engine: "official" | "agent"
+    output_kind: "resume" | "markdown" | "json"
+    final_artifact?: string | null
+    final_source?: string
+    postprocess?: string
+    writeback?: string
+    outputs: SkillOutputSpec[]
+    expected_artifact_count: number
+    has_resume_output: boolean
+    output_count_source?: string
+    warnings?: string[]
+  }
+  summary?: SkillContractSummary
+  estimated_tokens: SkillTokenEstimate
+  estimate_scope: "skill_only" | "history_full_run" | "skill_and_inputs"
+  warnings?: string[]
+}
+
+export interface SkillPreflightReport {
+  skill_id: string
+  name?: string
+  engine: "official" | "agent"
+  result_kind: "resume" | "markdown" | "json"
+  has_resume_output: boolean
+  expected_artifact_count: number
+  final_artifact?: string | null
+  final_source?: string
+  outputs: SkillOutputSpec[]
+  output_count_source?: string
+  warnings: string[]
+  will_load: {
+    skill_md: boolean
+    skill_chars: number
+    references_count: number
+    jd_chars: number
+    resume_chars: number
+    diagnosis_injected: boolean
+    resume_library_mode: boolean
+  }
+  estimated_tokens: SkillTokenEstimate
+  estimate_scope: "skill_and_inputs"
 }
 
 /**
@@ -87,14 +170,150 @@ export async function startAsyncSkillRewrite(params: SkillRewriteParams): Promis
   return json.task_id as string
 }
 
-/** 读取全局 A级岗位画像（简历库模式的 JD 输入），无内容时返回空串 */
+/**
+ * 读取全局 A级岗位画像供前端 LLM 消费方注入（简历库 Skill 改写、经历拷问），无内容时返回空串。
+ *
+ * 双轨契约（2026-10-12）：下游 LLM 消费方注入「附：下游速览」速览版（meta.llm_brief，
+ * ~2k tokens），人读弹窗才取 data 完整版（~1 万字符）。旧报告/迁移值无速览区块
+ * （llm_brief 缺失或空串）时回退完整版，与后端 get_global_jd_report() 回退口径一致。
+ * 前端新的 LLM 消费方一律走这里取画像，不要再直取 /get_jd_report 的 data。
+ */
 export async function fetchGlobalJdReport(): Promise<string> {
   try {
     const res = await fetch(`${API_BASE}/api/strategy/get_jd_report`)
     const json = await res.json().catch(() => null)
-    if (res.ok && json?.status === "success") return String(json.data ?? "")
+    if (res.ok && json?.status === "success") {
+      const brief = String(json.meta?.llm_brief ?? "").trim()
+      return brief || String(json.data ?? "")
+    }
     return ""
   } catch {
     return ""
   }
+}
+
+/** 上传/选择前扫描技能包：产物清单、是否含简历、token 预估（仅技能包）。 */
+export async function scanSkill(skillId: string): Promise<SkillScanReport | null> {
+  if (!skillId) return null
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15000)
+  try {
+    const res = await fetch(
+      `${API_BASE}/api/resume-editor/skills/${encodeURIComponent(skillId)}/scan`,
+      { signal: controller.signal },
+    )
+    const json = await res.json().catch(() => null)
+    if (!res.ok || !json?.success || !json?.data) return null
+    return json.data as SkillScanReport
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** 执行前预检：读取 JD/简历上下文（不调用 LLM），返回产物契约与 token 预估。 */
+export async function preflightSkillRewrite(params: SkillRewriteParams): Promise<SkillPreflightReport> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 30000)
+  try {
+    const res = await fetch(`${API_BASE}/api/strategy/skill_rewrite_preflight`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        job_id: params.job_id ?? "",
+        jd_text: params.jd_text,
+        job_name: params.job_name,
+        resume_record_id: params.resume_record_id,
+        skill_id: params.skill_id,
+        include_diagnosis: params.include_diagnosis ?? true,
+      }),
+      signal: controller.signal,
+    })
+    const json = await res.json().catch(() => null)
+    if (!res.ok || !json || json.status !== "success" || !json.data) {
+      throw new Error(json?.detail || `执行前预检失败（HTTP ${res.status}）`)
+    }
+    return json.data as SkillPreflightReport
+  } catch (err: any) {
+    if (controller.signal.aborted) {
+      throw new Error("执行前预检超时（30 秒），请检查后端服务后重试")
+    }
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// ===== 看板分流判据 =====
+// 官方剧本与单文件自定义技能都走单轮标准引擎（事件稀疏），不弹「作战推演看板」；
+// 仅多文件技能包（is_package 且 references_count>0，与后端 engine_facade 路由到
+// 多轮 Agent 的判据同源）才弹看板——保证「弹看板必有真推演，有推演必弹看板」。
+
+/** 官方剧本 ID 集合（选择器未选/默认值均视为官方剧本，无需查列表）——全库唯一判据，禁止内联比对 */
+const OFFICIAL_SKILL_IDS = new Set(["", "resume_rewrite", "default"])
+
+export function isOfficialSkillId(skillId?: string | null): boolean {
+  return !skillId || OFFICIAL_SKILL_IDS.has(skillId)
+}
+
+interface SkillMetaBrief {
+  id: string
+  name: string
+  is_package: boolean
+  references_count: number
+  contract_summary?: SkillContractSummary | null
+}
+
+let _skillsMetaCache: { at: number; skills: SkillMetaBrief[] } | null = null
+const _SKILLS_META_TTL_MS = 5 * 60 * 1000
+
+/** 上传/删除技能后清缓存，保证下一次 isPackageSkill/skillDisplayName 读到新契约。 */
+export function invalidateSkillsMetaCache(): void {
+  _skillsMetaCache = null
+}
+
+async function fetchSkillsMeta(): Promise<SkillMetaBrief[] | null> {
+  if (_skillsMetaCache && Date.now() - _skillsMetaCache.at < _SKILLS_META_TTL_MS) {
+    return _skillsMetaCache.skills
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/resume-editor/skills/`)
+    const json = await res.json().catch(() => null)
+    if (!res.ok || !json?.success || !Array.isArray(json.skills)) return null
+    const skills: SkillMetaBrief[] = json.skills.map((s: any) => ({
+      id: String(s.id ?? ""),
+      name: String(s.name ?? ""),
+      is_package: Boolean(s.is_package),
+      references_count: Number(s.references_count ?? 0),
+      contract_summary: s.contract_summary ?? null,
+    }))
+    _skillsMetaCache = { at: Date.now(), skills }
+    return skills
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 该技能是否为多文件技能包（走多轮 Agent 推演，值得弹实时看板）。
+ * 列表拉取失败时回退 true（保持既有弹看板行为，宁多勿缺）。
+ */
+export async function isPackageSkill(skillId?: string | null): Promise<boolean> {
+  if (isOfficialSkillId(skillId)) return false
+  const skills = await fetchSkillsMeta()
+  if (!skills) return true
+  const meta = skills.find((s) => s.id === skillId)
+  if (!meta) return true
+  // 契约优先：单文件通用 skill 也可能被后端路由到渐进式 agent
+  if (meta.contract_summary?.engine) return meta.contract_summary.engine === "agent"
+  return meta.is_package && meta.references_count > 0
+}
+
+/** 技能的界面显示名：官方剧本统一中文名，自定义优先元数据 name，兜底原始 id */
+export async function skillDisplayName(skillId?: string | null): Promise<string> {
+  if (isOfficialSkillId(skillId)) return "官方标准剧本"
+  const skills = await fetchSkillsMeta()
+  const meta = skills?.find((s) => s.id === skillId)
+  return meta?.name || String(skillId)
 }

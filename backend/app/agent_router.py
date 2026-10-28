@@ -6,6 +6,9 @@ from typing import Annotated, TypedDict
 
 import requests
 
+# JOBHUNTER_DB_PATH 主库覆盖阀门（M1 子项②）+ M2 DATA_DIR 收口
+from app.core.db_paths import job_hunter_db_path, writable_path
+
 # ==========================================
 # 🌟 修复路径问题
 # ==========================================
@@ -14,13 +17,13 @@ PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-DB_PATH = os.path.join(PROJECT_ROOT, "data", "job_hunter.db")
+# JOBHUNTER_DB_PATH 显式覆盖：未设 env 保持 backend/data 锚点原样
+DB_PATH = job_hunter_db_path(os.path.join(PROJECT_ROOT, "data", "job_hunter.db"))
 
 # ==========================================
 # 引入 LangGraph 核心
 # ==========================================
 from langchain_core.messages import BaseMessage, SystemMessage  # noqa: E402
-from langchain_openai import ChatOpenAI  # noqa: E402
 from langgraph.checkpoint.memory import MemorySaver  # fallback only  # noqa: E402
 from langgraph.graph import START, StateGraph  # noqa: E402
 from langgraph.graph.message import add_messages  # noqa: E402
@@ -198,19 +201,34 @@ SYSTEM_PROMPT = f"""你是一个顶级的高情商 AI 求职助理 Agent。你�
 12. 回复简洁有力，用 emoji 分段，不要啰嗦。
 """
 
-llm = ChatOpenAI(
-    api_key=settings.OPENAI_API_KEY,
-    base_url=settings.OPENAI_BASE_URL,
-    model=settings.OPENAI_MODEL,
-    temperature=0.1,
-    timeout=180,  # 供应商网关挂起时必须有超时兜底，否则用户「思考中」后永久沉默且线程被占死
-).bind_tools(tools)
+# 惰性构造（M2 首启硬化）：模块级构造在全新环境（无 .env）会因 langchain_openai
+# 构造期凭据校验直接 import 崩溃——打包首启必须可启动，LLM 配置缺失推迟到调用期报错
+_llm = None
+
+
+def _get_llm():
+    global _llm
+    if _llm is None:
+        # 惰性导入：与 chat_agent / job_table_hygiene 站点一致，避免 langchain_openai 顶层 import 于无凭据环境崩溃
+        from app.core.llm_langchain import GovernedChatOpenAI
+
+        _llm = GovernedChatOpenAI(
+            api_key=settings.OPENAI_API_KEY,
+            base_url=settings.OPENAI_BASE_URL,
+            model=settings.OPENAI_MODEL,
+            temperature=0.1,
+            timeout=180,  # 供应商网关挂起时必须有超时兜底，否则用户「思考中」后永久沉默且线程被占死
+            gate_caller="agent_router",
+            # TODO(Phase1): SDK max_retries（默认 2）归零收敛至统一策略层（重试权威唯一）
+        ).bind_tools(tools)
+    return _llm
+
 
 def agent_node(state: JobHunterState):
     messages = state["messages"]
     if not messages or not isinstance(messages[0], SystemMessage):
         messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
-    response = llm.invoke(messages)
+    response = _get_llm().invoke(messages)
     return {"messages": [response]}
 
 workflow = StateGraph(JobHunterState)
@@ -239,7 +257,8 @@ async def init_agent_memory(db_path: str = ""):
     if not db_path:
         # 默认落到 backend/data/（绝对路径），与 ChatAgent 的 checkpoint 同目录；
         # 相对路径会随启动目录漂移，静默换库
-        db_path = str(_Path(__file__).resolve().parents[1] / "data" / "agent_chat_memory.db")
+        # M2 收口：JOBHUNTER_DATA_DIR 注入时落用户数据目录
+        db_path = str(writable_path(_Path(__file__).resolve().parents[1] / "data" / "agent_chat_memory.db", "agent_chat_memory.db"))
     conn = await aiosqlite.connect(db_path)
     _agent_checkpointer = AsyncSqliteSaver(conn)
     await _agent_checkpointer.setup()

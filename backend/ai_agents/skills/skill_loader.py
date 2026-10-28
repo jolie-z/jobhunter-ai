@@ -3,7 +3,7 @@
 Dynamic Skill Manager - 动态简历改写技能管理系统
 ===============================================
 功能:
-1. 从 backend/ai_agents/skills 目录动态加载单文件 (.md) 与 目录级 Skill 技能包
+1. 从内置技能根（本目录）与自定义技能根（用户数据目录 skills/）动态加载单文件 (.md) 与 目录级 Skill 技能包
 2. 支持 references/ 附属资料库的自动扫描与运行时 Prompt 深度装配
 3. 解析 skill 元数据（name, version, description, references_count 等）
 4. 提供 skill 的注册、卸载、切换与物理删除能力
@@ -16,7 +16,9 @@ import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
+from app.core.db_paths import writable_path
 
 
 @dataclass
@@ -33,71 +35,90 @@ class SkillMetadata:
     reference_names: List[str] = field(default_factory=list)
     compatible: bool = True              # 是否兼容当前系统
     is_official: bool = False            # 是否为系统官方内置技能
+    contract: Optional[Dict[str, Any]] = None  # 输出契约（skill_contract 扫描/持久化）
 
 
 class DynamicSkillManager:
     """动态技能管理器"""
-    
+
+    # 内置技能根（随包分发、只读）：resume_rewrite.md / greeting_writer.md 与本模块同目录
     SKILLS_DIR = Path(__file__).parent
-    
+    # 自定义技能根（用户上传、可写，db_paths 阀门）：打包态落 JOBHUNTER_DATA_DIR/skills，
+    # 开发态无 env 注入时与 SKILLS_DIR 同目录，历史行为逐字保持。
+    # 历史上自定义技能与内置技能同目录，打包形态位于安装目录 resources 内，自动更新整体替换
+    # resources 即清空用户上传的全部技能（与 skill_runs 产物同根因）。不做旧目录搬迁：更新时
+    # 安装器已先替换 resources，旧目录内不可能残留用户技能。
+    CUSTOM_SKILLS_DIR: Path = writable_path(Path(__file__).parent, "skills")
+
     def __init__(self):
         self.skills: Dict[str, SkillMetadata] = {}
         self.loaded_contents: Dict[str, str] = {}
         self.reference_maps: Dict[str, Dict[str, str]] = {}  # skill_id -> {rel_path: content}
         self.current_skill_id: Optional[str] = None
         self.load_all_skills()
-    
+
     def load_all_skills(self) -> None:
-        """加载 skills 目录下的所有单文件技能与目录技能包"""
-        if not self.SKILLS_DIR.exists():
-            print(f"⚠️  Skills directory not found: {self.SKILLS_DIR}")
+        """加载内置技能根与自定义技能根下的所有单文件技能与目录技能包"""
+        self._load_skills_from(self.SKILLS_DIR, warn_if_missing=True)
+        if self.CUSTOM_SKILLS_DIR.resolve() != self.SKILLS_DIR.resolve():
+            # 自定义根后加载，同 id 以用户上传为准；全新安装尚未上传过时目录不存在，静默跳过
+            self._load_skills_from(self.CUSTOM_SKILLS_DIR, warn_if_missing=False)
+
+    def _load_skills_from(self, root: Path, warn_if_missing: bool) -> None:
+        if not root.exists():
+            if warn_if_missing:
+                print(f"⚠️  Skills directory not found: {root}")
             return
-        
+
         # 1. 扫描单文件技能 (*.md)
-        for md_file in self.SKILLS_DIR.glob("*.md"):
+        for md_file in root.glob("*.md"):
             name = md_file.name.lower()
             if name.startswith("resume_") or name.startswith("custom_") or name.startswith("greeting_"):
                 try:
                     self.load_single_file_skill(md_file)
                 except Exception as e:
                     print(f"❌ Failed to load single skill {md_file.name}: {e}")
-        
+
         # 2. 扫描目录级技能包 (custom_*/ 或包含 SKILL.md 的目录)
-        for sub_dir in self.SKILLS_DIR.iterdir():
+        for sub_dir in root.iterdir():
             if sub_dir.is_dir() and not sub_dir.name.startswith(('.', '__')) and sub_dir.name != "references":
                 try:
                     self.load_directory_skill(sub_dir)
                 except Exception as e:
                     print(f"❌ Failed to load package skill from {sub_dir.name}: {e}")
-    
+
     def load_single_file_skill(self, file_path: Path) -> SkillMetadata:
         """加载单个 .md 技能文件"""
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
-        
+
         # 优先从同名 .json 读取自定义元数据
         json_meta_path = file_path.with_suffix('.json')
         custom_name = None
+        custom_contract = None
         if json_meta_path.exists():
             try:
                 import json
                 with open(json_meta_path, 'r', encoding='utf-8') as jf:
                     jdata = json.load(jf)
                     custom_name = jdata.get("name")
+                    custom_contract = jdata.get("contract") if isinstance(jdata, dict) else None
             except Exception as e:
                 print(f"⚠️ Could not read {json_meta_path}: {e}")
 
         metadata = self._parse_metadata_from_text(content, file_path.stem.lower(), file_path, is_package=False)
         if custom_name:
             metadata.name = custom_name
+        if isinstance(custom_contract, dict):
+            metadata.contract = custom_contract
 
         self.skills[metadata.id] = metadata
         self.loaded_contents[metadata.id] = content
         self.reference_maps[metadata.id] = {}
-        
+
         print(f"✅ Loaded single skill: {metadata.name} (v{metadata.version}) [{metadata.id}]")
         return metadata
-    
+
     def load_directory_skill(self, dir_path: Path) -> SkillMetadata:
         """加载包含 SKILL.md 与 references/ 的目录级技能包"""
         # 寻找主入口文件
@@ -107,7 +128,7 @@ class DynamicSkillManager:
             if p.exists() and p.is_file():
                 main_entry = p
                 break
-        
+
         # 如果没有标准命名的入口，寻找根目录下的第一个 .md
         if not main_entry:
             root_mds = [p for p in dir_path.glob("*.md") if not p.name.lower().startswith("readme")]
@@ -140,12 +161,14 @@ class DynamicSkillManager:
         # 优先从 meta.json 加载自定义元数据
         meta_json_path = dir_path / "meta.json"
         custom_name = None
+        custom_contract = None
         if meta_json_path.exists():
             try:
                 import json
                 with open(meta_json_path, 'r', encoding='utf-8') as mf:
                     mdata = json.load(mf)
                     custom_name = mdata.get("name")
+                    custom_contract = mdata.get("contract") if isinstance(mdata, dict) else None
             except Exception as e:
                 print(f"⚠️ Could not read meta.json in {dir_path}: {e}")
 
@@ -159,11 +182,13 @@ class DynamicSkillManager:
         )
         if custom_name:
             metadata.name = custom_name
-        
+        if isinstance(custom_contract, dict):
+            metadata.contract = custom_contract
+
         self.skills[metadata.id] = metadata
         self.loaded_contents[metadata.id] = main_content
         self.reference_maps[metadata.id] = ref_map
-        
+
         print(f"📦 Loaded package skill: {metadata.name} (v{metadata.version}) [{metadata.id}] with {len(ref_map)} references")
         return metadata
 
@@ -178,15 +203,15 @@ class DynamicSkillManager:
         """从内容中解析元数据"""
         # 从文件名/目录名清洗出 skill_id
         skill_id = suggested_id.replace(' ', '_').replace('-', '_')
-        
+
         # 尝试从 # 标题提取名称
         title_match = re.search(r'^#\s+(.+)$', content, re.MULTILINE)
         skill_name = title_match.group(1).strip() if title_match else file_path.stem
-        
+
         # 版本号（默认 1.0.0）
         version_match = re.search(r'version[:\s]+(\d+\.\d+\.\d+)', content, re.IGNORECASE)
         version = version_match.group(1) if version_match else "1.0.0"
-        
+
         # 描述提取
         lines = content.split('\n')
         description = ""
@@ -195,15 +220,26 @@ class DynamicSkillManager:
             if s and not s.startswith('#') and not s.lower().startswith('version:'):
                 description = s
                 break
-        
+
         # 官方/自定义判定只看 id 前缀与「相对 SKILLS_DIR 的路径」——绝不能用绝对路径
         # 子串匹配：worktree 目录名（如 qa-custom-panel）含 "custom" 会把全部官方技能
         # 误判为自定义，导致官方剧本在详情弹窗里挂出删除按钮。
+        # 位于自定义根（用户数据目录）下的技能一律视为自定义：那里只可能是用户上传的内容。
+        # normcase 统一大小写与分隔符：Windows 盘符大小写差异不得让自定义根下的技能漏判为官方。
+        in_custom_root = False
+        custom_root = os.path.normcase(str(self.CUSTOM_SKILLS_DIR.resolve()))
+        bundled_root = os.path.normcase(str(self.SKILLS_DIR.resolve()))
+        if custom_root != bundled_root:
+            in_custom_root = os.path.normcase(str(file_path.resolve())).startswith(
+                custom_root.rstrip(os.sep) + os.sep
+            )
         try:
             rel_path = file_path.relative_to(self.SKILLS_DIR).as_posix().lower()
         except ValueError:
             rel_path = file_path.name.lower()
-        is_official = not (skill_id.startswith("custom_") or rel_path.startswith("custom"))
+        is_official = not (
+            in_custom_root or skill_id.startswith("custom_") or rel_path.startswith("custom")
+        )
 
         return SkillMetadata(
             id=skill_id,
@@ -218,7 +254,7 @@ class DynamicSkillManager:
             compatible=True,
             is_official=is_official
         )
-    
+
     def get_skill_content(self, skill_id: str, max_ref_total_chars: int = 50000) -> Optional[str]:
         """
         获取指定 skill 的完整 Prompt 上下文（含 References 自动智能拼装）
@@ -227,11 +263,11 @@ class DynamicSkillManager:
         main_content = self.loaded_contents.get(skill_id)
         if not main_content:
             return None
-        
+
         ref_map = self.reference_maps.get(skill_id, {})
         if not ref_map:
             return main_content
-        
+
         # 📚 深度装配：排序，优先核心规范与边界文件
         def _score_key(name: str) -> int:
             nl = name.lower()
@@ -251,26 +287,26 @@ class DynamicSkillManager:
             # 单个文件若过长（如题库长篇），截取前 3500 字符保留精华
             if len(clean_text) > 3500:
                 clean_text = clean_text[:3500] + "\n...(篇幅过长，已自动截取核心规则)..."
-            
+
             chunk = f"\n### 📄 参考资料: {rel_name}\n```markdown\n{clean_text}\n```\n"
             if current_len + len(chunk) > max_ref_total_chars:
                 assembled_parts.append(f"\n> 💡 已载入核心参考规范集（共 {len(sorted_refs)} 篇中的核心高杠杆资料已装配完成）。\n")
                 break
-            
+
             assembled_parts.append(chunk)
             current_len += len(chunk)
-        
+
         return "".join(assembled_parts)
 
     def delete_skill(self, skill_id: str) -> bool:
         """物理删除 skill（支持单文件或多文件目录包）"""
         if skill_id not in self.skills:
             raise ValueError(f"Skill not found: {skill_id}")
-        
+
         meta = self.skills[skill_id]
         if meta.is_official:
             raise PermissionError(f"无法删除系统官方内置技能：{meta.name}")
-        
+
         target_path = meta.file_path
         try:
             if target_path.is_dir():
@@ -279,7 +315,7 @@ class DynamicSkillManager:
             elif target_path.is_file():
                 os.remove(target_path)
                 print(f"🗑️  Skill single file deleted: {target_path}")
-            
+
             # 从内存中彻底注销
             if skill_id in self.skills:
                 del self.skills[skill_id]
@@ -287,16 +323,24 @@ class DynamicSkillManager:
                 del self.loaded_contents[skill_id]
             if skill_id in self.reference_maps:
                 del self.reference_maps[skill_id]
-            
+
             return True
         except Exception as e:
             print(f"❌ Failed to delete skill {skill_id}: {e}")
             raise e
 
     def list_skills(self) -> List[Dict]:
-        """列出所有可用 skill"""
-        return [
-            {
+        """列出所有可用 skill（附带输出契约摘要，供选择器/预检展示）"""
+        result: List[Dict] = []
+        for meta in self.skills.values():
+            summary = None
+            try:
+                from .skill_contract import contract_summary, get_skill_contract
+
+                summary = contract_summary(get_skill_contract(meta.id))
+            except Exception as e:
+                print(f"⚠️ Could not scan contract for {meta.id}: {e}")
+            result.append({
                 "id": meta.id,
                 "name": meta.name,
                 "version": meta.version,
@@ -306,10 +350,10 @@ class DynamicSkillManager:
                 "references_count": meta.references_count,
                 "reference_names": meta.reference_names,
                 "is_official": meta.is_official,
-                "compatible": meta.compatible
-            }
-            for meta in self.skills.values()
-        ]
+                "compatible": meta.compatible,
+                "contract_summary": summary,
+            })
+        return result
 
     def unload_skill(self, skill_id: str) -> bool:
         """从内存注销指定技能"""

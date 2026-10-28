@@ -41,6 +41,8 @@ interface ExperienceItemProps {
   canMoveDown?: boolean
   onMoveUp?: () => void
   onMoveDown?: () => void
+  /** 当前岗位 JD（定制面板经 ExperienceList 透传）；空/纯空白归一为 undefined → 两面板回退全局画像 */
+  customJdContext?: string
 }
 
 
@@ -62,8 +64,9 @@ function extractExtraKvFields(item: Record<string, any> | null | undefined): Arr
 // Set to keep track of items that have completed grilling to prevent auto-reopen on remount
 const completedGrillSet = new Set<string>()
 
-export function ExperienceItem({ item, index, type, moduleKey, onUpdate, onDelete, canMoveUp, canMoveDown, onMoveUp, onMoveDown, wizardStep, onWizardComplete, atsQueue, syncQueue, grillQueue }: ExperienceItemProps) {
+export function ExperienceItem({ item, index, type, moduleKey, onUpdate, onDelete, canMoveUp, canMoveDown, onMoveUp, onMoveDown, wizardStep, onWizardComplete, atsQueue, syncQueue, grillQueue, customJdContext }: ExperienceItemProps) {
   const { resumeData } = useResumeV2Store()
+  const jdContext = customJdContext?.trim() ? customJdContext : undefined
   
   const [grillOpen, setGrillOpen] = useState(false)
   const [atsOpen, setAtsOpen] = useState(false)
@@ -369,6 +372,7 @@ export function ExperienceItem({ item, index, type, moduleKey, onUpdate, onDelet
       {atsOpen ? (
         <AtsAligner 
           originalExperience={`[${fields.map(f=>f.value).join(' · ')}]\n${contentText}`}
+          customJdContext={jdContext}
           onAccept={(newContent) => {
             let cleanNewContent = newContent
             const titleMatch = newContent.match(/^\[(.*?)\]\n([\s\S]*)/)
@@ -387,6 +391,7 @@ export function ExperienceItem({ item, index, type, moduleKey, onUpdate, onDelet
       {grillOpen ? (  /* 已完成拷打的条目也允许手动重开（completedGrillSet 仅拦截向导队列自动打开） */
         <ExperienceGriller 
           originalExperience={`[${fields.map(f=>f.value).join(' · ')}]\n${contentText}`} 
+          customJdContext={jdContext}
           onAccept={(newContent) => {
             let cleanNewContent = newContent
             const titleMatch = newContent.match(/^\[(.*?)\]\n([\s\S]*)/)

@@ -3,16 +3,35 @@ import json
 import logging
 import time
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.core.config import settings
-from app.core.feishu_client import feishu_client
+from ai_agents.engine_facade import (
+    process_resume_rewrite_detailed,
+    resolve_rewrite_engine,
+)
+from ai_agents.skills.skill_contract import get_skill_contract
+from app.core.feishu_client import (
+    feishu_client,  # re-export：旧测试 patch.object(router.feishu_client) 兼容
+)
 from app.jobs.task_manager import task_event_manager
 from app.services.feishu_service import extract_record_id
+from app.strategy.skill_rewrite_preflight import preflight_skill_rewrite
+from app.strategy.skill_rewrite_service import (
+    SkillRewriteEngineError,
+    SkillRewriteError,
+    SkillRewriteGuardError,
+    SkillRewritePersistenceError,
+    SkillRewriteValidationError,
+    _diagnosis_stage_message,
+    _guard_parsed_resume,
+    _load_job_diagnosis,
+    _parse_result_has_error,
+    _resolve_feishu_record_id_sync,
+    run_skill_rewrite_pipeline,
+)
 
 logger = logging.getLogger("strategy_skill_agent_router")
 logger.setLevel(logging.INFO)
@@ -37,44 +56,33 @@ class SkillRewriteAndSaveRequest(BaseModel):
     include_diagnosis: bool = True
 
 
-def _safe_extract_text(field_val):
-    if not field_val:
-        return ""
-    if isinstance(field_val, list):
-        return "".join([str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in field_val])
-    return str(field_val)
+# 兼容旧测试/外部脚本的私有 helper 导入面；实现已收敛到 skill_rewrite_service。
+__all__ = [
+    "router",
+    "TestSkillRewriteRequest",
+    "SkillRewriteAndSaveRequest",
+    "feishu_client",
+    "_diagnosis_stage_message",
+    "_guard_parsed_resume",
+    "_load_job_diagnosis",
+    "_parse_result_has_error",
+    "_resolve_feishu_record_id_sync",
+]
 
 
 @router.post("/test_skill_rewrite")
 async def test_skill_rewrite_api(payload: TestSkillRewriteRequest):
-    """单独测试新版 Skill 简历改写功能"""
+    """单独测试 Skill 改写（不归档、不写回），返回 markdown/usage/artifacts 供检查。"""
     try:
-        from ai_agents.engine_facade import process_resume_rewrite
-
-        diagnosis_dict = {}
+        diagnosis_dict: dict = {}
         if payload.include_diagnosis:
             try:
-                clean_id = extract_record_id(payload.job_id)
-                record = await feishu_client.get_record(settings.FEISHU_TABLE_ID_JOBS, clean_id)
-                if record:
-                    fields = record.get("fields", {})
-                    analysis_report = _safe_extract_text(fields.get("深度分析诊断报告(AI)"))
-                    if analysis_report:
-                        diagnosis_dict = json.loads(analysis_report)
-                    else:
-                        diagnosis_dict = {
-                            "dream_picture": _safe_extract_text(fields.get("理想画像与能力信号")),
-                            "ats_ability_analysis": _safe_extract_text(fields.get("核心能力词典")),
-                            "resume_audit": _safe_extract_text(fields.get("简历逐行审计")),
-                            "strong_fit_assessment": _safe_extract_text(fields.get("高杠杆匹配点")),
-                            "risk_red_flags": _safe_extract_text(fields.get("致命硬伤与毒点")),
-                            "deep_action_plan": _safe_extract_text(fields.get("破局行动计划")),
-                        }
+                _, diagnosis_dict = await _load_job_diagnosis(extract_record_id(payload.job_id))
             except Exception as e:
                 logger.warning(f"test_skill_rewrite_api 无法读取诊断报告: {e}")
 
-        final_md, usage = await asyncio.to_thread(
-            process_resume_rewrite,
+        result = await asyncio.to_thread(
+            process_resume_rewrite_detailed,
             jd_text=payload.jd_text,
             diagnosis_dict=diagnosis_dict,
             job_name=payload.job_name,
@@ -82,198 +90,64 @@ async def test_skill_rewrite_api(payload: TestSkillRewriteRequest):
             skill_id=payload.skill_id or "",
             include_diagnosis=payload.include_diagnosis,
         )
-        return {"status": "success", "data": {"markdown": final_md, "usage": usage}}
+        return {
+            "status": "success",
+            "data": {
+                "markdown": result.markdown,
+                "usage": result.usage,
+                "artifacts": result.artifacts,
+                "partial": result.partial,
+                "artifact_count": result.artifact_count,
+                "expected_artifact_count": result.expected_artifact_count,
+                "result_kind": result.result_kind,
+                "engine": result.engine,
+            },
+        }
     except Exception as e:
         logger.exception(f"test_skill_rewrite error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/skill_rewrite_preflight")
+async def skill_rewrite_preflight_api(payload: SkillRewriteAndSaveRequest):
+    """执行前预检：产物数量/类型、是否含简历、将加载的上下文、token 预估。"""
+    try:
+        report = await preflight_skill_rewrite(payload)
+        return {"status": "success", "data": report}
+    except SkillRewriteError as e:
+        logger.error(f"skill_rewrite_preflight 失败: {e}")
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"skill_rewrite_preflight error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/skill_rewrite_and_save")
 async def skill_rewrite_and_save_api(payload: SkillRewriteAndSaveRequest):
-    """正式版 Skill 简历改写（带 Markdown 转 JSON 与数据库落盘）"""
+    """正式版 Skill 简历改写（解析 + 对账 + 归档 + 写回完全共用流水线）。"""
     try:
-        from ai_agents.engine_facade import process_resume_rewrite
-
-        if payload.resume_record_id:
-            if not payload.resume_record_id.startswith("rec"):
-                raise HTTPException(
-                    status_code=400,
-                    detail="该简历尚未同步到飞书（本地草稿），请先在简历库点击「保存并同步」后再改写",
-                )
-        elif not payload.job_id:
-            raise HTTPException(
-                status_code=400,
-                detail="需要提供 job_id（岗位模式）或 resume_record_id（简历库模式）",
-            )
-
-        diagnosis_dict = {}
-        original_personal_info: dict = {}
-        resume_override = ""
-        clean_id = ""
-        clean_rid = ""
-
-        # ===== 1. 诊断报告 =====
-        if payload.job_id:
-            clean_id = extract_record_id(payload.job_id)
-            record = await feishu_client.get_record(settings.FEISHU_TABLE_ID_JOBS, clean_id)
-            if not record and not payload.resume_record_id:
-                raise HTTPException(status_code=404, detail="Job not found")
-            if record:
-                fields = record.get("fields", {})
-                analysis_report = _safe_extract_text(fields.get("深度分析诊断报告(AI)"))
-                if analysis_report:
-                    try:
-                        diagnosis_dict = json.loads(analysis_report)
-                    except json.JSONDecodeError:
-                        pass
-                if not diagnosis_dict:
-                    diagnosis_dict = {
-                        "dream_picture": _safe_extract_text(fields.get("理想画像与能力信号")),
-                        "ats_ability_analysis": _safe_extract_text(fields.get("核心能力词典")),
-                        "resume_audit": _safe_extract_text(fields.get("简历逐行审计")),
-                        "strong_fit_assessment": _safe_extract_text(fields.get("高杠杆匹配点")),
-                        "risk_red_flags": _safe_extract_text(fields.get("致命硬伤与毒点")),
-                        "deep_action_plan": _safe_extract_text(fields.get("破局行动计划")),
-                    }
-
-        # ===== 2. 底稿与隐私数据 =====
-        if payload.resume_record_id:
-            if not payload.jd_text.strip():
-                raise HTTPException(status_code=400, detail="简历库模式需要提供 jd_text（如 A级岗位画像）")
-            clean_rid = extract_record_id(payload.resume_record_id)
-            resume_rec = await feishu_client.get_record(settings.FEISHU_TABLE_ID_RESUMES, clean_rid)
-            if not resume_rec:
-                raise HTTPException(status_code=404, detail="简历记录不存在")
-            raw_structured = _safe_extract_text(resume_rec.get("fields", {}).get("结构化数据", ""))
-            if not raw_structured.strip():
-                raise HTTPException(status_code=400, detail="该简历没有结构化数据，无法作为改写底稿")
-            try:
-                src_dict = json.loads(raw_structured)
-            except Exception:
-                raise HTTPException(status_code=500, detail="结构化数据不是合法 JSON，无法改写")
-            original_personal_info = src_dict.pop("personalInfo", {}) or {}
-            resume_override = json.dumps(src_dict, ensure_ascii=False)
-        else:
-            try:
-                import httpx
-
-                token = await feishu_client.get_tenant_access_token()
-                if token:
-                    url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{settings.FEISHU_APP_TOKEN}/tables/{settings.FEISHU_TABLE_ID_RESUMES}/records/search"
-                    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-                    payload_search = {
-                        "filter": {
-                            "conjunction": "and",
-                            "conditions": [{"field_name": "当前状态", "operator": "is", "value": ["启用"]}],
-                        }
-                    }
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.post(url, headers=headers, json=payload_search, timeout=10)
-                        resp.raise_for_status()
-                        items = resp.json().get("data", {}).get("items", [])
-                        if items:
-                            raw_text = _safe_extract_text(items[0].get("fields", {}).get("结构化数据", ""))
-                            if raw_text:
-                                data_dict = json.loads(raw_text)
-                                original_personal_info = data_dict.get("personalInfo", {})
-            except Exception as e:
-                logger.error(f"拉取简历库并剥离个人隐私数据失败: {e}")
-                raise HTTPException(status_code=502, detail=f"拉取飞书简历数据失败，请重试: {e}")
-
-        # ===== 3. 执行推演 =====
-        final_md, usage = await asyncio.to_thread(
-            process_resume_rewrite,
-            jd_text=payload.jd_text,
-            diagnosis_dict=diagnosis_dict,
-            job_name=payload.job_name,
-            rewrite_mode="skill",
-            original_resume_override=resume_override,
-            skill_id=payload.skill_id or "",
-            include_diagnosis=payload.include_diagnosis,
-            job_record_id=clean_id or clean_rid or "default",
-        )
-
-        if not final_md or final_md.lstrip().startswith("❌"):
-            logger.error(f"skill_rewrite_and_save: 引擎返回错误文本，拒绝落盘: {str(final_md)[:200]}")
-            raise HTTPException(status_code=502, detail=str(final_md)[:300])
-
-        # ===== 4. 轻量级解析转 JSON + 缝合隐私数据 =====
-        from ai_agents.markdown_to_json import parse_markdown_to_json
-
-        parsed_json = await asyncio.to_thread(parse_markdown_to_json, final_md)
-
-        # 本地多产物归档安全备份
-        try:
-            from ai_agents.skills.skill_dirs import (
-                extract_files_from_skill_output,
-                save_skill_result,
-            )
-
-            target_job_id = clean_id or clean_rid or "default"
-            target_skill_id = payload.skill_id or "default"
-            artifact_files = extract_files_from_skill_output(final_md)
-
-            save_skill_result(
-                job_record_id=target_job_id,
-                skill_id=target_skill_id,
-                files=artifact_files,
-                token_usage=usage if isinstance(usage, dict) else {},
-                output_type="multi_markdown",
-            )
-        except Exception as e:
-            logger.warning(f"保存 Skill 运行本地归档失败: {e}")
-
-        if not original_personal_info:
-            original_personal_info = {
-                "name": "未填写",
-                "phone": "未填写",
-                "email": "未填写",
-                "location": "未填写",
-            }
-
-        if "personalInfo" not in parsed_json or not parsed_json["personalInfo"]:
-            parsed_json["personalInfo"] = original_personal_info
-        else:
-            parsed_json["personalInfo"].update(original_personal_info)
-
-        # ===== 5. 落盘飞书 =====
-        ai_rewrite_json_str = json.dumps(parsed_json, ensure_ascii=False)
-        if payload.resume_record_id:
-            try:
-                backup_dir = Path(__file__).resolve().parent.parent.parent.parent / "data" / "resume_backups"
-                backup_dir.mkdir(parents=True, exist_ok=True)
-                backup_name = f"{clean_rid}_{time.strftime('%Y%m%d_%H%M%S')}_before_rewrite.json"
-                (backup_dir / backup_name).write_text(raw_structured or "{}", encoding="utf-8")
-            except Exception as e:
-                logger.warning(f"改写前备份旧结构化数据失败: {e}")
-
-            success = await feishu_client.update_record(
-                table_id=settings.FEISHU_TABLE_ID_RESUMES,
-                record_id=clean_rid,
-                fields={"结构化数据": ai_rewrite_json_str},
-            )
-            if not success:
-                raise HTTPException(status_code=502, detail="改写已完成，但写回简历库失败。请稍后重试")
-        else:
-            success = await feishu_client.update_record(
-                table_id=settings.FEISHU_TABLE_ID_JOBS,
-                record_id=clean_id,
-                fields={
-                    "AI改写JSON": ai_rewrite_json_str,
-                    "跟进状态": "简历人工复核",
-                },
-            )
-            if not success:
-                raise HTTPException(status_code=502, detail="改写已完成，但写回岗位记录失败。请稍后重试")
-
+        outcome = await run_skill_rewrite_pipeline(payload)
         return {
             "status": "success",
             "data": {
-                "parsed_json": parsed_json,
-                "markdown": final_md,
-                "usage": usage,
+                "parsed_json": outcome.parsed_json,
+                "markdown": outcome.markdown,
+                "usage": outcome.usage,
+                "partial": outcome.partial,
+                "artifact_count": outcome.artifact_count,
+                "expected_artifact_count": outcome.expected_artifact_count,
+                "engine": outcome.engine,
+                "result_kind": outcome.result_kind,
+                "has_resume_output": outcome.has_resume_output,
+                "final_artifact": outcome.final_artifact,
+                "archive_error": outcome.archive_error,
             },
         }
+    except SkillRewriteError as e:
+        logger.error(f"skill_rewrite_and_save 失败: {e}")
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
@@ -283,181 +157,114 @@ async def skill_rewrite_and_save_api(payload: SkillRewriteAndSaveRequest):
 
 @router.post("/skill_rewrite_async")
 async def skill_rewrite_async_api(payload: SkillRewriteAndSaveRequest):
-    """异步启动 Skill 改写智能体，立即返回 task_id，并通过 /skill_agent_logs 开启 SSE 实时推演流"""
+    """异步启动 Skill 改写智能体，立即返回 task_id，并通过 /skill_agent_logs 开启 SSE 实时推演流。"""
     task_id = f"skill_task_{uuid.uuid4().hex[:12]}"
     queue = task_event_manager.register_task(task_id)
+    # 推演跑在 asyncio.to_thread 工作线程里，asyncio.Queue 非线程安全——
+    # 必须经由事件循环的 call_soon_threadsafe 投递（直接 put_nowait 在非调试模式下
+    # 不报错但事件可能长期滞留，看板表现为「连上后一动不动」，2026-10-09 用户报修）
+    loop = asyncio.get_running_loop()
+
+    def push_event(event: dict):
+        event.setdefault("timestamp", time.time())
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, event)
+        except RuntimeError:
+            logger.warning(f"事件循环已关闭，丢弃任务 {task_id} 的尾事件: {event.get('type')}")
+
+    def push_close():
+        # 哨兵必须与事件走同一条 call_soon_threadsafe 队列：否则极快任务里
+        # 直接 put_nowait(None) 可能先于已调度的 complete/error 入队，前端少收终局载荷。
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+        except RuntimeError:
+            pass
 
     async def _run_skill_worker():
         try:
-            queue.put_nowait({
+            engine = resolve_rewrite_engine(payload.skill_id or "")
+            contract = get_skill_contract(payload.skill_id or "")
+            result_kind = contract.get("output_kind", "resume")
+            push_event({
                 "type": "init",
                 "task_id": task_id,
+                "engine": engine,
+                "result_kind": result_kind,
+                "has_resume_output": bool(contract.get("has_resume_output", result_kind == "resume")),
+                "expected_artifacts": contract.get("expected_artifact_count", 0),
                 "message": "🚀 正在初始化 Skill 智能体改写任务...",
                 "job_name": payload.job_name,
                 "skill_id": payload.skill_id or "default",
             })
 
-            from ai_agents.engine_facade import process_resume_rewrite
-
-            clean_id = (payload.job_id or "").strip()
-            clean_rid = (payload.resume_record_id or "").strip()
-            diagnosis_dict = {}
-            original_personal_info: dict = {}
-            resume_override = ""
-
-            if not payload.resume_record_id and clean_id:
-                try:
-                    job_record = await feishu_client.get_record(settings.FEISHU_TABLE_ID_JOBS, clean_id)
-                    fields = job_record.get("fields", {})
-                    raw_diag = fields.get("AI诊断报告", "")
-                    if isinstance(raw_diag, str) and raw_diag.strip():
-                        try:
-                            diagnosis_dict = json.loads(raw_diag)
-                        except Exception:
-                            pass
-                except Exception as e:
-                    logger.warning(f"获取岗位诊断失败: {e}")
-
-            if payload.resume_record_id and clean_rid:
-                try:
-                    resume_record = await feishu_client.get_record(settings.FEISHU_TABLE_ID_RESUMES, clean_rid)
-                    raw_struct = _safe_extract_text(resume_record.get("fields", {}).get("结构化数据", ""))
-                    if raw_struct:
-                        data_dict = json.loads(raw_struct)
-                        original_personal_info = data_dict.pop("personalInfo", {}) or {}
-                        resume_override = json.dumps(data_dict, ensure_ascii=False)
-                except Exception as e:
-                    logger.warning(f"获取简历库数据失败: {e}")
-
-            if not original_personal_info:
-                try:
-                    from app.services.feishu_service import FeishuService
-
-                    fs = FeishuService()
-                    token = await fs.get_tenant_access_token()
-                    if token:
-                        import httpx
-
-                        url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{settings.FEISHU_APP_TOKEN}/tables/{settings.FEISHU_TABLE_ID_RESUMES}/records/search"
-                        headers = {
-                            "Authorization": f"Bearer {token}",
-                            "Content-Type": "application/json; charset=utf-8",
-                        }
-                        payload_search = {
-                            "filter": {
-                                "conjunction": "and",
-                                "conditions": [{"field_name": "当前状态", "operator": "is", "value": ["启用"]}],
-                            }
-                        }
-                        async with httpx.AsyncClient() as client:
-                            resp = await client.post(url, headers=headers, json=payload_search, timeout=10)
-                            if resp.status_code == 200:
-                                items = resp.json().get("data", {}).get("items", [])
-                                if items:
-                                    raw_text = _safe_extract_text(items[0].get("fields", {}).get("结构化数据", ""))
-                                    if raw_text:
-                                        data_dict = json.loads(raw_text)
-                                        original_personal_info = data_dict.get("personalInfo", {})
-                except Exception as e:
-                    logger.warning(f"获取启用简历隐私失败: {e}")
-
             def on_agent_event(event_type: str, data: dict):
-                queue.put_nowait({"type": event_type, "timestamp": time.time(), **data})
+                push_event({"type": event_type, **data})
 
-            final_md, usage = await asyncio.to_thread(
-                process_resume_rewrite,
-                jd_text=payload.jd_text,
-                diagnosis_dict=diagnosis_dict,
-                job_name=payload.job_name,
-                rewrite_mode="skill",
-                original_resume_override=resume_override,
-                skill_id=payload.skill_id or "",
-                include_diagnosis=payload.include_diagnosis,
-                job_record_id=clean_id or clean_rid or "default",
-                on_event=on_agent_event,
-            )
+            outcome = await run_skill_rewrite_pipeline(payload, on_event=on_agent_event)
 
-            if not final_md or final_md.lstrip().startswith("❌"):
-                queue.put_nowait({
-                    "type": "error",
-                    "detail": str(final_md)[:300],
-                    "message": f"❌ 改写失败: {str(final_md)[:150]}",
-                })
-                return
-
-            from ai_agents.markdown_to_json import parse_markdown_to_json
-
-            parsed_json = await asyncio.to_thread(parse_markdown_to_json, final_md)
-
-            try:
-                from ai_agents.skills.skill_dirs import (
-                    extract_files_from_skill_output,
-                    save_skill_result,
-                )
-
-                target_job_id = clean_id or clean_rid or "default"
-                target_skill_id = payload.skill_id or "default"
-                artifact_files = extract_files_from_skill_output(final_md)
-                save_skill_result(
-                    job_record_id=target_job_id,
-                    skill_id=target_skill_id,
-                    files=artifact_files,
-                    token_usage=usage if isinstance(usage, dict) else {},
-                    output_type="multi_markdown",
-                )
-            except Exception:
-                pass
-
-            if not original_personal_info:
-                original_personal_info = {
-                    "name": "未填写",
-                    "phone": "未填写",
-                    "email": "未填写",
-                    "location": "未填写",
-                }
-
-            if "personalInfo" not in parsed_json or not parsed_json["personalInfo"]:
-                parsed_json["personalInfo"] = original_personal_info
+            status = "partial" if outcome.partial else "success"
+            is_resume = outcome.result_kind == "resume"
+            if outcome.partial:
+                if outcome.expected_artifact_count > 0:
+                    message = (
+                        f"⚠️ 部分完成（{outcome.artifact_count}/"
+                        f"{outcome.expected_artifact_count} 份产物），"
+                        + ("已写回简历库" if is_resume else "产物已归档")
+                    )
+                else:
+                    message = f"⚠️ 部分完成（{outcome.artifact_count} 份产物），产物已归档"
+            elif is_resume:
+                message = "🎉 改写与多产物归档全部完成！"
             else:
-                parsed_json["personalInfo"].update(original_personal_info)
+                message = "🎉 技能执行完成，产物已归档到产物库"
 
-            ai_rewrite_json_str = json.dumps(parsed_json, ensure_ascii=False)
-            if payload.resume_record_id:
-                saved = await feishu_client.update_record(
-                    table_id=settings.FEISHU_TABLE_ID_RESUMES,
-                    record_id=clean_rid,
-                    fields={"结构化数据": ai_rewrite_json_str},
-                )
-            else:
-                saved = await feishu_client.update_record(
-                    table_id=settings.FEISHU_TABLE_ID_JOBS,
-                    record_id=clean_id,
-                    fields={"AI改写JSON": ai_rewrite_json_str, "跟进状态": "简历人工复核"},
-                )
-            if not saved:
-                queue.put_nowait({
-                    "type": "error",
-                    "detail": "改写完成但写回飞书失败",
-                    "message": "❌ 改写已完成，但写回失败，请稍后重试",
-                })
-                return
-
-            queue.put_nowait({
+            push_event({
                 "type": "complete",
-                "status": "success",
-                "message": "🎉 改写与多产物归档全部完成！",
+                "status": status,
+                "message": message,
                 "data": {
-                    "parsed_json": parsed_json,
-                    "markdown": final_md,
-                    "usage": usage,
+                    "parsed_json": outcome.parsed_json,
+                    "markdown": outcome.markdown,
+                    "usage": outcome.usage,
+                    "partial": outcome.partial,
+                    "artifact_count": outcome.artifact_count,
+                    "expected_artifact_count": outcome.expected_artifact_count,
+                    "engine": outcome.engine,
+                    "result_kind": outcome.result_kind,
+                    "has_resume_output": outcome.has_resume_output,
+                    "final_artifact": outcome.final_artifact,
+                    "archive_error": outcome.archive_error,
+                    "persisted": outcome.persisted,
                 },
             })
 
+        except SkillRewriteGuardError as e:
+            push_event({
+                "type": "error",
+                "detail": str(e),
+                "message": f"❌ 改写产物完整性校验未通过，已保留原简历数据: {e}",
+            })
+        except SkillRewriteValidationError as e:
+            push_event({
+                "type": "error",
+                "detail": str(e),
+                "message": f"❌ {e}",
+            })
+        except (SkillRewriteEngineError, SkillRewritePersistenceError) as e:
+            push_event({
+                "type": "error",
+                "detail": str(e),
+                "message": f"❌ 改写失败: {e}",
+            })
         except Exception as e:
             logger.exception(f"Async skill worker error: {e}")
-            queue.put_nowait({"type": "error", "detail": str(e), "message": f"❌ 智能体推演异常: {e}"})
+            push_event({
+                "type": "error",
+                "detail": str(e),
+                "message": f"❌ 智能体推演异常: {e}",
+            })
         finally:
-            queue.put_nowait(None)
+            push_close()
 
     asyncio.create_task(_run_skill_worker())
 

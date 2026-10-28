@@ -25,6 +25,9 @@ PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+# 🌟 Windows 防闪窗：子进程统一走防闪窗包装（参照 engine_guard，收口见 backend/subprocess_utils.py）
+from subprocess_utils import popen_hidden
+
 # 🌟 修复并精简导入：直接从新配置中心拉取变量
 from app.core.config import settings
 OPENAI_API_KEY = settings.OPENAI_API_KEY
@@ -197,8 +200,8 @@ def run_task(keyword, city, start_page, target_jobs, salary, on_page_done=None):
         my_env["PYTHONPATH"] = PROJECT_ROOT  # PROJECT_ROOT 已经是 backend 的上一级或本身，确保指向包含 app 目录的路径
         my_env["PYTHONIOENCODING"] = "utf-8"
 
-        process = subprocess.Popen(
-            cmd, 
+        process = popen_hidden(
+            cmd,
             cwd=CURRENT_DIR,
             env=my_env, # 🌟 注入环境变量
             stdout=subprocess.PIPE, 
@@ -211,13 +214,12 @@ def run_task(keyword, city, start_page, target_jobs, salary, on_page_done=None):
         total_inserted, hit_bottom, page_search_total = _process_crawler_output(
             process, target_jobs, total_inserted, current_page, on_page_done
         )
-        # 2026-09-24 记账修正：被词级检查点跳过的页（collector 退出码 3=SKIP_NOT_TOUCHED）
-        # 数据未触碰，不记账 last_touched——否则续抓会永久漏采这些页。
-        # collector 以退出码区分：0=真实采集过，3=检查点跳过。
-        if process.returncode == 3:
-            print(f"      ⏭️ 第 {current_page} 页被词级检查点跳过（数据未触碰），不推进续抓页码")
-        else:
-            last_touched = current_page  # 本页已处理完，记账（是否扫满未知，续抓时重爬兜底）
+        # 🌟 环境性失败熔断（2026-10-07）：采集器非 0 退出（守卫拒绝等环境故障）时
+        # 终止整轮翻页——继续派页只会逐页复现同一故障并白烧翻页休眠
+        if process.returncode not in (0, None):
+            print(f"\n>> 🛑 [调度器熔断] 采集器异常退出（退出码: {process.returncode}，多为环境守卫拒绝/浏览器未就绪），本轮翻页终止！")
+            break
+        last_touched = current_page  # 本页已处理完，记账（是否扫满未知，续抓时重爬兜底）
         if page_search_total > 0:
             search_total = page_search_total
 

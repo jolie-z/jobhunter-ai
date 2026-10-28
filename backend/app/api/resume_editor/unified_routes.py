@@ -13,6 +13,9 @@ from fastapi.responses import JSONResponse
 from app.session.health_checker import probe_port
 from app.session.registry import PLATFORM_CONFIGS
 
+# Windows 防闪窗：子进程统一走防闪窗包装（backend 根模块，参照 engine_guard）
+from subprocess_utils import run_hidden
+
 from .common import (
     DATA_DIR,
     PLATFORMS,
@@ -72,7 +75,7 @@ def collect_platforms(request: dict):
         # 曾因请求走代理而连不上本机调试端口）
         env = {**os.environ, "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
         try:
-            result = subprocess.run(
+            result = run_hidden(
                 [sys.executable, script_path],
                 capture_output=True, text=True, timeout=120, env=env
             )
@@ -175,7 +178,7 @@ def sync_back_platforms(request: dict):
         env = {**os.environ, "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
 
         try:
-            result = subprocess.run(
+            result = run_hidden(
                 cmd,
                 capture_output=True, text=True, timeout=300, env=env
             )

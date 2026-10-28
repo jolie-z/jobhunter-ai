@@ -18,9 +18,10 @@ from pathlib import Path
 
 import requests
 
-from common.config import get_serper_api_key
 from app.core.config import settings
+from app.core.db_paths import writable_path
 from app.core.llm_client import get_openai_client
+from common.config import get_serper_api_key
 
 from .ai_scorer import search_company_info_tavily
 
@@ -28,7 +29,11 @@ SERPER_TIMEOUT = 10
 
 # 🌟 同公司多岗位共享一份情报：14 天内同公司只搜一次，避免重复消耗 Google Serper 调用与算力
 _SERPER_CACHE_TTL = 14 * 86400
-_SERPER_CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "serper_company_cache.json"
+# db_paths 阀门：缓存写盘禁止落安装目录（resources 内），否则自动更新即清空
+_SERPER_CACHE_PATH = writable_path(
+    Path(__file__).resolve().parent.parent / "data" / "serper_company_cache.json",
+    "serper_company_cache.json",
+)
 _serper_cache_lock = threading.Lock()
 _serper_cache: dict = {}
 

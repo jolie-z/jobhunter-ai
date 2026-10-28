@@ -187,7 +187,7 @@ def test_mark_materials_delivered_only_on_success(monkeypatch):
         return False  # 模拟物料部分发送失败
 
     async def fake_pipeline(record_id, stop_at_review, on_node_done, resume):
-        return {"outcome": "stopped", "status": "简历人工复核"}
+        return {"outcome": "stopped", "error": "", "status": "简历人工复核"}
 
     async def fake_fetch(table_id, record_id):
         return {"fields": {"公司名称": "评估公司", "岗位名称": "评估岗位"}}

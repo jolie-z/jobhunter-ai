@@ -48,6 +48,7 @@ from playwright.sync_api import sync_playwright
 
 # 纯标准库零包连锁，任何 sys.path 含 backend 根的环境都可导入
 from engine_guard import EngineGuardError, verify_browser_identity
+from app.core.db_paths import writable_path
 
 try:
     from app.session.registry import PLATFORM_CONFIGS, get_platform_port, get_profile_path
@@ -57,14 +58,17 @@ try:
     LOGIN_PAGE_DOMAINS = tuple(PLATFORM_CONFIGS["51job"].login_page_indicators)
 except Exception:
     BROWSER_DEBUG_PORT = 9227
-    DEFAULT_PROFILE_DIR = os.path.join(_PROJECT_ROOT, "backend", "data", "profiles", "51job")
+    # db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
+    DEFAULT_PROFILE_DIR = writable_path(
+        os.path.join(_PROJECT_ROOT, "backend", "data", "profiles", "51job"), "profiles/51job"
+    )
     LOGIN_PAGE_DOMAINS = ("login.51job.com", "passport.51job.com")
 
 # ==========================================
 # 全局常量
 # ==========================================
 RESUME_MANAGE_URL = "https://www.51job.com/resume/center?lang=c"
-TEMP_DIR = os.path.join(_PROJECT_ROOT, "temp_resumes")
+TEMP_DIR = writable_path(os.path.join(_PROJECT_ROOT, "temp_resumes"), "temp_resumes")
 ATTACH_LIMIT = 3            # 51job 附件简历上限
 REVIEW_POLL_TIMES = 5       # 等待附件过审的轮询次数
 REVIEW_POLL_INTERVAL = 8    # 每次轮询间隔(秒)
@@ -430,7 +434,10 @@ def _dump_upload_diagnostics(page):
             except Exception:
                 continue
         import os
-        shot = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "temp_resumes", "51job_upload_debug.png")
+        shot = str(writable_path(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "temp_resumes", "51job_upload_debug.png"),
+            "temp_resumes/51job_upload_debug.png",
+        ))
         os.makedirs(os.path.dirname(shot), exist_ok=True)
         page.screenshot(path=shot, full_page=False)
         print(f"   🔍 [诊断] 截图已保存: {os.path.abspath(shot)}")
@@ -1205,6 +1212,16 @@ def deliver_job(job_data: dict) -> bool:
                 if remote_today:
                     upload_quota.mark_mass_resume_uploaded_today()
                 fresh_today = upload_quota.is_mass_resume_fresh_today() or remote_today
+                # 2026-10-08 真机反馈修复：新鲜度加内容维度——母本简历当天重新生成后
+                # 飞书 file_token 已变，旧「今日已传」文件不该继续复用（会投出旧版简历）。
+                # 母本换了且配额未尽 → 强制重传；配额已尽 → 保留复用并在日志明示内容可能陈旧。
+                content_current = upload_quota.is_mass_resume_content_current(file_token)
+                if existing is not None and fresh_today and not content_current and not upload_quota.is_exhausted_today():
+                    print(f"   2.5 [母本已更新] 今日已传附件与当前母本 file_token 不一致（母本当天重新生成），强制重传最新版")
+                    _MASS_FORCE_UPLOAD = True
+                    fresh_today = False
+                elif existing is not None and fresh_today and not content_current:
+                    print(f"   ⚠️ [母本已更新] 但今日上传配额已耗尽，继续复用旧附件（内容可能非最新版，建议手动检查）")
                 if _MASS_FORCE_UPLOAD and not upload_quota.is_exhausted_today():
                     print(f"   2.5 新批量任务要求刷新海投母本：强制重传「{pdf_name}」")
                     target = None
@@ -1266,7 +1283,7 @@ def deliver_job(job_data: dict) -> bool:
                         _log_error("附件简历上传失败")
                     return False
                 if mass_apply:
-                    upload_quota.mark_mass_resume_uploaded_today()
+                    upload_quota.mark_mass_resume_uploaded_today(file_token)
                     _MASS_FORCE_UPLOAD = False
                 
                 if mass_apply:

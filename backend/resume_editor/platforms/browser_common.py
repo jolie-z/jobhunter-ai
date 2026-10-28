@@ -22,6 +22,11 @@ EDGE_PATH = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
 
 # platforms/ → resume_editor/ → backend/
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# DO NOT MOVE: 子进程平铺导入本模块时 sys.path[0] 只有 platforms/，必须先插 backend 根，
+# 下一行 from resume_editor.paths import 才能成立（禁止改成裸 import paths）
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+from resume_editor.paths import DATA_DIR  # noqa: E402  用户数据根（打包态落用户数据目录）
 
 # 智联在线简历 Vuex store 的内容填充状态：
 #   'yes'   = currentResume 存在，resumeId 有效 (>0) 且至少一个业务节点有实际内容（Profile 需包含非空姓名，经历列表非空）
@@ -190,10 +195,9 @@ def dismiss_overlay_popup(tab, marker_text: str, wait_after: float = 1.0) -> str
 
 
 # ============================================================
-# 采集数据统一安全落盘（四个 *_collector.py 共用）
+# 采集数据统一安全落盘（四个 *_collector.py 共用）；DATA_DIR 见文件头（resume_editor.paths 真源）
 # ============================================================
 
-DATA_DIR = os.path.join(_BACKEND_DIR, "resume_editor", "data")
 _KEEP_BACKUPS = 10
 
 

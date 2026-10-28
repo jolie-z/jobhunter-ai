@@ -23,7 +23,10 @@ async def test_resume_job_delivery_with_checkpoint(monkeypatch):
     mock_pipeline.astream = mock_astream
     
     monkeypatch.setattr("app.automation.scheduler.pipeline_app", mock_pipeline)
-    
+    # _resume_job_delivery 实际读取 delivery_tasks.pipeline_app（get_pipeline_app 优先读它，
+    # 仅在其为 None 时穿透 scheduler.pipeline_app）；其他文件残留真实图时会短路上面的打桩
+    monkeypatch.setattr("app.automation.delivery_tasks.pipeline_app", mock_pipeline)
+
     ok, msg = await _resume_job_delivery("rec_test_1")
     assert ok is True
     assert msg == "已投递"
@@ -36,8 +39,9 @@ async def test_resume_job_delivery_fallback_direct_delivery(monkeypatch):
     mock_state = AsyncMock()
     mock_state.next = []  # 无断点
     mock_pipeline.aget_state = AsyncMock(return_value=mock_state)
-    
+
     monkeypatch.setattr("app.automation.scheduler.pipeline_app", mock_pipeline)
+    monkeypatch.setattr("app.automation.delivery_tasks.pipeline_app", mock_pipeline)
     
     # 模拟飞书记录
     monkeypatch.setattr(

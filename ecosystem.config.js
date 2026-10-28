@@ -31,8 +31,11 @@ module.exports = {
     {
       name: 'jobhunter-frontend',
       cwd: './frontend',
+      // M2 生产模式：next start 跑 next build 产物（内存占用远低于 dev，熔断/重启假设需重校准）。
+      // 前置：frontend/ 下先执行 npm run build（无 .next/BUILD_ID 时 next start 会失败；
+      // 未构建时请临时回退 args: 'dev -p 3000'）
       script: 'node_modules/next/dist/bin/next',
-      args: 'dev -p 3000',
+      args: 'start -p 3000',
       interpreter: 'node',
       cron_restart: '5 2 * * *', // 每天凌晨 02:05 自动重启
       max_memory_restart: '600M', // 内存超 600M 熔断重置
@@ -42,7 +45,7 @@ module.exports = {
       error_file: './logs/frontend-error.log',
       out_file: './logs/frontend-out.log',
       env: {
-        NODE_ENV: 'development',
+        NODE_ENV: 'production',
         PORT: '3000',
       },
     },

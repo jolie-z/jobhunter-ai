@@ -29,11 +29,13 @@ from app.services.feishu_jobs_fetcher import (
 
 logger = logging.getLogger(__name__)
 
-# 本地数据库路径
-_LOCAL_DB = os.path.join(
+# 本地数据库路径（db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR）
+from app.core.db_paths import job_hunter_db_path  # noqa: E402
+
+_LOCAL_DB = str(job_hunter_db_path(os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "data", "job_hunter.db"
-)
+)))
 DEFAULT_DB_PATH = os.environ.get("ANALYTICS_DB_PATH") or _LOCAL_DB
 
 # 漏斗展示预设顺序

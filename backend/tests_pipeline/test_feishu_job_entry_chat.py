@@ -607,7 +607,7 @@ def test_pipeline_confirm_triggers_single_job_pipeline(monkeypatch):
         launches.append({"record_id": record_id, "stop_at_review": stop_at_review})
         return {
             "company_name": "流水线公司", "job_name": "流水线岗位",
-            "grade": "A", "outcome": "stopped", "error": "简历人工复核",
+            "grade": "A", "outcome": "stopped", "error": "", "status": "简历人工复核",
         }
 
     async def fake_send(receive_id: str, text: str, receive_id_type: str = "chat_id", **kw):
@@ -719,7 +719,7 @@ def test_card_action_run_pipeline_launches_with_guard(monkeypatch):
 
     async def fake_launch(record_id, raw_rowid=None, pipeline_task_id=None, stop_at_review=False, on_node_done=None, resume=False):
         launches.append({"record_id": record_id, "stop_at_review": stop_at_review})
-        return {"company_name": "按钮公司", "job_name": "按钮岗位", "grade": "B", "outcome": "stopped", "error": "简历人工复核"}
+        return {"company_name": "按钮公司", "job_name": "按钮岗位", "grade": "B", "outcome": "stopped", "error": "", "status": "简历人工复核"}
 
     async def fake_send(receive_id: str, text: str, receive_id_type: str = "chat_id", **kw):
         sent.append(text)
@@ -763,7 +763,7 @@ def test_card_action_duplicate_click_ignored(monkeypatch):
     async def fake_launch(record_id, **kw):
         launches.append(record_id)
         await release.wait()
-        return {"company_name": "x", "job_name": "y", "grade": "B", "outcome": "stopped"}
+        return {"company_name": "x", "job_name": "y", "grade": "B", "outcome": "stopped", "error": "", "status": "简历人工复核"}
 
     async def fake_send(receive_id: str, text: str, receive_id_type: str = "chat_id", **kw):
         sent.append(text)

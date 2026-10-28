@@ -90,11 +90,14 @@ async def sync_basic_module(payload: SyncBasicModuleRequest):
 
 @router.post("/generate_jd_report")
 async def generate_jd_report():
-    """读取 A 级岗位生成并缓存能力要求报告"""
+    """读取岗位池生成能力画像（本地落库 + 飞书镜像），返回 {data, meta}"""
     logger.info("[generate_jd_report] 开始生成全局 A 级 JD 能力报告")
     try:
         result = await service.generate_jd_report_service()
-        return {"code": 200, "status": "success", "data": result}
+        # 生成后直读本地 meta（sqlite 亚毫秒），与 get_jd_report 统一响应契约——
+        # 前端重新生成后无需二次请求即可刷新「生成于/样本构成/陈旧角标」
+        _, meta = await service.get_global_jd_report_with_meta()
+        return {"code": 200, "status": "success", "data": result, "meta": meta}
     except Exception as e:
         logger.exception(f"[generate_jd_report] 报错: {e}")
         return {"code": 500, "status": "error", "message": str(e)}
@@ -102,10 +105,10 @@ async def generate_jd_report():
 
 @router.get("/get_jd_report")
 async def get_jd_report():
-    """获取已生成的全局能力要求报告"""
+    """获取已生成的全局能力要求报告（data=文本，meta=生成时间/样本构成等）"""
     try:
-        report = await service.get_global_jd_report()
-        return {"code": 200, "status": "success", "data": report}
+        report, meta = await service.get_global_jd_report_with_meta()
+        return {"code": 200, "status": "success", "data": report, "meta": meta}
     except Exception as e:
         logger.exception(f"[get_jd_report] 报错: {e}")
         return {"code": 500, "status": "error", "message": str(e)}

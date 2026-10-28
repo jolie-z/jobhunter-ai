@@ -19,16 +19,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+# 备份目录与源库均走 db_paths 阀门：打包态源库在 JOBHUNTER_DATA_DIR，备份也须落同处
+from app.core.db_paths import job_hunter_db_path, writable_path
+
 logger = logging.getLogger(__name__)
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-BACKUP_DIR = BACKEND_ROOT / "data" / "backups"
+BACKUP_DIR = writable_path(BACKEND_ROOT / "data" / "backups", "backups")
 
 # (源库绝对路径, 备份文件名前缀)
 DEFAULT_TARGETS: list[tuple[Path, str]] = [
-    (BACKEND_ROOT / "data" / "job_hunter.db", "job_hunter"),
-    (BACKEND_ROOT / "autopilot.db", "autopilot"),
-    (BACKEND_ROOT / "data" / "sessions.db", "sessions"),
+    (job_hunter_db_path(BACKEND_ROOT / "data" / "job_hunter.db"), "job_hunter"),
+    (writable_path(BACKEND_ROOT / "autopilot.db", "autopilot.db"), "autopilot"),
+    (writable_path(BACKEND_ROOT / "data" / "sessions.db", "sessions.db"), "sessions"),
 ]
 
 DEFAULT_RETENTION = 7

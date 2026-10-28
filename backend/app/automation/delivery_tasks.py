@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import sys
 from datetime import date, datetime
 from typing import Any
@@ -250,6 +251,12 @@ def _is_51job_platform(platform: Any) -> bool:
     return "51job" in p or "前程" in p or "job51" in p
 
 
+def _platform_key_of(platform: Any) -> str:
+    """平台展示名 → registry 规范键（单一事实源委托）。"""
+    from app.session.registry import platform_display_to_key
+    return platform_display_to_key(platform)
+
+
 def _prioritize_51job_mass(targets: list[dict]) -> list[dict]:
     """51job 附件上传按日限次：海投岗当日只需一次上传即可全批复用，精投逐岗耗配额。
     把 51job 精投岗稳定后移到波次末尾，确保 51job 海投岗先拿到当日那一次上传；
@@ -287,13 +294,24 @@ async def scheduled_delivery_batch_task(
     """
     try:
         from app.automation.routes.delivery_router import _deliver_worker_lock
-        if _deliver_worker_lock.locked():
-            logger.info(f"⏭️ [定时投递·{window_label}] 手动批量投递正在运行，跳过本轮发射（防重复投递/重复打招呼）")
-            return
-        async with _deliver_worker_lock:
-            await _scheduled_delivery_batch_task_impl(window_label, pipeline_app)
     except ImportError:
-        await _scheduled_delivery_batch_task_impl(window_label, pipeline_app)
+        _deliver_worker_lock = None
+
+    if _deliver_worker_lock is not None and _deliver_worker_lock.locked():
+        logger.info(f"⏭️ [定时投递·{window_label}] 手动批量投递正在运行，跳过本轮发射（防重复投递/重复打招呼）")
+        return
+
+    # 后台活动登记：让前端状态接口/横幅感知「定时批量正在占用系统」，任何路径退出都注销
+    from app.tasks.state import set_background_activity
+    set_background_activity("scheduled_delivery", True, label=f"定时投递·{window_label}")
+    try:
+        if _deliver_worker_lock is not None:
+            async with _deliver_worker_lock:
+                await _scheduled_delivery_batch_task_impl(window_label, pipeline_app)
+        else:
+            await _scheduled_delivery_batch_task_impl(window_label, pipeline_app)
+    finally:
+        set_background_activity("scheduled_delivery", False)
 
 
 async def _scheduled_delivery_batch_task_impl(
@@ -320,6 +338,17 @@ async def _scheduled_delivery_batch_task_impl(
         logger.info(f"📭 [定时投递·{window_label} {now}] 待投递队列为空，本轮自动跳过")
         return
 
+    # 前端横幅补充实时明细：本轮实际待发射岗位数
+    try:
+        from app.tasks.state import set_background_activity
+        set_background_activity(
+            "scheduled_delivery", True,
+            label=f"定时投递·{window_label}",
+            detail=f"{len(jobs)} 个岗位待发射",
+        )
+    except Exception:
+        pass
+
     cfg_func = _get_active_func("get_autopilot_config", get_autopilot_config)
     config = cfg_func()
     allowed_platforms = set(config.get("auto_deliver_platforms", ["boss", "liepin", "51job", "zhilian"]))
@@ -343,6 +372,38 @@ async def _scheduled_delivery_batch_task_impl(
 
     # 51job 海投优先：精投岗后移，保证海投岗先拿到当日唯一一次「我的简历」上传
     targets = _prioritize_51job_mass(targets)
+
+    # 批次级投递预检（2026-10-08）：浏览器探活/僵尸自愈/拉起 + 登录态判定；
+    # 未通过平台整批跳过——岗位保留「待投递」门牌，仅在失败日志记 [环境] 原因，下轮波次自然重试。
+    # pytest 环境跳过：单测无真实浏览器，探活会误拉起 Edge（同 delivery_router 防风控 sleep 的 PYTEST 门先例）
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        logger.info(f"[定时投递·{window_label}] pytest 环境跳过批次预检")
+    else:
+        try:
+            from app.session.preflight import ensure_delivery_platforms_ready
+            need_plats = sorted({_platform_key_of(j.get("platform")) for j in targets} - {""})
+            ready_map = await ensure_delivery_platforms_ready(need_plats)
+            bad_plats = [k for k in need_plats if not ready_map.get(k, False)]
+            if bad_plats:
+                from app.services.feishu_service import update_feishu_record
+                now_hm = datetime.now().strftime("%H:%M")
+                kept: list[dict] = []
+                for j in targets:
+                    if _platform_key_of(j.get("platform")) in bad_plats:
+                        note = f"[环境] {_platform_key_of(j.get('platform'))} 浏览器/登录态预检未通过，{window_label} {now_hm} 本轮跳过"
+                        try:
+                            await asyncio.to_thread(update_feishu_record, j.get("job_id"), {"自动投递失败日志": note})
+                        except Exception as fe:
+                            logger.warning(f"[定时投递·{window_label}] 回写跳过日志失败 ({j.get('job_id')}): {fe}")
+                    else:
+                        kept.append(j)
+                logger.warning(
+                    f"⛔ [定时投递·{window_label}] 平台预检未通过 {bad_plats}，"
+                    f"{len(targets) - len(kept)} 个岗位保留「待投递」下轮自动重试"
+                )
+                targets = kept
+        except Exception as pre_e:
+            logger.warning(f"[定时投递·{window_label}] 批次预检异常（不阻断发射，按原流程继续）: {pre_e}")
 
     # 🌟 海投物料保鲜：发射前统一用当前海投母本重刷挂载，杜绝换了新简历后仍外发旧通用简历
     from app.automation.materials import refresh_mass_materials_for_jobs

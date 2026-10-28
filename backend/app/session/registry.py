@@ -6,16 +6,91 @@
 
 所有 Profile 统一存放在 backend/data/profiles/{platform}/ 下。
 """
+import hashlib
+import logging
 import os
+
+# M2 收口：JOBHUNTER_DATA_DIR 注入时 profile 落 <DATA_DIR>/profiles/（打包形态首启需重新登录）
+from app.core.db_paths import writable_path
 
 from .models import PlatformConfig
 
+logger = logging.getLogger(__name__)
+
 _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_PROFILES_ROOT = os.path.join(_BACKEND_ROOT, "data", "profiles")
+_PROFILES_ROOT = writable_path(os.path.join(_BACKEND_ROOT, "data", "profiles"), "profiles")
+
+# 2026-10-26 安装包泄漏事故：0.3.2~0.3.5 安装包误把构建机的 liepin_cookies.json 打进了
+# resources/backend/liepin_scraper/，下方 legacy 迁移又把它当作用户旧 cookie 复制进了用户数据目录。
+# 按内容 sha256 精确识别该文件并删除（四个版本携带的是同一份）；用户自己登录后文件内容即变、
+# 哈希不再命中，零误删。迁移前同样校验，任何残留的 bundled 副本都不得再迁入。
+_LEAKED_LIEPIN_COOKIE_SHA256 = frozenset({
+    "17bc181bfbc2adf63e16c722430e41d0cd60cb13d650b3f26d1ca8b3dce16f89",
+})
+
+
+def _is_leaked_liepin_cookie(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest() in _LEAKED_LIEPIN_COOKIE_SHA256
+    except Exception:
+        return False
 
 
 def get_profile_path(platform: str) -> str:
     return os.path.join(_PROFILES_ROOT, platform)
+
+
+def get_liepin_cookie_file() -> str:
+    """猎聘 legacy cookie 文件唯一取数口径（M2 收口：打包态落 JOBHUNTER_DATA_DIR）。
+
+    背景（2026-10-09）：旧实现把文件写在程序目录（resources/backend/liepin_scraper/），
+    升级/卸载即丢登录源。此处检测到旧文件而新位置缺失时一次性迁移过来；
+    开发形态（无 env）锚点原样返回，行为零变化。
+    打包态额外清理历史安装包误带入的构建机 cookie（见 _LEAKED_LIEPIN_COOKIE_SHA256）；
+    开发态 target == anchor 即开发者本人文件，不做任何删除。
+    """
+    anchor = os.path.join(_BACKEND_ROOT, "liepin_scraper", "liepin_cookies.json")
+    target = str(writable_path(anchor, "liepin_cookies.json"))
+    if target == anchor:
+        return target
+    try:
+        if os.path.exists(anchor) and not os.path.exists(target):
+            if _is_leaked_liepin_cookie(anchor):
+                logger.warning("[registry] 程序目录内的猎聘 cookie 为安装包误带的构建机文件，拒绝迁移")
+            else:
+                import shutil
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                shutil.copy2(anchor, target)
+                logger.info(f"[registry] 猎聘 cookie 文件已从程序目录迁移至用户数据目录: {target}")
+        if os.path.exists(target) and _is_leaked_liepin_cookie(target):
+            os.remove(target)
+            logger.warning(
+                f"[registry] 已清除由历史安装包误带入用户数据目录的构建机猎聘 cookie: {target}（请重新登录猎聘）"
+            )
+    except Exception as e:
+        logger.warning(f"[registry] 猎聘 cookie 文件迁移/清理失败（继续用新路径）: {e}")
+    return target
+
+
+def platform_display_to_key(name: str) -> str:
+    """平台展示名/别名 → registry 规范键；未识别原样小写返回（与投递白名单过滤口径一致）。
+
+    单一事实源：workflow 投递预检 / delivery_tasks 波次 / delivery_router 手动批量 /
+    evaluate_delivery_gate 白名单判定共用，杜绝多处 if/elif 漂移。
+    """
+    p = str(name or "").lower()
+    if "boss" in p:
+        return "boss"
+    if "智联" in p or "zhilian" in p:
+        return "zhilian"
+    if "猎聘" in p or "liepin" in p:
+        return "liepin"
+    if "51job" in p or "前程" in p or "job51" in p:
+        return "51job"
+    if "小红书" in p or "xiaohongshu" in p or p == "xhs":
+        return "xiaohongshu"
+    return p
 
 
 PLATFORM_CONFIGS: dict[str, PlatformConfig] = {
@@ -52,7 +127,7 @@ PLATFORM_CONFIGS: dict[str, PlatformConfig] = {
         login_indicators=["css:.header-user", "css:.user-name", "text:退出", "css:.ant-dropdown-trigger"],
         login_page_indicators=["/login", "loginBackUrl", "passport"],
         requires_login=False,
-        legacy_cookie_file=os.path.join(_BACKEND_ROOT, "liepin_scraper", "liepin_cookies.json"),
+        legacy_cookie_file=get_liepin_cookie_file(),
     ),
     "zhilian": PlatformConfig(
         name="zhilian",
@@ -86,7 +161,11 @@ PLATFORM_CONFIGS: dict[str, PlatformConfig] = {
         login_indicators=["css:.user-info", "css:.avatar", "text:退出登录"],
         login_page_indicators=["login.51job.com", "passport.51job.com"],
         requires_real_edge=True,
-        legacy_cookie_file=os.path.join(_BACKEND_ROOT, "51job_scraper", "51job_cookies.json"),
+        # 与 51job_collector 的真实落盘位置同一阀门（打包态用户数据目录）：此前指向安装目录内锚点，
+        # 0.3.6 起该文件不再进包，旧锚点在打包态恒为不存在——健康检查/预检要看对地方
+        legacy_cookie_file=str(writable_path(
+            os.path.join(_BACKEND_ROOT, "51job_scraper", "51job_cookies.json"), "51job_cookies.json"
+        )),
     ),
 }
 

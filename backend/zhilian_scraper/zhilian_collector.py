@@ -6,6 +6,7 @@ import time
 import random
 import platform
 import argparse
+import sys
 from datetime import datetime
 from DrissionPage import ChromiumPage, ChromiumOptions
 
@@ -14,7 +15,13 @@ from DrissionPage import ChromiumPage, ChromiumOptions
 # ==========================================
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.dirname(CURRENT_DIR)
-DB_PATH = os.path.join(PARENT_DIR, 'data', 'job_hunter.db')
+# 双身份导入引导（对齐 boss_collector 先例）：脚本独立运行时也能 import backend 根的 app.*
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
+from app.core.db_paths import job_hunter_db_path, writable_path  # noqa: E402
+
+# db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
+DB_PATH = job_hunter_db_path(os.path.join(PARENT_DIR, 'data', 'job_hunter.db'))
 
 # ==========================================
 # 城市映射表
@@ -154,7 +161,9 @@ def _setup_browser():
     # 🛡️ [Profile 物理隔离] 必须绑定持久化 profile（与 registry / 投递侧 zhilian_auto_delivery 一致）：
     #    若 9250 端口无活跃 Edge，DrissionPage 会以默认用户目录拉起一份"无登录态"的浏览器，
     #    导致反复要求扫码登录，且该浏览器会占住 9250 端口，令后续预检/投递连锁误判掉线。
-    profile_path = os.path.join(PARENT_DIR, 'data', 'profiles', 'zhilian')
+    profile_path = str(writable_path(
+        os.path.join(PARENT_DIR, 'data', 'profiles', 'zhilian'), "profiles/zhilian"
+    ))
     os.makedirs(profile_path, exist_ok=True)
     co.set_user_data_path(profile_path)
     print(f"🛡️  [Profile 物理隔离] 用户数据目录: {profile_path}")

@@ -10,6 +10,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { QuickImportModal } from "@/components/dashboard/quick-import-modal"
 import { TerminalContainer } from "@/components/dashboard/terminal-container"
 import { TrashBinWorkspace } from "@/components/dashboard/trash-bin-workspace"
+import { BackgroundActivityBanner } from "@/components/dashboard/background-activity-banner"
 import { useTrashBinStore } from "@/store/trash-bin-store"
 import type { JobData } from "@/types/job"
 import { mapApiItemToJob, type JobsApiItem } from "@/lib/job-mapper"
@@ -34,6 +35,17 @@ export default function Dashboard() {
   const [isLoading, setIsLoading] = useState(true)
   const [isPending, startTransition] = useTransition()
   const [selectedJob, setSelectedJob] = useState<JobData | null>(null)
+  // 🌟 2026-10-07 未保存提醒：定制面板改了简历内容还没保存时，离开前拦截确认
+  const [isResumeDirty, setIsResumeDirty] = useState(false)
+
+  const confirmLeaveDirty = () => {
+    if (!isResumeDirty) return true
+    return window.confirm(
+      "当前岗位的简历修改尚未保存，离开将丢失这些修改。\n\n" +
+        "点「确定」放弃修改并离开；点「取消」留在当前岗位" +
+        "（可点击「生成 PDF/长图」保存并同步飞书）。",
+    )
+  }
 
   // 🌟 拦截回收站全局状态
   const isTrashBinOpen = useTrashBinStore((state) => state.isOpen)
@@ -134,8 +146,24 @@ export default function Dashboard() {
   // 🌟 详情到位后合并进当前选中岗位（含岗位详情/AI改写JSON等大文本）
   useEffect(() => {
     if (!selectedJob || !selectedJobDetail || selectedJobDetail.id !== selectedJob.id) return
-    setSelectedJob((prev) => (prev && prev.id === selectedJobDetail.id ? { ...prev, ...selectedJobDetail } : prev))
-    setJobs((prev) => prev.map((j) => (j.id === selectedJobDetail.id ? { ...j, ...selectedJobDetail } : j)))
+    // 防旧缓存回滚（2026-10-11 排查）：skill 改写完成回调刚写入本地的大字段若被旧
+    // 详情快照覆盖，会出现"完成→状态回旧值"的窗口。用完成时间标记限定防护窗（10 分钟）：
+    // 窗内本地优先，窗外恢复远端权威——避免"本地有值即永久拦截远端更新"的单向死锁
+    const REWRITE_FRESH_MS = 10 * 60 * 1000
+    const isLocallyFresh = (prev: JobData) => {
+      const at = Number(prev._localRewriteAt || 0)
+      return at > 0 && Date.now() - at < REWRITE_FRESH_MS
+    }
+    const mergeFresh = (prev: JobData, detail: JobData): JobData => {
+      const merged: JobData = { ...prev, ...detail }
+      if (isLocallyFresh(prev)) {
+        if (prev.aiRewriteJson && prev.aiRewriteJson !== merged.aiRewriteJson) merged.aiRewriteJson = prev.aiRewriteJson
+        if (prev.followStatus && prev.followStatus !== merged.followStatus) merged.followStatus = prev.followStatus
+      }
+      return merged
+    }
+    setSelectedJob((prev) => (prev && prev.id === selectedJobDetail.id ? mergeFresh(prev, selectedJobDetail) : prev))
+    setJobs((prev) => prev.map((j) => (j.id === selectedJobDetail.id ? mergeFresh(j, selectedJobDetail) : j)))
   }, [selectedJobDetail, selectedJob?.id])
 
   const handleBatchDelete = async (jobIds: string[]) => {
@@ -278,6 +306,8 @@ export default function Dashboard() {
   }, [statusCounts])
 
   const handleEnterDetail = (job: JobData, filteredList?: JobData[]) => {
+    if (!confirmLeaveDirty()) return // 从当前编辑中的岗位切到另一个岗位前拦截
+    setIsResumeDirty(false) // R8 复审 P1：确认放弃后立即重置，防脏状态滞留误拦后续操作
     setSelectedJob(job)
     setCurrentView("immersive-detail")
     if (filteredList) {
@@ -308,6 +338,8 @@ export default function Dashboard() {
   }
 
   const handleBackToList = () => {
+    if (!confirmLeaveDirty()) return
+    setIsResumeDirty(false) // R8 复审 P1：同上
     exitDetailView()
     startTransition(() => {
       setCurrentView("immersive-list")
@@ -316,6 +348,8 @@ export default function Dashboard() {
   }
 
   const handleMainTabChange = (tab: "immersive" | "interview") => {
+    if (!confirmLeaveDirty()) return
+    setIsResumeDirty(false) // R8 复审 P1：同上
     exitDetailView()
     if (tab === "interview") {
       setCurrentView("interview-camp")
@@ -332,12 +366,16 @@ export default function Dashboard() {
 
   const handlePrevious = () => {
     if (hasPrevious && currentJobIndex > 0) {
+      if (!confirmLeaveDirty()) return // 上一位切换前拦截
+      setIsResumeDirty(false) // R9 复审 P2：与其余路径一致，显式重置
       setSelectedJob(navigationList[currentJobIndex - 1])
     }
   }
 
   const handleNext = () => {
     if (hasNext && currentJobIndex < navigationList.length - 1) {
+      if (!confirmLeaveDirty()) return // 下一位切换前拦截
+      setIsResumeDirty(false) // R9 复审 P2：与其余路径一致，显式重置
       setSelectedJob(navigationList[currentJobIndex + 1])
     }
   }
@@ -355,6 +393,7 @@ export default function Dashboard() {
           globalTaskStatus={globalTaskStatus}
         />
       )}
+      <BackgroundActivityBanner />
       <main className="flex-1 overflow-hidden flex">
         <div className="flex-1 overflow-hidden min-w-0 relative">
           {isLoading && (
@@ -391,6 +430,7 @@ export default function Dashboard() {
               onNext={handleNext}
               dynamicStatuses={dynamicStatuses}
               onRefreshJobs={fetchJobs}
+              onResumeDirtyChange={setIsResumeDirty}
               processingJobs={processingJobs}
               jobLiveLogs={jobLiveLogs}
               globalTaskStatus={globalTaskStatus}

@@ -15,6 +15,8 @@ export interface PreferenceItem {
   type: string
   rule: string
   status: string
+  // 2026-10-06：后端回填的内置示例条目（本地无任何偏好时展示范例，供用户参考格式）
+  is_example?: boolean
 }
 
 interface BonusPreferencesCardProps {
@@ -97,6 +99,13 @@ export function BonusPreferencesCard({
         </span>
       </div>
 
+      {/* 2026-10-06：内置示例提示条（空配置时后端回填范例） */}
+      {preferences.some((p) => p.is_example) && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+          当前展示的是内置示例偏好（帮你参考格式）。示例仅供参考，可在下方添加属于你自己的规则；添加真实规则后示例将自动替换。
+        </div>
+      )}
+
       {/* 规则条目列表 */}
       <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
         {preferences.length === 0 ? (
@@ -178,27 +187,38 @@ export function BonusPreferencesCard({
                   </span>
 
                   <div className="flex items-center gap-2 shrink-0">
-                    <Switch
-                      checked={isEnabled}
-                      onCheckedChange={() => onToggleStatus(item)}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => startEdit(item)}
-                      className="text-muted-foreground/60 hover:text-violet-600 p-1 rounded transition-colors"
-                      title="编辑完整内容"
-                    >
-                      <Edit3 className="h-3 w-3" />
-                    </button>
-                    {item.record_id && (
-                      <button
-                        type="button"
-                        onClick={() => onDeletePreference(item.record_id!)}
-                        className="text-muted-foreground/50 hover:text-rose-500 p-1 rounded transition-colors"
-                        title="移除此项"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
+                    {/* 示例条目（__example_* 虚拟 ID 未落库）：隐藏开关/编辑/删除，
+                        防止对虚拟 ID 发请求（R1 P2 修正）；用户添加真实规则后示例自动让位 */}
+                    {!item.is_example && (
+                      <>
+                        <Switch
+                          checked={isEnabled}
+                          onCheckedChange={() => onToggleStatus(item)}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => startEdit(item)}
+                          className="text-muted-foreground/60 hover:text-violet-600 p-1 rounded transition-colors"
+                          title="编辑完整内容"
+                        >
+                          <Edit3 className="h-3 w-3" />
+                        </button>
+                        {item.record_id && (
+                          <button
+                            type="button"
+                            onClick={() => onDeletePreference(item.record_id!)}
+                            className="text-muted-foreground/50 hover:text-rose-500 p-1 rounded transition-colors"
+                            title="移除此项"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        )}
+                      </>
+                    )}
+                    {item.is_example && (
+                      <span className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/20">
+                        示例
+                      </span>
                     )}
                   </div>
                 </div>

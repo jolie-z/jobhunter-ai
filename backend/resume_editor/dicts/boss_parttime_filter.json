@@ -1,0 +1,148 @@
+{
+  "workDayList": [
+    {
+      "code": 1301,
+      "name": "周末节假日",
+      "flag": 1,
+      "settingValue": 0,
+      "sort": 0,
+      "value": null,
+      "description": null,
+      "subLevelModelList": null
+    },
+    {
+      "code": 1302,
+      "name": "工作日",
+      "flag": 0,
+      "settingValue": 0,
+      "sort": 0,
+      "value": null,
+      "description": null,
+      "subLevelModelList": null
+    },
+    {
+      "code": 1303,
+      "name": "接受轮班",
+      "flag": 0,
+      "settingValue": 0,
+      "sort": 0,
+      "value": null,
+      "description": null,
+      "subLevelModelList": null
+    },
+    {
+      "code": 1304,
+      "name": "时间灵活",
+      "flag": 1,
+      "settingValue": 0,
+      "sort": 0,
+      "value": null,
+      "description": null,
+      "subLevelModelList": null
+    }
+  ],
+  "workShiftList": [
+    {
+      "code": 1401,
+      "name": "时间灵活",
+      "flag": 1,
+      "settingValue": 0,
+      "sort": 0,
+      "value": null,
+      "description": null,
+      "subLevelModelList": null
+    },
+    {
+      "code": 1402,
+      "name": "早班",
+      "flag": 0,
+      "settingValue": 0,
+      "sort": 0,
+      "value": null,
+      "description": null,
+      "subLevelModelList": null
+    },
+    {
+      "code": 1403,
+      "name": "午班",
+      "flag": 0,
+      "settingValue": 0,
+      "sort": 0,
+      "value": null,
+      "description": null,
+      "subLevelModelList": null
+    },
+    {
+      "code": 1404,
+      "name": "晚班",
+      "flag": 0,
+      "settingValue": 0,
+      "sort": 0,
+      "value": null,
+      "description": null,
+      "subLevelModelList": null
+    },
+    {
+      "code": 1405,
+      "name": "夜班",
+      "flag": 0,
+      "settingValue": 0,
+      "sort": 0,
+      "value": null,
+      "description": null,
+      "subLevelModelList": null
+    }
+  ],
+  "daysPerWeekList": [
+    {
+      "code": 1201,
+      "name": "时间灵活",
+      "flag": 1,
+      "settingValue": 0,
+      "sort": 0,
+      "value": null,
+      "description": null,
+      "subLevelModelList": null
+    },
+    {
+      "code": 1202,
+      "name": "5天及以上",
+      "flag": 0,
+      "settingValue": 0,
+      "sort": 0,
+      "value": null,
+      "description": null,
+      "subLevelModelList": null
+    },
+    {
+      "code": 1203,
+      "name": "3-4天",
+      "flag": 0,
+      "settingValue": 0,
+      "sort": 0,
+      "value": null,
+      "description": null,
+      "subLevelModelList": null
+    },
+    {
+      "code": 1204,
+      "name": "2-3天",
+      "flag": 0,
+      "settingValue": 0,
+      "sort": 0,
+      "value": null,
+      "description": null,
+      "subLevelModelList": null
+    },
+    {
+      "code": 1205,
+      "name": "1-2天",
+      "flag": 0,
+      "settingValue": 0,
+      "sort": 0,
+      "value": null,
+      "description": null,
+      "subLevelModelList": null
+    }
+  ]
+}

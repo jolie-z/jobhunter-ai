@@ -25,7 +25,10 @@ for _p in (_SCRIPT_DIR, _PROJECT_ROOT):
 import liepin_session
 import liepin_popups
 
-TEMP_DIR = os.path.join(_PROJECT_ROOT, "temp_resumes")
+# db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
+from app.core.db_paths import writable_path  # noqa: E402
+
+TEMP_DIR = writable_path(os.path.join(_PROJECT_ROOT, "temp_resumes"), "temp_resumes")
 LIEPIN_MAX_RESUMES = 3
 
 CSS_ANT_MODAL_CLOSE = 'css:.ant-modal-close'

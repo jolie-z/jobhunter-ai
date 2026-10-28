@@ -53,7 +53,6 @@ export function CommandHeader({
 
   const pipelineStatus = usePipelineStore((s) => s.status)
   const currentStage = usePipelineStore((s) => s.currentStage)
-  const pipelineTaskId = usePipelineStore((s) => s.pipelineTaskId)
   const startPipeline = usePipelineStore((s) => s.startPipeline)
 
   // 每日定时调度面板（Q10 拆分批次 1 抽离至 use-schedule-panel.ts）
@@ -182,27 +181,49 @@ export function CommandHeader({
     if (!window.confirm("确定终止本次全链路任务？\n各平台爬虫与状态机将在安全点收尾，并生成执行报告。")) return
     setAborting(true)
     setAbortMsg("")
-    const abortedTaskId = pipelineTaskId || ""
     try {
+      // 终止静默失效根治①（2026-10-23 工单）：不信任 store 的 pipelineTaskId——
+      // 页面长开可能持有上一轮僵尸 ID，后端按 ID 精确匹配会静默忽略。先取后端权威运行 ID
+      let authoritativeId = ""
+      try {
+        const curRes = await fetch(`${API_BASE}/api/automation/current-pipeline`)
+        if (!curRes.ok) throw new Error(`HTTP ${curRes.status}`)
+        const curData = await curRes.json()
+        if (curData?.data?.running !== true) {
+          toast.error("当前无运行中的全链路任务，终止未下达")
+          setAbortMsg("当前无运行中的全链路任务")
+          return
+        }
+        authoritativeId = String(curData?.data?.task_id || "")
+      } catch {
+        toast.error("无法获取当前任务状态，终止未下达（请检查后端连接）")
+        setAbortMsg("终止未下达：无法确认运行中任务")
+        return
+      }
       const res = await fetch(`${API_BASE}/api/automation/abort`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task_id: abortedTaskId }),
+        body: JSON.stringify({ task_id: authoritativeId }),
       })
       const data = await res.json()
-      if (res.ok) {
+      if (res.ok && data?.aborted !== false) {
         setAbortMsg(data.message || "终止指令已下达")
         const timer = setTimeout(() => setAbortMsg(""), 5000)
         timersRef.current.add(timer)
-        // 指令已被后端受理：进入对账窗口（非静默重置，SSE end 仍是第一复位来源）
-        if (data?.aborted !== false) {
-          setAbortPending(true)
-          void reconcileAfterAbort(abortedTaskId)
-        }
+        // 指令已被后端受理：进入对账窗口（非静默重置，SSE end 仍是第一复位来源）。
+        // 对账用后端响应的实际 task_id——后端对 ID 不匹配已降级终止当前登记任务，
+        // 实际终止对象可能与本地 store 持有的 ID 不同
+        setAbortPending(true)
+        void reconcileAfterAbort(data?.task_id || authoritativeId)
       } else {
-        setAbortMsg("终止失败: " + (data.detail || data.message || "未知错误"))
+        // 终止静默失效根治②：失败必须显式报错并复位按钮，禁止当成功处理。
+        // 红字不设自动清除（成功路径才 5 秒淡出）——错误需持续可见直至用户下一步操作
+        const reason = data?.detail || data?.message || `HTTP ${res.status}`
+        toast.error(`终止未生效：${reason}`)
+        setAbortMsg(`终止未生效：${reason}`)
       }
     } catch {
+      toast.error("终止失败：网络异常")
       setAbortMsg("终止失败：网络异常")
     } finally {
       setAborting(false)

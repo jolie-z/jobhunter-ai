@@ -14,10 +14,10 @@ from resume_editor.platforms.liepin_collector import (
     build_liepin_fields,
     save_data,
     OUTPUT_PATH,
-    DATA_DIR,
     PORT,
 )
 from app.session.health_checker import probe_port, _no_proxy_opener
+from resume_editor.paths import DATA_DIR  # 用户数据根真源（本机可选 fixture 所在目录）
 
 client = TestClient(app)
 
@@ -279,8 +279,8 @@ class TestLiepinDataSaveAndMerge:
     def test_01_save_data_creates_file_and_preserves_structure(self, monkeypatch, tmp_path):
         """测试保存数据并验证字段完整性"""
         test_file = str(tmp_path / "liepin_test.json")
+        # 落盘与快照目录都跟随 OUTPUT_PATH 的所在目录（读/写锚点拆分后 collector 不再持有 DATA_DIR）
         monkeypatch.setattr("resume_editor.platforms.liepin_collector.OUTPUT_PATH", test_file)
-        monkeypatch.setattr("resume_editor.platforms.liepin_collector.DATA_DIR", str(tmp_path))
 
         # 3 个非空模块：满足统一落盘的空数据拦截阈值（min_non_empty=3）
         test_data = {

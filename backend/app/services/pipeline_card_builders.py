@@ -323,6 +323,70 @@ def build_sub_card_rejected(jobs: list[JobCardItem] | None = None, total: int | 
 
 
 
+def build_sub_card_delivered(jobs: list[JobCardItem] | None = None, total: int | None = None) -> dict[str, Any]:
+    """构建【🚀 自动投递详情】卡片：本轮即时任务真实发生的自动投递结果（成功/失败+原因）。
+
+    与其他三张分流卡不同：本卡只读不放行（投递已完成，无可交互动作），
+    每条带「表格详情」直达按钮跳飞书多维表格对应记录。
+    """
+    job_list = jobs if jobs is not None else []
+    if not job_list:
+        # total>0 但没拉到数据 = 疑似拉取异常，文案与真 0 条区分（R1 审查 P2：不掩盖数据缺失）
+        empty_hint = (
+            f"⚠️ 本轮应有 {total} 条自动投递记录，但当前未能拉取到明细（可能飞书接口波动）。"
+            "请稍后在电脑端客户端查看完整情况。"
+            if total
+            else "🎉 **本轮无自动投递岗位**\n本轮岗位均停在待审批断点，放行后才会发生真实投递动作。"
+        )
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"tag": "plain_text", "content": "🚀 自动投递详情 (0 条)"}, "template": "green"},
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": empty_hint}},
+                {"tag": "hr"},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": "JobHunter 全链路指挥中心 · 状态已同步"}]}
+            ]
+        }
+
+    card_lines = []
+    for item in job_list:
+        status_color = "green" if item.color == "green" else "red"
+        line = f"{item.title}\n   <font color='{status_color}'>{item.grade}</font>"
+        if item.detail_url:
+            line += f" ｜ [🔍 表格详情]({item.detail_url})"
+        card_lines.append(line)
+
+    title_text = f"🚀 自动投递详情 (本轮共 {total or len(job_list)} 条 · 展示前 {len(job_list)} 条)" if (total and total > len(job_list)) else f"🚀 自动投递详情 (本轮共 {len(job_list)} 条)"
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": title_text},
+            "template": "green"
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        "📋 **本轮自动投递执行明细 (展示上限 20 条，更多请前往电脑端客户端查看完整情况)**：\n\n"
+                        "✅ = 已投递成功 ｜ ❌ = 投递失败（附失败原因，可在客户端「执行失败」页重试）\n\n"
+                        + "\n\n".join(card_lines)
+                    )
+                }
+            },
+            {"tag": "hr"},
+            {
+                "tag": "note",
+                "elements": [{"tag": "plain_text", "content": "JobHunter · 投递状态与失败日志实时回写飞书多维表格「跟进状态 / 自动投递失败日志」字段"}]
+            }
+        ]
+    }
+
+
+
+
 def build_master_pipeline_card(
     task_time: str = "",
     duration_mins: int = 28,
@@ -335,12 +399,21 @@ def build_master_pipeline_card(
     channel_counts: dict[str, int] | None = None,
     grade_counts: dict[str, int] | None = None,
     mass_review_cnt: int = 4,
-    other_review_cnt: int = 0,
+    auto_delivered_cnt: int = 0,
+    ready_to_deliver_cnt: int = 0,
     dedup_count: int = 0,
     ab_record_ids: list[str] | None = None,
     mass_record_ids: list[str] | None = None,
     rejected_record_ids: list[str] | None = None,
+    delivered_record_ids: list[str] | None = None,
+    delivered_by_platform: dict[str, int] | None = None,
+    delivery_fail_reasons: dict[str, int] | None = None,
+    delivery_fail_cnt: int = 0,
+    eval_failed_cnt: int = 0,
     trigger_source: str = "scheduled",
+    aborted: bool = False,
+    aborted_cnt: int = 0,
+    aborted_ungraded_cnt: int = 0,
 ) -> dict[str, Any]:
     """构建【📊 全链路指挥中心 · 定时任务/手动即时任务】主战报卡片（严格对齐图 2 规范标准）。"""
     t_str = task_time or datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -353,21 +426,25 @@ def build_master_pipeline_card(
     ch = channel_counts if channel_counts is not None else {"BOSS直聘": 5, "猎聘": 5, "智联招聘": 5, "51job": 5}
     gr = grade_counts if grade_counts is not None else {"A": 2, "B": 6, "C": 4, "D/F": 3}
     total_eval = sum(gr.values())
-    total_other = mass_review_cnt + other_review_cnt
 
     # 精投占比分母规范：以实际进入初评的岗位数为分母
     eval_cnt = total_eval if total_eval > 0 else (ai_passed if ai_passed > 0 else 1)
     prec_rate = round((precision_cnt / eval_cnt) * 100)
 
-    # 初评与去重说明
+    # 初评与去重说明；评估失败单列行（有才显示）：口径与 D/F 分离，引导执行失败 tab 重试
+    eval_fail_line = (
+        f"\n  ⚠️ 评估失败：<font color='red'>**{eval_failed_cnt}**</font> 条（8维解析失败，已进执行失败 tab 可重试）"
+        if eval_failed_cnt > 0 else ""
+    )
     eval_header = f"· **初评等级** (共 {total_eval} 条进入评估"
     if dedup_count > 0:
         eval_header += f" ｜ 🧬 疑似重复：<font color='blue'>**{dedup_count}**</font> 条"
     eval_header += ")：\n"
 
     eval_extra = ""
-    # 真实异常中断防御检测：排除去重拦截后仍有岗位丢失
-    eval_loss = max(0, (ai_passed - dedup_count) - total_eval)
+    # 真实异常中断防御检测：排除去重拦截后仍有岗位丢失；手动终止且未完成初评的岗位
+    # 不计入「评估异常中断」（2026-10-24 工单，否则终止会被误报成故障）
+    eval_loss = max(0, (ai_passed - dedup_count) - total_eval - aborted_ungraded_cnt)
     if eval_loss > 0:
         eval_extra = f"\n  ⚠️ 评估异常中断：<font color='red'>**{eval_loss}**</font> 条"
 
@@ -382,21 +459,66 @@ def build_master_pipeline_card(
     ab_val = _build_btn_val("open_ab_card", ab_record_ids)
     mass_val = _build_btn_val("open_mass_card", mass_record_ids)
     rej_val = _build_btn_val("open_rejected_card", rejected_record_ids)
+    delivered_val = _build_btn_val("open_delivered_card", delivered_record_ids)
+
+    # 自动投递执行情况（3.2/3.4）：成功按平台分布 + 失败按原因汇总；本轮无真实投递动作则整段收起
+    delivered_cnt = sum((delivered_by_platform or {}).values())
+    delivery_section: list[dict[str, Any]] = []
+    if delivered_cnt > 0 or delivery_fail_cnt > 0:
+        delivery_lines = ["**🚀 自动投递执行情况（本轮真实发生的投递动作）**"]
+        if delivered_cnt > 0:
+            platform_txt = " · ".join(
+                f"{p} <font color='green'>**{n}**</font> 条"
+                for p, n in (delivered_by_platform or {}).items()
+            )
+            delivery_lines.append(f"· ✅ 投递成功：<font color='green'>**{delivered_cnt}**</font> 条（{platform_txt}）")
+        if delivery_fail_cnt > 0:
+            reason_txt = " ｜ ".join(
+                f"{reason} (<font color='red'>**{n}**</font> 条)"
+                for reason, n in (delivery_fail_reasons or {}).items()
+            )
+            fail_tail = f"，失败原因：{reason_txt}" if reason_txt else ""
+            delivery_lines.append(f"· ❌ 投递失败：<font color='red'>**{delivery_fail_cnt}**</font> 条{fail_tail}")
+        delivery_section = [
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(delivery_lines)}},
+        ]
+
+    # 手动终止横幅（2026-10-24 工单）：主战报卡片是飞书侧第一事实源，必须显式标注终止，
+    # 避免终止轮次被误读为正常完成。
+    status_line = (
+        f"⏱ **{t_str}** · 用时约 **{duration_mins} 分钟** · <font color='red'>⛔ 手动终止</font>"
+        if aborted else
+        f"⏱ **{t_str}** · 用时约 **{duration_mins} 分钟** · <font color='green'>已完成</font>"
+    )
+    aborted_banner: list[dict[str, Any]] = []
+    if aborted:
+        aborted_banner = [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        "⛔ **本次任务被手动终止**——以下为终止前已完成部分"
+                        + (f"，共 {aborted_cnt} 条岗位在途收尾" if aborted_cnt else "")
+                        + "。"
+                    ),
+                },
+            },
+        ]
 
     return {
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": f"📊 全链路指挥中心 · {task_label} · {hhmm}"},
-            "template": "blue"
+            "template": "red" if aborted else "blue"
         },
         "elements": [
             {
                 "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": f"⏱ **{t_str}** · 用时约 **{duration_mins} 分钟** · <font color='green'>已完成</font>"
-                }
+                "text": {"tag": "lark_md", "content": status_line},
             },
+            *aborted_banner,
             {"tag": "hr"},
             {"tag": "div", "text": {"tag": "lark_md", "content": "**⚡ 本轮流水线流转效能**"}},
             {
@@ -434,6 +556,7 @@ def build_master_pipeline_card(
                         f"{eval_header}"
                         f"  🌟 A级：<font color='green'>**{gr.get('A', 0)}**</font> 条 ｜ ✨ B级：<font color='blue'>**{gr.get('B', 0)}**</font> 条\n"
                         f"  🔹 C级：<font color='grey'>**{gr.get('C', 0)}**</font> 条 ｜ ⚪ D/F级：<font color='grey'>**{gr.get('D/F', gr.get('D', 0))}**</font> 条"
+                        f"{eval_fail_line}"
                         f"{eval_extra}"
                     )
                 }
@@ -444,8 +567,24 @@ def build_master_pipeline_card(
                 "text": {
                     "tag": "lark_md",
                     "content": (
-                        f"**🌟 精投岗位概览 (共 {precision_cnt} 条)**\n"
-                        "📝 全部已生成定制简历与针对性话术，挂起等待人工审批放行。"
+                        # 精投区如实标注（2026-10-23）：A/B 评级默认不在自动投递白名单，
+                        # 停审批是设计内流程；若本轮有 A/B 已真实投递/流转，不得宣称「全部挂起」
+                        (
+                            f"**🌟 精投岗位概览 (共 {precision_cnt} 条)**\n"
+                            "🎉 本轮无 A/B 级精投岗位挂起。"
+                        )
+                        if precision_cnt == 0
+                        else (
+                            f"**🌟 精投岗位概览 (共 {precision_cnt} 条)**\n"
+                            "📝 全部已生成定制简历与针对性话术，挂起等待人工审批放行"
+                            "（评级 A/B 不在自动投递白名单，需人工放行后投递）。"
+                        )
+                        if ab_record_ids is None or precision_cnt <= len(ab_record_ids)
+                        else (
+                            f"**🌟 精投岗位概览 (共 {precision_cnt} 条)**\n"
+                            f"📝 {len(ab_record_ids)} 条已生成定制简历，评级未在自动投递白名单，挂起待审批；"
+                            f"其余 {precision_cnt - len(ab_record_ids)} 条已进入投递/其他流转。"
+                        )
                     )
                 }
             },
@@ -455,12 +594,20 @@ def build_master_pipeline_card(
                 "text": {
                     "tag": "lark_md",
                     "content": (
-                        f"**⏸️ 其他待审批 ({total_other} 条 · 海投撞门槛)**\n"
-                        f"· 触发海投规则审批（如大厂）的岗位有 <font color='blue'>**{mass_review_cnt}**</font> 条\n"
-                        f"· 其他情况的岗位有 <font color='grey'>**{other_review_cnt}**</font> 条"
+                        # 海投流转口径（2026-10-23 修复）：待审批数=闸门拦截挂「海投人工复核」
+                        # 的岗位（与桌面待审批 tab 同源），已投递数=真实 outcome==delivered，
+                        # 不再按评级 C/D/F 分桶（旧版曾把 D 级大厂拦截岗误报成「已自动投递」）
+                        f"**⏸️ 海投安检与投递 (待审批 {mass_review_cnt} 条 · 已投递 {auto_delivered_cnt} 条)**\n"
+                        f"· 触发海投规则审批（如大厂规模/平台/评级安检拦截）的岗位有 <font color='blue'>**{mass_review_cnt}**</font> 条【已在待审批tab等待审批放行】\n"
+                        f"· 已过安检的岗位有 <font color='grey'>**{auto_delivered_cnt}**</font> 条【已执行自动投递】"
+                        + (
+                            f"\n· 已过安检待发射波次的岗位有 <font color='grey'>**{ready_to_deliver_cnt}**</font> 条【等待定时发射自动投出】"
+                            if ready_to_deliver_cnt > 0 else ""
+                        )
                     )
                 }
             },
+            *delivery_section,
             {"tag": "hr"},
             {
                 "tag": "action",
@@ -482,6 +629,12 @@ def build_master_pipeline_card(
                         "text": {"tag": "plain_text", "content": "🗑️ 淘汰岗位清单及放行"},
                         "type": "danger",
                         "value": rej_val
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🚀 自动投递详情"},
+                        "type": "default",
+                        "value": delivered_val
                     }
                 ]
             },

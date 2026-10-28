@@ -43,6 +43,18 @@
   color: var(--resume-text-body);
   /* Use CSS variables for padding */
   padding: var(--margin-top) var(--margin-right) var(--margin-bottom) var(--margin-left);
+
+  /* 2026-10-09 打印管线自兜底：正常态 Tailwind preflight 已给全局 box-sizing:border-box，
+     但 globals.css 404 丢失时（旧构建僵尸进程附着，桌面壳已加 BUILD_ID 守卫仍双保险）
+     content-box 会让 794px 纸面被 15mm 左右内边距撑爆 → 全部正文右侧溢出被裁。
+     打印页是 PDF 出口核心链路，不依赖全局样式兜底。 */
+  box-sizing: border-box;
+}
+
+.resume-body *,
+.resume-body *::before,
+.resume-body *::after {
+  box-sizing: border-box;
 }
 
 .resume-header {
@@ -145,6 +157,36 @@
   gap: calc(var(--item-gap) * 1.5);
 }
 
+/* 2026-10-06 修打印分页大空白：Chromium 对 flex column 容器的分页支持差，
+   内容高于本页剩余空间时会把整个容器推到下一页（前一页留大白）。打印/预览
+   上下文退回 block 布局，条目间距由 .resume-item 自身的 margin-bottom 承担（值等价）。 */
+@media print {
+  .resume-items {
+    display: block;
+  }
+}
+
+:global(.print-preview-mode) .resume-items {
+  display: block;
+}
+
+/* 2026-10-08 修 PDF 中部大留白（第二弹）：条目标题行用的 grid 容器跨页特性与 flex
+   同病——剩余空间放不下整个 grid 时整块被推到下页，前页底部留大白。打印/预览上下文
+   退回 flex（视觉等价：三段仍左右分布），且允许行内跨页。 */
+@media print {
+  .resume-item > [class*="grid-cols-"] {
+    display: flex !important;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+}
+
+:global(.print-preview-mode) .resume-item > [class*="grid-cols-"] {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
 .resume-item {
   margin-bottom: calc(var(--item-gap) * 1.5);
 }
@@ -176,42 +218,31 @@
   color: var(--resume-text-tertiary);
 }
 
-@media print {
-  .resume-body {
-    padding-top: 0 !important;
-    padding-bottom: 0 !important;
-  }
+  @media print {
+    .resume-body {
+      padding-top: 0 !important;
+      padding-bottom: 0 !important;
+    }
 
-  .resume-section-title {
-    break-after: avoid !important;
-    page-break-after: avoid !important;
+    .resume-section-title {
+      /* 2026-10-08 修 PDF 大留白：标题「绝对不与内容分离」的代价是——页底放不下
+         「标题+首条」整捆时连标题带位置一起让给下页，前页出现整段空白。分级处理：
+         标题自身仍尽量不孤立成页尾孤儿（orphans/widows 管文本行），但不再把后面的
+         内容块捆死，让正文自然流式分页，消除板块边界的大段留白。 */
+      break-after: auto !important;
+      page-break-after: auto !important;
+    }
   }
-
-  .resume-section-title+.resume-items>*:first-child,
-  .resume-section-title+p,
-  .resume-section-title+ul,
-  .resume-section-title+.resume-item {
-    break-before: avoid !important;
-    page-break-before: avoid !important;
-  }
-}
 
 :global(.print-preview-mode) .resume-body {
   padding-top: 0 !important;
   padding-bottom: 0 !important;
 }
 
+/* 2026-10-08：与 @media print 同步放宽标题捆绑（预览态同源渲染，见上注释） */
 :global(.print-preview-mode) .resume-section-title {
-  break-after: avoid !important;
-  page-break-after: avoid !important;
-}
-
-:global(.print-preview-mode) .resume-section-title+.resume-items>*:first-child,
-:global(.print-preview-mode) .resume-section-title+p,
-:global(.print-preview-mode) .resume-section-title+ul,
-:global(.print-preview-mode) .resume-section-title+.resume-item {
-  break-before: avoid !important;
-  page-break-before: avoid !important;
+  break-after: auto !important;
+  page-break-after: auto !important;
 }
 .resume-markdown p {
   margin: 0;

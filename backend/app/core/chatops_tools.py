@@ -15,6 +15,9 @@ import sys
 
 from langchain_core.tools import tool
 
+# JOBHUNTER_DB_PATH 主库覆盖阀门（M1 子项②）
+from app.core.db_paths import job_hunter_db_path
+
 # 路径
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.dirname(CURRENT_DIR)
@@ -22,7 +25,8 @@ PROJECT_ROOT = os.path.dirname(APP_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-DB_PATH = os.path.join(PROJECT_ROOT, "data", "job_hunter.db")
+# JOBHUNTER_DB_PATH 显式覆盖：未设 env 保持 backend/data 锚点原样
+DB_PATH = job_hunter_db_path(os.path.join(PROJECT_ROOT, "data", "job_hunter.db"))
 
 # 由 agent_router.process_chatops_query 在每次消息处理时设置
 _main_loop: asyncio.AbstractEventLoop | None = None

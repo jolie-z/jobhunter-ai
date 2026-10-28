@@ -16,6 +16,9 @@ import threading
 from datetime import date
 from importlib import import_module, metadata, util
 
+# Windows 防闪窗：pip/uv 子进程统一走防闪窗包装（backend 根模块，参照 engine_guard）
+from subprocess_utils import run_hidden
+
 logger = logging.getLogger(__name__)
 
 PACKAGE_NAME = "chinese-calendar"
@@ -93,7 +96,7 @@ def update_holiday_data() -> dict:
             return {**before, "updated": False,
                     "message": "当前环境缺少 pip 与 uv，无法在线升级，请手动安装: pip install -U " + PACKAGE_NAME}
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=UPDATE_TIMEOUT_SEC)
+            proc = run_hidden(cmd, capture_output=True, text=True, timeout=UPDATE_TIMEOUT_SEC)
         except subprocess.TimeoutExpired:
             return {**before, "updated": False,
                     "message": f"升级超时（{UPDATE_TIMEOUT_SEC}s），请手动执行: pip install -U {PACKAGE_NAME}"}

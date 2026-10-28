@@ -5,10 +5,12 @@ import asyncio
 from datetime import datetime
 from openai import AsyncOpenAI
 
+from app.core.db_paths import job_hunter_db_path
+
 # 获取项目根目录
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
-DB_PATH = os.path.join(PROJECT_ROOT, "data", "job_hunter.db")
+DB_PATH = job_hunter_db_path(os.path.join(PROJECT_ROOT, "data", "job_hunter.db"))
 
 # 🌟 全局急刹车开关：支持手动终止小红书多模态清洗
 GLOBAL_STOP_FLAG = False

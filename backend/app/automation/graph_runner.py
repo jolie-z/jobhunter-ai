@@ -28,10 +28,12 @@ def _get_raw_db_path() -> str:
     if fa and hasattr(fa, "RAW_DB_PATH"):
         return fa.RAW_DB_PATH
     import os
-    return os.path.join(
+
+    from app.core.db_paths import job_hunter_db_path
+    return str(job_hunter_db_path(os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
         "data", "job_hunter.db"
-    )
+    )))
 
 
 def _build_job_states(leads: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -145,6 +147,37 @@ async def _run_jobs_through_graph(
     return results
 
 
+def _recompute_gate_reason(
+    final_vals: dict[str, Any],
+    final_grade: str,
+    platform: str,
+    final_fields: dict[str, Any],
+) -> str:
+    """复算审批断点岗位的安检拦截原因（与 route_before_delivery / snapshot_service 同口径）。
+
+    战报分桶事实源（2026-10-23 修复）：旧版战报按评级 C/D/F 分桶，D 级大厂拦截岗
+    （挂「海投人工复核」停审批断点）被误报进「其他情况已自动投递」、海投放行卡为空
+    （pipeline_63487fa1 事故）。断点岗位必须携带闸门拦截原因供战报如实展示。
+    """
+    try:
+        from app.automation.workflow import evaluate_delivery_gate
+
+        gate_state = {
+            "grade": final_grade,
+            "platform": platform,
+            "feishu_fields": final_fields or {},
+            "final_markdown": final_vals.get("final_markdown") or "",
+            "parse_failed": bool(final_vals.get("parse_failed")),
+        }
+        gate_ok, reason = evaluate_delivery_gate(gate_state)
+        if gate_ok:
+            return "安检已过，物料未就绪/流程中断，待人工处理"
+        return reason
+    except Exception as e:
+        logger.warning(f"[FullAuto] 复算安检拦截原因失败（不影响流转）: {e}")
+        return ""
+
+
 async def _run_single_job_graph(
     initial_state: dict[str, Any],
     state_config: dict[str, Any],
@@ -157,6 +190,7 @@ async def _run_single_job_graph(
     resume=True 时 astream 入参传 None：从该 thread_id 的最后一个 checkpoint 续跑
     （节点级持久化，最多重跑中断时正在执行的节点）；initial_state 仍作元数据与后处理上下文。
     """
+    from app.automation import abort as abort_mod
     from app.automation import scheduler
 
     job_id = extract_job_record_id(initial_state)
@@ -171,6 +205,25 @@ async def _run_single_job_graph(
     jd_text = initial_state.get("jd_text", "")
     job_url = initial_state.get("job_url", "")
     raw_job_id = initial_state.get("raw_job_id", "")
+
+    # 入口终止守卫（2026-10-24 code-review R1-P1）：批次建任务后、图启动前若已收到终止
+    # 指令，直接收口——绝不空跑首个 evaluate_node（真实 LLM 成本与评级回写）。
+    if abort_mod.is_aborted():
+        await pb.emit_log(
+            pipeline_task_id,
+            f"⛔ 收到终止指令，岗位【{company_name} - {job_name}】未开始评估，直接收口",
+        )
+        return {
+            "record_id": job_id,
+            "job_id": job_id,
+            "job_name": job_name,
+            "company_name": company_name,
+            "platform": platform,
+            "grade": "",
+            "outcome": "aborted",
+            "error": "",
+            "status": "手动终止",
+        }
 
     common_meta = {
         "company_name": company_name,
@@ -198,50 +251,68 @@ async def _run_single_job_graph(
 
         latest_grade = None
         latest_score = None
+        aborted_midrun = False
 
-        async for event in scheduler.pipeline_app.astream(None if resume else initial_state, state_config):
-            for node_name, state_update in event.items():
-                stage, _label = _NODE_STAGE_MAP.get(node_name, (node_name, node_name))
-                if isinstance(state_update, dict):
-                    if state_update.get("grade"):
-                        latest_grade = state_update.get("grade")
-                    if state_update.get("score") is not None:
-                        latest_score = state_update.get("score")
-                    elif state_update.get("ai_score") is not None:
-                        latest_score = state_update.get("ai_score")
+        # 全局终止安全点（2026-10-24 终止失效工单）：LangGraph astream 是拉模式——收到本事件
+        # 说明对应节点已跑完并已广播，下一个节点只会在下一次拉取时启动。因此终止检查必须放在
+        # 循环体末尾、下一次拉取之前命中：当前节点成果保留，后续节点不再执行（评估/改写/打招呼/
+        # 投递全链路收口）；仅存在微秒级「检查通过后立刻置位」的竞态窗口，由投递节点兜底再拦。
+        stream = scheduler.pipeline_app.astream(None if resume else initial_state, state_config)
+        try:
+            async for event in stream:
+                for node_name, state_update in event.items():
+                    stage, _label = _NODE_STAGE_MAP.get(node_name, (node_name, node_name))
+                    if isinstance(state_update, dict):
+                        if state_update.get("grade"):
+                            latest_grade = state_update.get("grade")
+                        if state_update.get("score") is not None:
+                            latest_score = state_update.get("score")
+                        elif state_update.get("ai_score") is not None:
+                            latest_score = state_update.get("ai_score")
 
-                sub_status = "ai_eval"
-                if node_name == "deep_eval_node":
-                    sub_status = "deep_eval"
-                elif node_name == "rewrite_node":
-                    sub_status = "rewriting"
-                elif node_name in ("quick_greeting_node", "greeting_node"):
-                    sub_status = "greeting"
+                    sub_status = "ai_eval"
+                    if node_name == "deep_eval_node":
+                        sub_status = "deep_eval"
+                    elif node_name == "rewrite_node":
+                        sub_status = "rewriting"
+                    elif node_name in ("quick_greeting_node", "greeting_node"):
+                        sub_status = "greeting"
 
-                job_kwargs = {**common_meta}
-                if latest_score is not None:
-                    job_kwargs["score"] = latest_score
+                    job_kwargs = {**common_meta}
+                    if latest_score is not None:
+                        job_kwargs["score"] = latest_score
 
-                # 节点完成即点亮对应阶段（轨道推进），再广播岗位级事件
-                if node_name in _NODE_STAGE_MAP:
-                    await pb.emit_stage(pipeline_task_id, stage, "running")
-                await pb.emit_job(
-                    pipeline_task_id,
-                    job_id=job_id,
-                    job_name=job_name,
-                    node=node_name,
-                    status="done",
-                    sub_status=sub_status,
-                    grade=latest_grade,
-                    platform=platform,
-                    **job_kwargs
-                )
-                logger.info(f"  └─ [FullAuto] 岗位 {job_name} 节点完成: {node_name}")
-                if on_node_done:
-                    try:
-                        await on_node_done(node_name, state_update if isinstance(state_update, dict) else {})
-                    except Exception as cb_err:
-                        logger.warning(f"[FullAuto] on_node_done 回调异常（不影响流水线）: {cb_err}")
+                    # 节点完成即点亮对应阶段（轨道推进），再广播岗位级事件
+                    if node_name in _NODE_STAGE_MAP:
+                        await pb.emit_stage(pipeline_task_id, stage, "running")
+                    await pb.emit_job(
+                        pipeline_task_id,
+                        job_id=job_id,
+                        job_name=job_name,
+                        node=node_name,
+                        status="done",
+                        sub_status=sub_status,
+                        grade=latest_grade,
+                        platform=platform,
+                        **job_kwargs
+                    )
+                    logger.info(f"  └─ [FullAuto] 岗位 {job_name} 节点完成: {node_name}")
+                    if on_node_done:
+                        try:
+                            await on_node_done(node_name, state_update if isinstance(state_update, dict) else {})
+                        except Exception as cb_err:
+                            logger.warning(f"[FullAuto] on_node_done 回调异常（不影响流水线）: {cb_err}")
+
+                if abort_mod.is_aborted():
+                    aborted_midrun = True
+                    break
+        finally:
+            # 确定性关闭事件流（含 break 路径）：释放 AsyncPregelLoop 与 checkpointer 上下文，
+            # 避免依赖 GC finalize 造成的挂起任务/未关闭连接。
+            try:
+                await stream.aclose()
+            except Exception as close_err:
+                logger.warning(f"[FullAuto] 关闭 LangGraph 事件流异常（不影响收尾）: {close_err}")
 
         # 检查是否被审批断点拦截，并汇总最终结果（供任务报告）
         snapshot = await scheduler.pipeline_app.aget_state(state_config)
@@ -262,6 +333,22 @@ async def _run_single_job_graph(
             "platform": platform,
             "grade": final_grade,
         }
+
+        # 全局终止收尾（2026-10-24 工单）：图未跑完时按「手动终止」返回，已完成节点的成果照常
+        # 统计；checkpoint 保留，后续仍可用现有 resume 机制续跑。图已自然结束（snapshot.next
+        # 为空）则继续按真实结果分类——避免把终止瞬间刚好投递成功的岗位误报为终止。
+        if aborted_midrun and snapshot.next:
+            await pb.emit_log(
+                pipeline_task_id,
+                f"⛔ 收到终止指令，岗位【{company_name} - {job_name}】在当前阶段安全点收尾，后续节点不再执行",
+            )
+            logger.warning(f"⛔ [FullAuto] 岗位 {job_name} 因全局终止停在 {snapshot.next[0]} 之前，按手动终止收尾")
+            return {**base, "outcome": "aborted", "error": "", "status": "手动终止"}
+
+        # 投递节点被全局终止兜底拦截：图已跑完，但失败归因为用户主动终止
+        if str(final_vals.get("error") or "").startswith("[用户主动终止]"):
+            return {**base, "outcome": "aborted", "error": str(final_vals.get("error")), "status": "手动终止"}
+
         if snapshot.next and snapshot.next[0] == "manual_review_node":
             review_kwargs = {**common_meta}
             if final_score is not None:
@@ -300,7 +387,24 @@ async def _run_single_job_graph(
                     "grade": final_grade,
                     "task_id": pipeline_task_id,
                 }])
-            return {**base, "outcome": "waiting", "error": ""}
+            # 战报分桶事实源（2026-10-23）：断点岗位携带挂起类型 + 安检拦截原因——
+            # mass_review=挂「海投人工复核」（含大厂规模/平台/评级/解析失败全部拦截原因），
+            # custom_review=挂「简历人工复核」（A/B 精投轨）。战报据此分桶，与桌面待审批 tab 同口径。
+            review_kind = "custom_review" if review_type == "custom_tailored" else "mass_review"
+            gate_reason = _recompute_gate_reason(final_vals, final_grade, platform, final_fields)
+            logger.info(
+                f"⏸️ [FullAuto] 岗位 {job_name} 停在审批断点等待老板放行: "
+                f"review_kind={review_kind}, gate_reason={gate_reason or '（复算失败）'}"
+            )
+            target_status = "简历人工复核" if review_type == "custom_tailored" else "海投人工复核"
+            return {
+                **base,
+                "outcome": "waiting",
+                "error": "",
+                "review_kind": review_kind,
+                "gate_reason": gate_reason,
+                "status": target_status,
+            }
 
         # 图跑完≠投递成功：delivery_node 失败时会把原因写进 state.error
         if final_vals.get("error"):
@@ -368,7 +472,34 @@ async def _run_single_job_graph(
             platform=platform,
             **common_meta
         )
-        return {**base, "outcome": "stopped", "error": final_vals.get("status", "")}
+        # 🌟 这里都是图的正常终点：error 字段只装真错误，收尾跟进状态一律放 status 键
+        # （eval_pipeline_feedback 优先读 status，兼容其旧读法）。海投轨过安检后停在
+        # 「待投递」属等发射波次消费的正常终点，单列 outcome 供战报分组，不再冒充「提前终止」。
+        #
+        # ⚠️ 口径耦合：READY_GATE_STATUS 与 quick_greeting_node 写入飞书的「待投递」门牌是同一字符串
+        # （workflow.py updates["跟进状态"]），两侧拼写必须同步改。
+        READY_GATE_STATUS = "待投递"
+        final_status = str(final_vals.get("status") or "")
+        # 「复核」门牌但图未停断点（如 stop_at_review 模式下物料未就绪提前 END）：飞书跟进状态
+        # 含「复核」，桌面待审批 tab 必然收编展示；战报若仍按 stopped 计「提前终止」会再次
+        # 出现战报与桌面待审批数不符（2026-10-23 口径对齐）。同口径归一为 waiting。
+        if "复核" in final_status:
+            review_kind = "custom_review" if review_type == "custom_tailored" else "mass_review"
+            gate_reason = _recompute_gate_reason(final_vals, final_grade, platform, final_fields)
+            logger.info(
+                f"⏸️ [FullAuto] 岗位 {job_name} 以「{final_status}」门牌提前 END，按桌面待审批同口径归一为 waiting: "
+                f"review_kind={review_kind}, gate_reason={gate_reason or '（复算失败）'}"
+            )
+            return {
+                **base,
+                "outcome": "waiting",
+                "error": "",
+                "review_kind": review_kind,
+                "gate_reason": gate_reason,
+                "status": final_status,
+            }
+        outcome = "ready_to_deliver" if final_status == READY_GATE_STATUS else "stopped"
+        return {**base, "outcome": outcome, "error": "", "status": final_status}
 
     except Exception as e:
         logger.error(f"❌ [FullAuto] 岗位 {job_name} 流水线异常: {e}", exc_info=True)

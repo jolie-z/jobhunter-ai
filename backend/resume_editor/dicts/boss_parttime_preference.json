@@ -1,0 +1,320 @@
+[
+  {
+    "encryptId": "28d469273143a63b0HZ73A~~",
+    "questionTitle": "您期望做什么类型的兼职？",
+    "questionInfo": "1_0",
+    "questionType": 2,
+    "requiredAnswer": 0,
+    "level": 1,
+    "placeHolder": "",
+    "wordLimit": 0,
+    "otherAnswer": 0,
+    "userInput": "",
+    "optionLimit": 0,
+    "options": [
+      {
+        "encryptId": "29345f9750b79e641nd62dq7",
+        "jumpQuestionIds": [],
+        "content": "长期兼职",
+        "chosen": 1,
+        "unlimited": false,
+        "questionId": "28d469273143a63b0HZ73A~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "46deb06c91ac097b1nd62dq6",
+        "jumpQuestionIds": [],
+        "content": "短期兼职",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "28d469273143a63b0HZ73A~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "8ee60db30ebb0f641nd62dq1",
+        "jumpQuestionIds": [],
+        "content": "节假日兼职",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "28d469273143a63b0HZ73A~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "9ab5809d67a6fc751nd62dq0",
+        "jumpQuestionIds": [],
+        "content": "周末兼职",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "28d469273143a63b0HZ73A~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "aa4796d9a4293dfb1nd62dW9",
+        "jumpQuestionIds": [],
+        "content": "工作日兼职",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "28d469273143a63b0HZ73A~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "f668b3b3fa91fc231nd62dW8",
+        "jumpQuestionIds": [],
+        "content": "暑假兼职",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "28d469273143a63b0HZ73A~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "21e4541aba5e46721nd62dW_",
+        "jumpQuestionIds": [],
+        "content": "寒假兼职",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "28d469273143a63b0HZ73A~~",
+        "questionInfo": "1_0"
+      }
+    ]
+  },
+  {
+    "encryptId": "ca7ee9be6b60463d0HZ70w~~",
+    "questionTitle": "您期望做什么班次/时间段的兼职？",
+    "questionInfo": "1_0",
+    "questionType": 2,
+    "requiredAnswer": 0,
+    "level": 1,
+    "placeHolder": "",
+    "wordLimit": 0,
+    "otherAnswer": 0,
+    "userInput": "",
+    "optionLimit": 0,
+    "options": [
+      {
+        "encryptId": "e145177108d69a621nd62dW-",
+        "jumpQuestionIds": [],
+        "content": "固定班次",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "ca7ee9be6b60463d0HZ70w~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "67a5219f0def151d1nd62dW5",
+        "jumpQuestionIds": [],
+        "content": "排班制",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "ca7ee9be6b60463d0HZ70w~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "848b0cdf7f3d00551nd62dW4",
+        "jumpQuestionIds": [],
+        "content": "24小时倒班",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "ca7ee9be6b60463d0HZ70w~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "6e3a904c0e40f6bf1nd62dW7",
+        "jumpQuestionIds": [],
+        "content": "晚间兼职",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "ca7ee9be6b60463d0HZ70w~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "a412b8d78f57846d1nd62dW6",
+        "jumpQuestionIds": [],
+        "content": "夜班",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "ca7ee9be6b60463d0HZ70w~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "7e1019f71dd14c7d1nd62dW1",
+        "jumpQuestionIds": [],
+        "content": "小时工",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "ca7ee9be6b60463d0HZ70w~~",
+        "questionInfo": "1_0"
+      }
+    ]
+  },
+  {
+    "encryptId": "b79b8d5f2beb11a30HZ70g~~",
+    "questionTitle": "您接受哪种薪资结算方式？",
+    "questionInfo": "1_0",
+    "questionType": 2,
+    "requiredAnswer": 0,
+    "level": 1,
+    "placeHolder": "",
+    "wordLimit": 0,
+    "otherAnswer": 0,
+    "userInput": "",
+    "optionLimit": 0,
+    "options": [
+      {
+        "encryptId": "abf3649eb2fb764f1nd62dW0",
+        "jumpQuestionIds": [],
+        "content": "完工结",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "b79b8d5f2beb11a30HZ70g~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "9b9d36ac1ebbb74a1nd62dS9",
+        "jumpQuestionIds": [],
+        "content": "日结",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "b79b8d5f2beb11a30HZ70g~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "1c67c8d4009e1fa91nd62dS8",
+        "jumpQuestionIds": [],
+        "content": "周结",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "b79b8d5f2beb11a30HZ70g~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "9ec6a8a3e96336441nd62dS_",
+        "jumpQuestionIds": [],
+        "content": "半月结",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "b79b8d5f2beb11a30HZ70g~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "8d913e7193e068331nd62dS-",
+        "jumpQuestionIds": [],
+        "content": "月结",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "b79b8d5f2beb11a30HZ70g~~",
+        "questionInfo": "1_0"
+      }
+    ]
+  },
+  {
+    "encryptId": "30913ee1d9d33ea10HZ42w~~",
+    "questionTitle": "您接受哪种工作内容？",
+    "questionInfo": "1_0",
+    "questionType": 2,
+    "requiredAnswer": 0,
+    "level": 1,
+    "placeHolder": "",
+    "wordLimit": 0,
+    "otherAnswer": 0,
+    "userInput": "",
+    "optionLimit": 0,
+    "options": [
+      {
+        "encryptId": "a778c930de7129641nd62dS5",
+        "jumpQuestionIds": [],
+        "content": "室外工作",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "30913ee1d9d33ea10HZ42w~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "50f92e7d39dfc8831nd62dS4",
+        "jumpQuestionIds": [],
+        "content": "远程办公",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "30913ee1d9d33ea10HZ42w~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "9cd46c024ed117921nd62dS7",
+        "jumpQuestionIds": [],
+        "content": "体力活",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "30913ee1d9d33ea10HZ42w~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "0036b8523995fed71nd62dS6",
+        "jumpQuestionIds": [],
+        "content": "销售",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "30913ee1d9d33ea10HZ42w~~",
+        "questionInfo": "1_0"
+      }
+    ]
+  },
+  {
+    "encryptId": "6282f972d0176d910HZ43Q~~",
+    "questionTitle": "您期望获得哪种福利待遇？",
+    "questionInfo": "1_0",
+    "questionType": 2,
+    "requiredAnswer": 0,
+    "level": 1,
+    "placeHolder": "",
+    "wordLimit": 0,
+    "otherAnswer": 0,
+    "userInput": "",
+    "optionLimit": 0,
+    "options": [
+      {
+        "encryptId": "e772da57d7b1d11b1nd62Nm9",
+        "jumpQuestionIds": [],
+        "content": "有提成",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "6282f972d0176d910HZ43Q~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "6c945a0f51ab930c1nd62Nm8",
+        "jumpQuestionIds": [],
+        "content": "包吃",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "6282f972d0176d910HZ43Q~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "9b111396288584ee1nd62Nm_",
+        "jumpQuestionIds": [],
+        "content": "餐补",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "6282f972d0176d910HZ43Q~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "dd2fcadcee8856db1nd62Nm-",
+        "jumpQuestionIds": [],
+        "content": "加班补贴",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "6282f972d0176d910HZ43Q~~",
+        "questionInfo": "1_0"
+      },
+      {
+        "encryptId": "9559516b3e5ef40e1nd62Nm5",
+        "jumpQuestionIds": [],
+        "content": "夜班补贴",
+        "chosen": 0,
+        "unlimited": false,
+        "questionId": "6282f972d0176d910HZ43Q~~",
+        "questionInfo": "1_0"
+      }
+    ]
+  }
+]

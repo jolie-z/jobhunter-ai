@@ -31,11 +31,16 @@ import uuid
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _BACKEND_DIR = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
-DATA_DIR = os.path.join(_BACKEND_DIR, "resume_editor", "data")
-SNAPSHOT_PATH = os.path.join(DATA_DIR, "liepin_writeback.json")
-FIELDS_PATH = os.path.join(DATA_DIR, "liepin_fields.json")
-LANG_DICT_PATH = os.path.join(DATA_DIR, "liepin_lang_dict.json")
-CERT_DICT_PATH = os.path.join(DATA_DIR, "liepin_cert_dict.json")
+# DO NOT MOVE: 本脚本独立拉起时 sys.path[0] 只有 platforms/，必须先插 backend 根，
+# 下一行 from resume_editor.paths import 才能成立（禁止改成裸 import paths）
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+from resume_editor.paths import DATA_DIR, DICT_DIR, dict_path, fields_path, writeback_path  # noqa: E402
+
+SNAPSHOT_PATH = writeback_path("liepin")   # 用户数据：打包态落用户数据目录
+FIELDS_PATH = fields_path("liepin")
+LANG_DICT_PATH = dict_path("liepin_lang_dict.json")   # 只读字典：随包
+CERT_DICT_PATH = dict_path("liepin_cert_dict.json")
 
 sys.path.insert(0, _SCRIPT_DIR)
 from browser_common import get_platform_port
@@ -76,7 +81,7 @@ def load_dicts():
 
     cities = {}
     try:
-        data = _load(os.path.join(DATA_DIR, "liepin_cities.json"))
+        data = _load(os.path.join(DICT_DIR, "liepin_cities.json"))
         def _walk(d):
             if isinstance(d, dict):
                 if "name" in d and "code" in d and isinstance(d["code"], str):
@@ -96,7 +101,7 @@ def load_dicts():
             for it in items:
                 industries[it["name"]] = it["code"]
                 _walk_i(it.get("subcategories", []))
-        _walk_i(_load(os.path.join(DATA_DIR, "liepin_industry_categories.json")))
+        _walk_i(_load(os.path.join(DICT_DIR, "liepin_industry_categories.json")))
         industries["不限"] = "000"
         industries["全部行业"] = "000"
     except Exception as e:
@@ -110,7 +115,7 @@ def load_dicts():
                 _walk_j(it.get("subcategories", []))
                 for jb in it.get("jobs", []):
                     jobs[jb["name"]] = jb["code"]
-        _walk_j(_load(os.path.join(DATA_DIR, "liepin_job_categories.json")))
+        _walk_j(_load(os.path.join(DICT_DIR, "liepin_job_categories.json")))
     except Exception as e:
         print(f"  [WARN] 职位字典加载失败: {e}")
 

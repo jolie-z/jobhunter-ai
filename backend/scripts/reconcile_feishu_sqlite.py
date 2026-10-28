@@ -36,7 +36,7 @@ from app.core.config import settings  # noqa: E402
 from app.core.feishu_client import feishu_client  # noqa: E402
 
 FLOW_STATES = {"新线索", "简历人工复核", "海投人工复核", "待投递", "已投递", "投递失败", "已完成初步评估", "已深度初步评估"}
-REJECTED_RAW = ("清洗淘汰", "ai清洗淘汰", "已确认淘汰")
+REJECTED_RAW = ("清洗淘汰", "ai清洗淘汰", "已确认淘汰", "已淘汰")  # 词表: app/core/process_status.REJECTED_STATUSES(含存量旧词)
 UNSYNCED_RAW = ("已存入数据", "待推送至飞书")
 
 

@@ -8,14 +8,29 @@ Skill Run Directory Manager - 技能运行结果目录管理器
 3. 自动保存元数据 (token、时间、文件清单)
 """
 
-from pathlib import Path
-from typing import List, Dict, Optional
 import json
+import os
+import re
+import shutil
+import time
+import uuid
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
+from app.core.db_paths import writable_path
 
-# 根目录：backend/data/skill_runs
-SKILLS_RUNS_DIR = Path(__file__).parent.parent / "data" / "skill_runs"
+# 产物根目录（db_paths 阀门）：打包态落用户数据目录 JOBHUNTER_DATA_DIR/skill_runs，
+# 开发态无 env 注入时逐字保持历史锚点 backend/ai_agents/data/skill_runs。
+# 历史锚点在打包形态位于安装目录 resources 内，自动更新整体替换 resources 会清空用户产物
+# （0.3.5 事故根因），打包态严禁再落那里；JOBHUNTER_SKILL_RUNS_DIR 为单文件显式阀门（M1 先例）。
+# 不做旧目录搬迁：更新时安装器已先整体替换 resources，旧目录内不可能再有用户产物，
+# 搬迁反而只会把安装包误带出的演示目录复制回来。
+SKILLS_RUNS_DIR: Path = writable_path(
+    Path(__file__).parent.parent / "data" / "skill_runs",
+    "skill_runs",
+    env_var="JOBHUNTER_SKILL_RUNS_DIR",
+)
 
 
 def ensure_base_dir() -> Path:
@@ -50,7 +65,13 @@ def get_skill_run_dir(job_record_id: str, skill_id: str) -> Path:
         完整的目录路径，如:
         backend/data/skill_runs/appXXXXXXXXXXX/llm-intern-skill/
     """
-    if not _is_safe_segment(job_record_id) or not _is_safe_segment(skill_id):
+    if (
+        not _is_safe_segment(job_record_id)
+        or not _is_safe_segment(skill_id)
+        or job_record_id.startswith(".")
+        or skill_id.startswith(".")
+    ):
+        # 隐藏目录保留给原子归档的 staging/bak，业务 id 不得占用
         raise ValueError(f"非法路径参数: job_record_id={job_record_id!r}, skill_id={skill_id!r}")
 
     job_dir = SKILLS_RUNS_DIR / job_record_id
@@ -63,23 +84,77 @@ def get_skill_run_dir(job_record_id: str, skill_id: str) -> Path:
     return job_dir / skill_id
 
 
+def _safe_artifact_filename(name: str) -> str:
+    """产物文件名安全化：拒绝目录穿越/路径分隔符，避免模型输出写出 skill 目录。"""
+    raw = (name or "").strip()
+    raw = re.sub(r'[\\/*?:"<>|]', "_", raw)
+    if not raw or raw in (".", "..") or ".." in raw:
+        raw = f"artifact_{uuid.uuid4().hex[:8]}.md"
+    return raw
+
+
+def _replace_with_retry(src: Path, dst: Path, attempts: int = 3, delay: float = 0.1) -> None:
+    """Windows 上目录可能被读句柄短暂占用，重试 os.replace。"""
+    last_error: Optional[Exception] = None
+    for _ in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except OSError as e:
+            last_error = e
+            time.sleep(delay)
+    if last_error:
+        raise last_error
+
+
+def _atomic_replace_directory(staging: Path, target: Path) -> None:
+    """用 staging 目录整体替换 target，失败时恢复旧快照。
+
+    顺序：target → backup → staging → target → 删除 backup。
+    任一步失败都不会留下“新旧文件混合”的半成品：旧目录要么原样保留，
+    要么在 staging 替换失败时从 backup 恢复。
+    """
+    backup = target.parent / f".{target.name}.bak-{uuid.uuid4().hex}"
+    moved_to_backup = False
+    try:
+        if target.exists():
+            _replace_with_retry(target, backup)
+            moved_to_backup = True
+        _replace_with_retry(staging, target)
+    except Exception:
+        if moved_to_backup and not target.exists() and backup.exists():
+            try:
+                _replace_with_retry(backup, target)
+            except Exception as restore_err:
+                print(f"⚠️ 归档失败且旧快照恢复失败: {restore_err}")
+        raise
+    else:
+        if moved_to_backup and backup.exists():
+            shutil.rmtree(backup, ignore_errors=True)
+
+
 def save_skill_result(
     job_record_id: str,
     skill_id: str,
     files: List[Dict],  # [{"name": "01_xxx.md", "content": "..."}]
-    token_usage: Dict[str, int],  # {"prompt_tokens": 1000, "completion_tokens": 500}
-    output_type: str = "multi_markdown"  # single/markdown | multi_markdown | json
+    token_usage: Dict[str, Any],  # {"prompt_tokens": 1000, ...}；可含 bullet_confidence 等嵌套统计字典
+    output_type: str = "multi_markdown",  # single/markdown | multi_markdown | json
+    replace_existing: bool = False,
+    meta_extra: Optional[Dict[str, Any]] = None,
 ) -> Dict:
     """
     保存 skill 执行结果到文件系统
-    
+
     Args:
         job_record_id: 岗位记录 ID
         skill_id: 技能 ID
         files: 文件列表，每个文件有 name 和 content
         token_usage: token 使用统计
         output_type: 输出类型
-    
+        replace_existing: True 时先写 staging，再整体替换目标目录。
+            用于“最近一次完整运行”的快照语义，避免失败轮次留下旧文件混排。
+        meta_extra: 追加进 meta.json 的字段（partial/artifact_count/engine 等）
+
     Returns:
         {
             "success": True,
@@ -88,56 +163,79 @@ def save_skill_result(
             "meta": {...}
         }
     """
-    
+
     # 确保基础目录存在
     ensure_base_dir()
-    
+
     # 获取目标目录
     skill_dir = get_skill_run_dir(job_record_id, skill_id)
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    
+    skill_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    staging_dir: Optional[Path] = None
+    write_dir = skill_dir
+    if replace_existing:
+        staging_dir = skill_dir.parent / f".{skill_dir.name}.staging-{uuid.uuid4().hex}"
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        write_dir = staging_dir
+    else:
+        skill_dir.mkdir(parents=True, exist_ok=True)
+
     saved_files = []
-    
-    # 保存所有文件
-    for file in files:
-        file_path = skill_dir / file["name"]
-        
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(file["content"])
-        
-        saved_files.append({
-            "name": file["name"],
-            "size": len(file["content"]),
-            "path": str(file_path.relative_to(SKILLS_RUNS_DIR))
-        })
-        print(f"  📄 Saved: {file['name']} ({len(file['content'])} bytes)")
-    
-    # 构建元数据
-    meta = {
-        "job_record_id": job_record_id,
-        "skill_id": skill_id,
-        "executed_at": datetime.now().isoformat(),
-        "token_usage": token_usage,
-        "output_type": output_type,
-        "file_count": len(files),
-        "files": saved_files
-    }
-    
-    # 保存元数据
-    meta_file_path = skill_dir / "meta.json"
-    with open(meta_file_path, 'w', encoding='utf-8') as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
-    
-    print(f"\n✅ Skill result saved to: {skill_dir}")
-    print(f"   Files: {len(saved_files)}")
-    print(f"   Tokens: {sum(token_usage.values())}")
-    
-    return {
-        "success": True,
-        "dir_path": str(skill_dir),
-        "files_saved": saved_files,
-        "meta": meta
-    }
+    meta: Dict[str, Any] = {}
+
+    try:
+        # 保存所有文件
+        for file in files:
+            filename = _safe_artifact_filename(str(file.get("name", "")))
+            content = file.get("content", "")
+            file_path = write_dir / filename
+
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            saved_files.append({
+                "name": filename,
+                "size": len(content),
+                # 始终记录最终目录（staging 会被 rename 成 skill_dir），避免 meta 指向已消失的临时目录
+                "path": str((skill_dir.relative_to(SKILLS_RUNS_DIR)) / filename)
+            })
+            print(f"  📄 Saved: {filename} ({len(content)} bytes)")
+
+        # 构建元数据
+        meta = {
+            "job_record_id": job_record_id,
+            "skill_id": skill_id,
+            "executed_at": datetime.now().isoformat(),
+            "token_usage": token_usage,
+            "output_type": output_type,
+            "file_count": len(files),
+            "files": saved_files
+        }
+        if meta_extra:
+            meta.update(meta_extra)
+
+        # 保存元数据（staging 模式下最后写，作为本次写入完成的标记）
+        meta_file_path = write_dir / "meta.json"
+        with open(meta_file_path, 'w', encoding='utf-8') as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+
+        if staging_dir is not None:
+            _atomic_replace_directory(staging_dir, skill_dir)
+
+        print(f"\n✅ Skill result saved to: {skill_dir}")
+        print(f"   Files: {len(saved_files)}")
+        print(f"   Tokens: {sum(v for v in token_usage.values() if isinstance(v, (int, float)))}")
+
+        return {
+            "success": True,
+            "dir_path": str(skill_dir),
+            "files_saved": saved_files,
+            "meta": meta
+        }
+    except Exception:
+        if staging_dir is not None and staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
 
 
 def load_latest_result(job_record_id: str, skill_id: str) -> Optional[Dict]:
@@ -152,18 +250,18 @@ def load_latest_result(job_record_id: str, skill_id: str) -> Optional[Dict]:
         }
     """
     skill_dir = get_skill_run_dir(job_record_id, skill_id)
-    
+
     if not skill_dir.exists():
         return None
-    
+
     # 读取 meta.json
     meta_path = skill_dir / "meta.json"
     if not meta_path.exists():
         return None
-    
+
     with open(meta_path, 'r', encoding='utf-8') as f:
         meta = json.load(f)
-    
+
     # 读取所有 md 文件
     files = []
     for file_meta in meta.get("files", []):
@@ -175,7 +273,7 @@ def load_latest_result(job_record_id: str, skill_id: str) -> Optional[Dict]:
                 "name": file_meta["name"],
                 "content": content
             })
-    
+
     return {
         "files": files,
         "meta": meta,
@@ -197,27 +295,27 @@ def get_storage_stats() -> Dict:
         }
     """
     ensure_base_dir()
-    
+
     total_storage_bytes = 0
     jobs = []
-    
+
     if not SKILLS_RUNS_DIR.exists():
         return {
             "total_jobs": 0,
             "total_storage_mb": 0,
             "jobs": []
         }
-    
+
     for job_dir in SKILLS_RUNS_DIR.iterdir():
         if job_dir.is_dir():
             job_size = sum(f.stat().st_size for f in job_dir.rglob("*") if f.is_file())
             total_storage_bytes += job_size
-            
+
             jobs.append({
                 "job_id": job_dir.name,
                 "size_mb": round(job_size / (1024 * 1024), 2)
             })
-    
+
     return {
         "total_jobs": len(jobs),
         "total_storage_mb": round(total_storage_bytes / (1024 * 1024), 2),
@@ -275,6 +373,9 @@ def is_resume_filename(filename: str) -> bool:
     return any(kw in name_lower for kw in keywords)
 
 
+_ARTIFACT_SUFFIXES = {".md", ".markdown", ".json", ".txt", ".csv", ".yaml", ".yml"}
+
+
 def list_job_skill_artifacts(job_record_id: str, skill_id: Optional[str] = None) -> List[Dict]:
     """
     列出指定 job 下所有 skill 的多产物文件清单
@@ -287,42 +388,76 @@ def list_job_skill_artifacts(job_record_id: str, skill_id: Optional[str] = None)
         文件元数据列表，按文件名或执行时间排序
     """
     ensure_base_dir()
-    if not _is_safe_segment(job_record_id):
+    if not _is_safe_segment(job_record_id) or job_record_id.startswith(".") or (skill_id and skill_id.startswith(".")):
         return []
     job_dir = SKILLS_RUNS_DIR / job_record_id
     if not job_dir.exists() or not job_dir.is_dir():
         return []
 
     artifacts = []
-    skill_dirs_to_scan = [job_dir / skill_id] if (skill_id and (job_dir / skill_id).exists()) else [d for d in job_dir.iterdir() if d.is_dir()]
+    skill_dirs_to_scan = (
+        [job_dir / skill_id]
+        if (skill_id and (job_dir / skill_id).exists())
+        else [
+            d
+            for d in job_dir.iterdir()
+            if d.is_dir() and not d.name.startswith(".")
+        ]
+    )
 
     for s_dir in skill_dirs_to_scan:
+        if not s_dir.is_dir() or s_dir.name.startswith("."):
+            continue
         current_skill_id = s_dir.name
         meta_file = s_dir / "meta.json"
         executed_at = ""
+        meta: Dict[str, Any] = {}
         if meta_file.exists():
             try:
                 with open(meta_file, 'r', encoding='utf-8') as f:
                     meta = json.load(f)
                     executed_at = meta.get("executed_at", "")
             except Exception:
-                pass
+                meta = {}
 
-        for md_file in sorted(s_dir.glob("*.md")):
+        partial = bool(meta.get("partial", False))
+        artifact_count = meta.get("artifact_count", meta.get("file_count", 0))
+        expected_artifact_count = meta.get("expected_artifact_count", 0)
+        engine = meta.get("engine", "")
+        result_kind = meta.get("result_kind", "resume")
+        has_resume_output = bool(meta.get("has_resume_output", True))
+        final_artifact = meta.get("final_artifact") or ""
+        error_reason = meta.get("error_reason", "")
+
+        for artifact_file in sorted(
+            p for p in s_dir.iterdir()
+            if p.is_file()
+            and p.name != "meta.json"
+            and p.suffix.lower() in _ARTIFACT_SUFFIXES
+        ):
             try:
-                content = md_file.read_text(encoding="utf-8")
+                content = artifact_file.read_text(encoding="utf-8")
                 preview = content[:200].replace("\n", " ")
                 artifacts.append({
                     "skill_id": current_skill_id,
-                    "name": md_file.name,
-                    "size": md_file.stat().st_size,
-                    "is_resume_candidate": is_resume_filename(md_file.name),
+                    "name": artifact_file.name,
+                    "size": artifact_file.stat().st_size,
+                    "is_resume_candidate": is_resume_filename(artifact_file.name),
                     "executed_at": executed_at,
+                    "partial": partial,
+                    "artifact_count": artifact_count,
+                    "expected_artifact_count": expected_artifact_count,
+                    "engine": engine,
+                    "result_kind": result_kind,
+                    "has_resume_output": has_resume_output,
+                    "is_final": bool(final_artifact and artifact_file.name == final_artifact),
+                    "final_artifact": final_artifact,
+                    "error_reason": error_reason,
                     "preview": preview,
-                    "path": str(md_file.relative_to(SKILLS_RUNS_DIR))
+                    "path": str(artifact_file.relative_to(SKILLS_RUNS_DIR))
                 })
             except Exception as e:
-                print(f"⚠️ Error reading artifact {md_file}: {e}")
+                print(f"⚠️ Error reading artifact {artifact_file}: {e}")
 
     # 排序：推荐简历置顶，其余按文件名升序排列
     artifacts.sort(key=lambda x: (not x["is_resume_candidate"], x["name"]))
@@ -336,7 +471,8 @@ def get_artifact_content(job_record_id: str, skill_id: str, filename: str) -> Op
     # 路径安全检查，防止目录遍历（filename 与 job/skill 路径段都要防）
     if ".." in filename or "/" in filename or "\\" in filename:
         return None
-    if not _is_safe_segment(job_record_id) or not _is_safe_segment(skill_id):
+    if (not _is_safe_segment(job_record_id) or job_record_id.startswith(".")
+            or not _is_safe_segment(skill_id) or skill_id.startswith(".")):
         return None
     file_path = SKILLS_RUNS_DIR / job_record_id / skill_id / filename
     if not file_path.exists() or not file_path.is_file():
@@ -358,13 +494,13 @@ def delete_job_results(job_record_id: str) -> bool:
     Returns:
         True if deleted successfully, False otherwise
     """
-    if not _is_safe_segment(job_record_id):
+    if not _is_safe_segment(job_record_id) or job_record_id.startswith("."):
         return False
     job_dir = SKILLS_RUNS_DIR / job_record_id
 
     if not job_dir.exists():
         return False
-    
+
     try:
         import shutil
         shutil.rmtree(job_dir)
@@ -379,7 +515,8 @@ def delete_skill_result(job_record_id: str, skill_id: str) -> bool:
     """
     删除某个岗位下指定技能的所有运行产物
     """
-    if not _is_safe_segment(job_record_id) or not _is_safe_segment(skill_id):
+    if (not _is_safe_segment(job_record_id) or job_record_id.startswith(".")
+            or not _is_safe_segment(skill_id) or skill_id.startswith(".")):
         return False
     skill_dir = SKILLS_RUNS_DIR / job_record_id / skill_id
     if not skill_dir.exists():
@@ -400,7 +537,8 @@ def delete_single_artifact(job_record_id: str, skill_id: str, filename: str) -> 
     """
     if ".." in filename or "/" in filename or "\\" in filename:
         return False
-    if not _is_safe_segment(job_record_id) or not _is_safe_segment(skill_id):
+    if (not _is_safe_segment(job_record_id) or job_record_id.startswith(".")
+            or not _is_safe_segment(skill_id) or skill_id.startswith(".")):
         return False
     file_path = SKILLS_RUNS_DIR / job_record_id / skill_id / filename
     if not file_path.exists() or not file_path.is_file():
@@ -442,10 +580,10 @@ if __name__ == "__main__":
         },
         output_type="single_markdown"
     )
-    
+
     print("\n" + "="*60)
     print("Result:", test_result)
-    
+
     print("\nLoading latest result:")
     latest = load_latest_result("test-job-001", "test-skill")
     if latest:

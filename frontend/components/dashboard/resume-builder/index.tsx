@@ -6,9 +6,11 @@ import { useStrategyStore } from "@/hooks/use-strategy-store"
 import { useResumeV2Store } from "@/hooks/use-resume-v2-store"
 import { ResumeSidebar } from "./resume-sidebar"
 import { ModuleNav, type ModuleNavItem } from "./module-nav"
-import { useResumeBuilderActions } from "./use-resume-builder-actions"
+import { useResumeBuilderActions, isSkillPack } from "./use-resume-builder-actions"
 import { ResumeBuilderToolbar } from "./resume-builder-toolbar"
 import { ParseProgressCard } from "./parse-progress-card"
+import { SkillRewriteProgressDock } from "./skill-rewrite-progress-dock"
+import { SkillPreflightDialog } from "@/components/skill-preflight-dialog"
 import { ResumeModulesRenderer } from "./resume-modules-renderer"
 import { SkillArtifactsSheet } from "../features/v2-resume-editor/components/skill-artifacts-sheet"
 
@@ -128,6 +130,29 @@ export function ResumeBuilder() {
 
         {/* 🌟 简历解析进度浮动卡（上传期间展示阶段/字数/耗时，失败态带重试） */}
         <ParseProgressCard />
+
+        {/* 🌟 官方剧本改写进度坞：右下角实时展示 7 步轨道（此前同步接口全程黑盒）。
+            key=taskId 强制每次任务全新挂载：SSE 流状态与「错误只报一次」守卫都随任务重置，
+            否则常驻组件会把上一次任务的终态/已上报标记带进下一次 */}
+        <SkillRewriteProgressDock
+          key={actions.skillTaskId ?? "idle"}
+          taskId={actions.skillTaskId}
+          skillLabel={isSkillPack(selectedSkill) ? `技能：${selectedSkill}` : undefined}
+          onComplete={actions.handleSkillStreamComplete}
+          onError={actions.handleSkillStreamError}
+          onDismiss={actions.dismissSkillTask}
+        />
+
+        {/* 🌟 执行前预检：确认后才消耗用户 token */}
+        <SkillPreflightDialog
+          open={Boolean(actions.preflight)}
+          report={actions.preflight?.report ?? null}
+          skillName={actions.preflight?.report?.name || selectedSkill || "官方剧本"}
+          errorMessage={actions.preflight?.errorMessage}
+          loading={actions.preflightLoading}
+          onConfirm={actions.confirmPreflight}
+          onCancel={actions.cancelPreflight}
+        />
 
         {/* 🌟 Skill 作战产物库抽屉 */}
         <SkillArtifactsSheet

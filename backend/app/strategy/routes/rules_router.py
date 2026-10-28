@@ -36,8 +36,13 @@ async def update_weights(payload: WeightsUpdateRequest):
 
 @router.get("/active", response_model=ActiveStrategyResponse)
 async def read_active_strategy():
-    """获取当前的岗位初筛策略 (SQLite)"""
-    return await service.get_active_strategy()
+    """获取当前的岗位初筛策略 (SQLite)。
+
+    2026-10-07 修空表 404：新装系统无 active 行时 get_active_strategy 会 raise 404
+    → 前端显示"未配置"、示例注入永不可达、保存过的配置读不回。改走
+    get_active_strategy_or_default（默认兜底装配收口在 config_service，R1 P2）。
+    """
+    return await service.get_active_strategy_or_default()
 
 
 @router.post("/active", responses={500: {"description": "Error 500"}})

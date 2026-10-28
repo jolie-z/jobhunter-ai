@@ -270,7 +270,7 @@ export function EditorModuleRenderer({
                   wizardStep={wizardStep}
                   handleWizardComplete={handleWizardComplete}
                 />
-                <ExperienceList type="workExperience" wizardStep={wizardStep} atsQueue={atsQueue} syncQueue={syncQueue} grillQueue={grillQueue} onWizardComplete={handleWizardComplete} />
+                <ExperienceList type="workExperience" wizardStep={wizardStep} atsQueue={atsQueue} syncQueue={syncQueue} grillQueue={grillQueue} onWizardComplete={handleWizardComplete} customJdContext={job?.jobDescription} />
               </ModuleCard>
               </div>
             );
@@ -357,7 +357,7 @@ export function EditorModuleRenderer({
                   wizardStep={wizardStep}
                   handleWizardComplete={handleWizardComplete}
                 />
-                <ExperienceList type="personalProjects" wizardStep={wizardStep} atsQueue={atsQueue} syncQueue={syncQueue} grillQueue={grillQueue} onWizardComplete={handleWizardComplete} />
+                <ExperienceList type="personalProjects" wizardStep={wizardStep} atsQueue={atsQueue} syncQueue={syncQueue} grillQueue={grillQueue} onWizardComplete={handleWizardComplete} customJdContext={job?.jobDescription} />
               </ModuleCard>
               </div>
             );
@@ -367,7 +367,7 @@ export function EditorModuleRenderer({
             return (
               <div key={modKey} {...confirmWrapProps(modKey)}>
               <ModuleCard id={modKey} title={title} icon={<GraduationCap className="h-4 w-4" />} headerTools={pendingBadge(modKey)} {...commonProps}>
-                <ExperienceList type="education" wizardStep={wizardStep} atsQueue={atsQueue} syncQueue={syncQueue} grillQueue={grillQueue} onWizardComplete={handleWizardComplete} />
+                <ExperienceList type="education" wizardStep={wizardStep} atsQueue={atsQueue} syncQueue={syncQueue} grillQueue={grillQueue} onWizardComplete={handleWizardComplete} customJdContext={job?.jobDescription} />
               </ModuleCard>
               </div>
             );
@@ -378,47 +378,65 @@ export function EditorModuleRenderer({
               <div data-section-id="additional" key={modKey} {...confirmWrapProps(modKey)}>
                 <ModuleCard id={modKey} title={title} icon={<Wrench className="h-4 w-4" />} headerTools={pendingBadge(modKey)} {...commonProps}>
                 <div className="flex flex-col gap-3">
-                  <MarkdownEditor
-                    value={resumeData?.additional?.technicalSkills?.join('\n') || ""}
-                    onChange={(val: string) => updateAdditional({ technicalSkills: val.split('\n') })}
-                    placeholder="专业技能，支持 Markdown"
-                    minHeight="min-h-[120px]"
-                  />
-                  <div className="flex justify-end gap-2 mt-2">
-                    <Button variant="outline" size="sm" onClick={() => handleFormatMarkdown(modKey, title, resumeData?.additional?.technicalSkills?.join('\n') || "", (val: string) => updateAdditional({ technicalSkills: val.split('\n') }))}>
-                      <Wand2 className="h-3.5 w-3.5 mr-1" />
-                      自动排版
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="h-8 text-xs bg-indigo-50 text-indigo-600 hover:bg-indigo-100 border border-indigo-200 shadow-sm transition-all"
-                      onClick={() => setManualSyncOpen(prev => ({ ...prev, [modKey]: !prev[modKey] }))}
-                    >
-                      <Sparkles className="h-3.5 w-3.5 mr-1.5" />
-                      {manualSyncOpen[modKey] ? "收起联动更新" : "AI 联动更新"}
-                    </Button>
-                  </div>
-                  {(manualSyncOpen[modKey]) && (
-                    <AiModuleSyncInline
-                      moduleTitle={title}
-                      currentContent={resumeData?.additional?.technicalSkills?.join('\n') || ""}
-                      experiencesContext={job?.jobDescription || ""}
-                      onAccept={(newContent) => {
-                        updateAdditional({ technicalSkills: newContent.split('\n') })
-                        setManualSyncOpen(prev => ({ ...prev, [modKey]: false }))
-                        if (wizardStep === 'step5') {
-                          handleWizardComplete?.('sync_item_done', modKey)
-                        }
-                      }}
-                      onCancel={() => {
-                        setManualSyncOpen(prev => ({ ...prev, [modKey]: false }))
-                        if (wizardStep === 'step5') {
-                          handleWizardComplete?.('sync_item_cancel', modKey)
-                        }
-                      }}
-                    />
-                  )}
+                  {/* 2026-10-06 原文保真：skillOverview（解析时逐字保留的「分类：技能清单」整行）优先展示；
+                      旧数据无 overview 字段时回退 technicalSkills 词表（行为不变）。
+                      判定用「字段是否为 string」而非内容非空——否则清空输入框会翻转模式、
+                      旧词表幽灵回填，用户永远无法清空（R1 P1 修正）。 */}
+                  {(() => {
+                    const hasOverview = typeof resumeData?.additional?.skillOverview === "string"
+                    const skillsText = hasOverview
+                      ? (resumeData?.additional?.skillOverview || "")
+                      : (resumeData?.additional?.technicalSkills?.join('\n') || "")
+                    const writeSkills = (val: string) => {
+                      if (hasOverview) updateAdditional({ skillOverview: val })
+                      else updateAdditional({ technicalSkills: val.split('\n') })
+                    }
+                    return (
+                      <>
+                        <MarkdownEditor
+                          value={skillsText}
+                          onChange={writeSkills}
+                          placeholder={hasOverview ? "专业技能原文，支持 Markdown" : "专业技能，支持 Markdown"}
+                          minHeight="min-h-[120px]"
+                        />
+                        <div className="flex justify-end gap-2 mt-2">
+                          <Button variant="outline" size="sm" onClick={() => handleFormatMarkdown(modKey, title, skillsText, writeSkills)}>
+                            <Wand2 className="h-3.5 w-3.5 mr-1" />
+                            自动排版
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="h-8 text-xs bg-indigo-50 text-indigo-600 hover:bg-indigo-100 border border-indigo-200 shadow-sm transition-all"
+                            onClick={() => setManualSyncOpen(prev => ({ ...prev, [modKey]: !prev[modKey] }))}
+                          >
+                            <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+                            {manualSyncOpen[modKey] ? "收起联动更新" : "AI 联动更新"}
+                          </Button>
+                        </div>
+                        {(manualSyncOpen[modKey]) && (
+                          <AiModuleSyncInline
+                            moduleTitle={title}
+                            currentContent={skillsText}
+                            experiencesContext={job?.jobDescription || ""}
+                            onAccept={(newContent) => {
+                              writeSkills(newContent)
+                              setManualSyncOpen(prev => ({ ...prev, [modKey]: false }))
+                              if (wizardStep === 'step5') {
+                                handleWizardComplete?.('sync_item_done', modKey)
+                              }
+                            }}
+                            onCancel={() => {
+                              setManualSyncOpen(prev => ({ ...prev, [modKey]: false }))
+                              if (wizardStep === 'step5') {
+                                handleWizardComplete?.('sync_item_cancel', modKey)
+                              }
+                            }}
+                          />
+                        )}
+                      </>
+                    )
+                  })()}
                 </div>
               </ModuleCard>
               </div>
@@ -428,7 +446,7 @@ export function EditorModuleRenderer({
           return (
             <div key={modKey} {...confirmWrapProps(modKey)}>
             <ModuleCard id={modKey} title={title} icon={<FolderGit2 className="h-4 w-4" />} headerTools={pendingBadge(modKey)} {...commonProps}>
-              <ExperienceList type="custom" moduleKey={modKey} wizardStep={wizardStep} atsQueue={atsQueue} syncQueue={syncQueue} grillQueue={grillQueue} onWizardComplete={handleWizardComplete} />
+              <ExperienceList type="custom" moduleKey={modKey} wizardStep={wizardStep} atsQueue={atsQueue} syncQueue={syncQueue} grillQueue={grillQueue} onWizardComplete={handleWizardComplete} customJdContext={job?.jobDescription} />
             </ModuleCard>
             </div>
           );

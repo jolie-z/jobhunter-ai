@@ -6,6 +6,7 @@
 import { API_BASE } from "@/lib/api"
 import { useState, useEffect, useMemo } from "react"
 import { fetchPlatformReport, savePlatformData } from "../api-client"
+import { buildIncrementalSavePayload } from "../incremental-save"
 import type { PlatformReport } from "../agent-report-shared"
 import { _zhilianChangedModuleKeys, ZHILIAN_MODULE_DEFAULT_SELECTED, type WritebackFeedbackState, type DeleteConfirmTarget, type ZhilianData, type ZhilianTabProps } from "./constants"
 import { useZhilianWritebackHandlers } from "./state-writeback"
@@ -239,7 +240,8 @@ export function useZhilianTabState({ data, loading, onRefresh, reportVersion = 0
   const persistData = async (updatedData: ZhilianData): Promise<boolean> => {
     setSaving(true)
     try {
-      const { ok, message } = await savePlatformData(API_BASE, "zhilian", updatedData)
+      // 增量保存：只发与改前基线 localData 深比较有差异的模块，未发模块由后端合并保留
+      const { ok, message } = await savePlatformData(API_BASE, "zhilian", buildIncrementalSavePayload(updatedData, localData))
       if (ok) {
         setLocalData(updatedData)
         showToast("保存成功")

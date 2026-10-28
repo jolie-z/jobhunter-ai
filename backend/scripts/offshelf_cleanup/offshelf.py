@@ -94,20 +94,34 @@ def make_checker(platform_value: str):
     C.ensure_browser(key)
 
     if key == "51job":
-        # 2026-09-24 收编到 patchright 新链路：引擎直启（互斥锁+登录态校验），
-        # 弃用 connect_over_cdp 9227（与主链路抢 Profile + Runtime.enable 泄漏）。
-        # 沿用官方 playwright API 语法（patchright API 同构）——但这里直接复用
-        # 51job_scraper.engine 的启动器，保证与主链路同一个上下文。
-        import sys as _sys
-        _j51_dir = str(C.BACKEND_ROOT / "51job_scraper")
-        if _j51_dir not in _sys.path:
-            _sys.path.insert(0, _j51_dir)
-        from engine import launch_or_fail as _j51_launch
-        _ctx_mgr = _j51_launch(purpose="offshelf_check")
-        context = _ctx_mgr.__enter__()
+        # 2026-10-06 patchright 回退：51job 回归 CDP 附着链路（与采集/投递同一 Edge、同一登录态）。
+        # Q24 守卫先行：端口占用者必须是 profiles/51job 拉起的 Edge，陌生浏览器 fail-closed 拒绝。
+        _port = C.resolve_port("51job")
+        if str(C.BACKEND_ROOT) not in sys.path:
+            sys.path.insert(0, str(C.BACKEND_ROOT))
+        try:
+            from app.session.registry import get_profile_path as _get_profile_path
+            _profile_dir = _get_profile_path("51job")
+        except Exception:
+            _profile_dir = str(C.BACKEND_ROOT / "data" / "profiles" / "51job")
+        from engine_guard import verify_browser_identity as _verify_identity
+        _ok, _guard_reason = _verify_identity(_port, _profile_dir, platform="51job")
+        if not _ok:
+            raise RuntimeError(f"[环境守卫] 拒绝连接 Edge (端口 {_port})：{_guard_reason}")
+
+        from playwright.sync_api import sync_playwright as _sync_playwright
+        _pw = _sync_playwright().start()
+        try:
+            _browser = _pw.chromium.connect_over_cdp(f"http://127.0.0.1:{_port}")
+            context = _browser.contexts[0]
+        except Exception as exc:
+            _pw.stop()
+            raise RuntimeError(
+                f"无法连接 Edge (端口 {_port})。请先通过前端「唤起51job浏览器」启动 Edge。错误: {exc}"
+            ) from exc
         page = context.pages[0] if context.pages else context.new_page()
         import atexit as _atexit
-        _atexit.register(_ctx_mgr.__exit__, None, None, None)  # 进程退出兜底释放引擎锁
+        _atexit.register(_pw.stop)  # 进程退出兜底断开 CDP 连接（绝不关闭共享 Edge 实例）
 
         # 显式死链信号（实测死链页文案："当前职位审核中或已下线"）
         DEAD_WORDS = ("已下线", "审核中", "职位不存在", "岗位不存在", "已过期", "已失效")

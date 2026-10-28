@@ -32,6 +32,12 @@ backend/chroma_mem0_db/
 backend/debug_print.*
 backend/test_pdf.py
 backend/create_field.py
+# Boss 接口调试的临时脚本与抓包样本（本地保留，不入库）
+backend/scratch_test_*.py
+backend/scratch_parse_*.py
+backend/boss_*.html
+backend/boss_api_response.json
+/scratch/
 
 # ===========================
 # Node / Frontend
@@ -40,6 +46,9 @@ node_modules/
 .next/
 out/
 *.tsbuildinfo
+landing/.next/
+landing/out/
+landing/node_modules/
 
 # ===========================
 # IDE & System
@@ -76,22 +85,11 @@ backend/data/*
 !backend/data/settings.json.example
 # 平台登录态 Cookie（本地保留供系统运行，严禁入库）
 backend/**/*cookies*.json
-# 简历编辑器运行数据目录：字段映射缓存/回写报告/测试快照均为程序运行时读写，
-# 且含个人隐私档案，整体本地保留（历史版本可随时找回）
+# 简历编辑器运行数据目录：四平台采集/编辑的简历内容、回写快照、写回日志、映射报告均为程序
+# 运行时读写且含个人隐私档案，整目录永不入库、永不进安装包（打包过滤器 !resume_editor/data/**）。
+# 平台公共字典（城市/行业/证书/选项表）已于 2026-10-26 迁至 backend/resume_editor/dicts/ 随仓发布，
+# 该目录只允许放只读字典（verify-pack 断言其中文件全部被 git 跟踪）。
 backend/resume_editor/data/*
-# 平台公共字典属产品必需资产，随仓发布（个人快照/进度类仍排除）。
-# 注意：根规则 `data/` 会排除目录本身（git 不再下探，文件级反选全部失效），
-# 必须先反选目录，再反选白名单文件。
-!backend/resume_editor/data/
-!backend/resume_editor/data/51job_dd_funtype.json
-!backend/resume_editor/data/51job_dicts.json
-!backend/resume_editor/data/51job_it_skills.json
-!backend/resume_editor/data/51job_skills.json
-!backend/resume_editor/data/liepin_cert_dict.json
-!backend/resume_editor/data/liepin_cities.json
-!backend/resume_editor/data/liepin_industry_categories.json
-!backend/resume_editor/data/liepin_job_categories.json
-!backend/resume_editor/data/liepin_lang_dict.json
 .aider*
 
 # ===========================
@@ -131,6 +129,8 @@ backend/temp_print_data/
 *.pdf
 *.docx
 *.png
+!docs/images/**
+preview_readme.html
 
 # runtime logs
 nohup_*.log
@@ -186,9 +186,6 @@ backend/checkpoints.sqlite*
 # 架构图渲染产物（README 首屏展示，需入库；其余 png 仍一律忽略）
 !docs/architecture-overview.png
 
-# README v2 演示素材（docs/images 四分区作战室/动图封面/二维码，README 展示需入库；其余 png 仍一律忽略）
-!docs/images/*.png
-
 # Video agent artifacts
 .video_agent/
 .coverage
@@ -205,5 +202,27 @@ docs/transcript_full.jsonl
 _archive/
 new_jobhunter_boss/
 
-# 公开仓独有：飞书交流群二维码（防被通用图片忽略规则误伤）
-!docs/feishu_group_qr*.png
+# 桌面壳打包资源（图标）需入库
+!desktop/build/
+!desktop/build/**
+
+# ===========================
+# Telemetry 运营小服务器（数据与安装包只留本地/服务器，永不入库）
+# ===========================
+telemetry/data/
+telemetry/files/*
+!telemetry/files/.gitkeep
+telemetry/data/admin-key.txt
+
+
+# 策略签名私钥（绝不入库）
+desktop/policy-keys/
+telemetry/data/policy_private.pem
+telemetry/data/policy.json
+
+# ===========================
+# skill-rewrite 架构页（docs 源文档 + 各服务 public 目录的投放副本，本地保留不入库）
+# ===========================
+skill-rewrite-architecture.html
+# 本地演示动图（体积大，不入库）
+docs/demo-optimized.gif

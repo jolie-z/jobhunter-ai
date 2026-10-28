@@ -18,8 +18,9 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime
-from resume_editor.paths import DATA_DIR  # 单一事实源（Q-M5-2 收敛）
+from resume_editor.paths import DATA_DIR, DICT_DIR, option_source_path  # 单一事实源（Q-M5-2 收敛；读锚点拆分 2026-10-26）
 
 logger = logging.getLogger("resume_editor.agent_mapper")
 
@@ -343,7 +344,7 @@ def _load_platform_options(platform: str) -> dict:
         for spec in specs:
             f = str(spec).split("@", 1)[0].split("#", 1)[0]
             try:
-                newest_mtime = max(newest_mtime, os.path.getmtime(os.path.join(DATA_DIR, f)))
+                newest_mtime = max(newest_mtime, os.path.getmtime(option_source_path(f, DATA_DIR, DICT_DIR)))
             except OSError:
                 continue
     cached = _option_cache.get(platform)
@@ -359,7 +360,7 @@ def _load_platform_options(platform: str) -> dict:
             path_key = None
             if "#" in spec:
                 spec, path_key = spec.split("#", 1)
-            p = os.path.join(DATA_DIR, spec)
+            p = option_source_path(spec, DATA_DIR, DICT_DIR)
             if not os.path.exists(p):
                 continue
             try:
@@ -558,6 +559,34 @@ def load_env_config() -> dict:
     if base_url.endswith("/chat/completions"):
         config["OPENAI_BASE_URL"] = base_url[: -len("/chat/completions")]
     return config
+
+
+def is_boss_rule_fallback_enabled() -> bool:
+    """检查 BOSS 规则兜底降级开关是否开启（Phase 3）。
+    优先级：settings.json > 环境变量 > 默认开启 (True)。
+    缺失即放行（True），显式设为 "false" / "0" / False 时热控回滚为 LLM-only。
+    """
+    try:
+        from common.config import get_configured_value
+        val = get_configured_value("BOSS_RULE_FALLBACK_ENABLED")
+        if not val:
+            val = os.getenv("BOSS_RULE_FALLBACK_ENABLED")
+        if not val:
+            return True
+        return str(val).strip().lower() not in ("false", "0", "no", "off")
+    except Exception:
+        return True
+
+
+def _is_platform_rule_fallback_allowed(platform: str, master: dict) -> bool:
+    """判定当前平台在 LLM 不可用时是否允许降级为确定性规则映射。"""
+    if not isinstance(master, dict) or not master.get("ok"):
+        return False
+    if platform in ("51job", "zhilian", "liepin"):
+        return True
+    if platform == "boss":
+        return is_boss_rule_fallback_enabled()
+    return False
 
 
 def _extract_feishu_text(value):
@@ -2624,9 +2653,11 @@ def _llm_classify_titles(titles: list, cfg: dict = None) -> dict:
 
 只输出纯 JSON 对象：{{"标题": "标准key或null", ...}}"""
     try:
-        from openai import OpenAI
+        from common.config import get_openai_client
 
-        client = OpenAI(api_key=cfg["OPENAI_API_KEY"], base_url=cfg.get("OPENAI_BASE_URL") or None, timeout=45.0)
+        client = get_openai_client(caller="resume_editor_classify_titles", max_retries=2)
+        if client is None:
+            return {}
         resp = client.chat.completions.create(
             model=cfg.get("OPENAI_MODEL", "gpt-4o-mini"),
             messages=[{"role": "user", "content": prompt}],
@@ -3576,7 +3607,7 @@ def _load_job51_funtype_index() -> dict:
                     idx[key] = (code, name)
 
     try:
-        p = os.path.join(DATA_DIR, "51job_dd_funtype.json")
+        p = os.path.join(DICT_DIR, "51job_dd_funtype.json")
         with open(p, "r", encoding="utf-8") as fp:
             _walk(json.load(fp))
     except Exception:
@@ -3641,7 +3672,7 @@ def _load_job51_it_skills_index() -> dict:
         return _JOB51_IT_SKILLS_INDEX
     idx = {}
     try:
-        p = os.path.join(DATA_DIR, "51job_it_skills.json")
+        p = os.path.join(DICT_DIR, "51job_it_skills.json")
         with open(p, "r", encoding="utf-8") as fp:
             categories = json.load(fp)
             for cat in categories:
@@ -4090,8 +4121,12 @@ def map_platform_rules(platform: str, fields_data: dict, master: dict, llm_error
         rep = _rule_map_zhilian(fields_data, master, llm_error)
     elif platform == "liepin":
         rep = _rule_map_liepin(fields_data, master, llm_error)
+    elif platform == "boss":
+        # 【GLM-P1-1】函数级延迟导入彻底解耦循环依赖
+        from .rule_map_boss import rule_map_boss
+        rep = rule_map_boss(fields_data, master, llm_error, selected_modules=selected_modules)
     else:
-        # 未知平台/BOSS：不再静默套用 51job 规则产出错误字段形状的报告
+        # 未知平台：不再静默套用 51job 规则产出错误字段形状的报告
         return {"success": False, "platform": platform, "fields": [], "unfilled": [],
                 "warnings": [], "message": f"该平台暂无规则映射兜底（LLM 不可用: {llm_error or '未配置'}）"}
 
@@ -4196,7 +4231,7 @@ def _get_zhilian_job_skills(job_type_id: str) -> list:
     """按职位代码获取智联官方工作技能标签预设字典"""
     global _ZHILIAN_WORK_SKILLS_CACHE
     if _ZHILIAN_WORK_SKILLS_CACHE is None:
-        skills_file = os.path.join(DATA_DIR, "zhilian_work_skills_progress.json")
+        skills_file = os.path.join(DICT_DIR, "zhilian_work_skills_progress.json")
         if os.path.exists(skills_file):
             try:
                 with open(skills_file, "r", encoding="utf-8") as f:
@@ -4730,44 +4765,38 @@ def map_platform(platform: str, fields_data: dict, master: dict, cfg: dict = Non
     prompt = build_mapping_prompt(platform, platform_labels.get(platform, platform),
                                  master_payload(master), schema, options_text)
     try:
-        from openai import OpenAI
+        from common.config import get_openai_client
 
-        client = OpenAI(api_key=api_key, base_url=base_url or None, timeout=45.0)
-        parsed = None
-        last_content = ""
-        last_err = None
-        for attempt in range(3):  # JSON 解析失败与网络异常均重试（上限 3 次）
-            try:
-                resp = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                    response_format={"type": "json_object"},
-                    max_tokens=32768,  # 映射输出约 5k token，思考型模型会额外消耗输出预算，需留足上限
-                )
-            except Exception as api_err:
-                last_err = api_err
-                logger.warning("[映射] %s LLM 调用异常（第 %s 次）: %s", platform, attempt + 1, api_err)
-                continue
-            # 截断检测：finish_reason=length 时输出被 max_tokens 截断，重试无意义但需明示
-            finish = getattr(resp.choices[0], "finish_reason", "") or ""
-            content = (resp.choices[0].message.content or "").strip()
-            last_content = content
-            m = re.search(r"\{[\s\S]*\}", content)
-            if m:
-                parsed = _repair_llm_json(m.group())  # 兼容字符串内字面换行等坏输出
-                if parsed is not None:
-                    if finish == "length":
-                        logger.warning("[映射] %s LLM 输出被 max_tokens 截断（finish_reason=length），结果可能不完整", platform)
-                    break
+        client = get_openai_client(caller="agent_map", max_retries=2)
+        if client is None:
+            raise RuntimeError("无法创建 OpenAI 客户端，请检查 OPENAI_API_KEY 配置")
+
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+            max_tokens=32768,  # 映射输出约 5k token，思考型模型会额外消耗输出预算，需留足上限
+        )
+
+        finish = getattr(resp.choices[0], "finish_reason", "") or ""
+        content = (resp.choices[0].message.content or "").strip()
+        m = re.search(r"\{[\s\S]*\}", content)
+        parsed = _repair_llm_json(m.group()) if m else None
+
         if parsed is None:
-            reason = f"LLM 调用异常: {last_err}" if last_err else "LLM 返回 JSON 无法解析"
+            reason = "LLM 返回 JSON 无法解析"
             logger.error("[映射降级] %s %s，降级为确定性规则映射。LLM 输出前 500 字符: %s",
-                         platform, reason, last_content[:500])
-            if platform in ("51job", "zhilian", "liepin") and master.get("ok"):
+                         platform, reason, content[:500])
+            if _is_platform_rule_fallback_allowed(platform, master):
                 return map_platform_rules(platform, fields_data, master, reason, selected_modules=selected_modules)
+            plat_name = "BOSS" if platform == "boss" else platform
             return {"success": False, "platform": platform, "fields": [], "unfilled": [],
-                    "warnings": [], "message": f"BOSS 平台映射依赖 AI 模型，当前不可用（{reason}），请稍后重试或检查模型配置", "raw": last_content[:500]}
+                    "warnings": [], "message": f"{plat_name} 平台映射依赖 AI 模型，当前不可用（{reason}），请稍后重试或检查模型配置", "raw": content[:500]}
+
+        if finish == "length":
+            logger.warning("[映射] %s LLM 输出被 max_tokens 截断（finish_reason=length），结果可能不完整", platform)
+
         report = validate_mapping_result(parsed, fields_data)
         report = _postprocess_mapping_report(report, fields_data, master, platform, selected_modules=selected_modules)
         report["success"] = True
@@ -4777,20 +4806,29 @@ def map_platform(platform: str, fields_data: dict, master: dict, cfg: dict = Non
             report.setdefault("warnings", []).insert(0, low_data_warning)
         report["message"] = f"映射完成：{len(report['fields'])} 项填入，{len(report['unfilled'])} 项待人工"
         return report
+
     except Exception as e:
-        err_text = str(e)[:200]
-        # 错误分类：把需要用户介入的问题明示出来，而不是笼统的"字段覆盖范围有限"
-        if any(kw in err_text.lower() for kw in ("insufficient", "quota", "余额", "billing", "402")):
-            user_msg = "AI 模型余额不足/配额耗尽，请检查模型服务账户后重试"
-        elif any(kw in err_text.lower() for kw in ("auth", "api key", "401", "unauthorized")):
-            user_msg = "AI 模型鉴权失败（API Key 无效或过期），请检查 OPENAI_API_KEY 配置"
-        elif any(kw in err_text.lower() for kw in ("timeout", "timed out", "connection")):
-            user_msg = "AI 模型连接超时，请检查网络后重试"
+        from app.core.llm_retry import TaskCancelledException
+        if isinstance(e, TaskCancelledException):
+            raise e
+
+        from app.core.llm_errors import classify_llm_error, LLMErrorKind
+        kind = getattr(e, "kind", None)
+        user_msg = getattr(e, "user_msg", None)
+        if not kind or not user_msg:
+            kind, user_msg, _ = classify_llm_error(e)
+
+        if kind == LLMErrorKind.rate_limited:
+            reason = "AI 模型触发速率限制，已退避重试仍失败，请稍后重试或减少并发任务"
+        elif user_msg:
+            reason = user_msg
         else:
-            user_msg = f"LLM 映射失败: {err_text}"
-        logger.exception("[映射降级] %s LLM 映射流程异常，降级为确定性规则映射", platform)
-        if platform in ("51job", "zhilian", "liepin") and master.get("ok"):
-            return map_platform_rules(platform, fields_data, master, user_msg, selected_modules=selected_modules)
+            reason = f"LLM 映射流程异常: {str(e)[:200]}"
+
+        logger.exception("[映射降级] %s LLM 映射流程异常 (%s)，降级为确定性规则映射", platform, reason)
+        if _is_platform_rule_fallback_allowed(platform, master):
+            return map_platform_rules(platform, fields_data, master, reason, selected_modules=selected_modules)
+        plat_name = "BOSS" if platform == "boss" else platform
         return {"success": False, "platform": platform, "fields": [], "unfilled": [],
-                "warnings": [], "message": f"BOSS 平台映射依赖 AI 模型，当前不可用（{user_msg}）"}
+                "warnings": [], "message": f"{plat_name} 平台映射依赖 AI 模型，当前不可用（{reason}）"}
 

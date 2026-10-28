@@ -25,6 +25,9 @@ PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+# 🌟 Windows 防闪窗：子进程统一走防闪窗包装（参照 engine_guard，收口见 backend/subprocess_utils.py）
+from subprocess_utils import popen_hidden
+
 from app.core.config import settings
 # 🌟 统一 Token 埋点
 from app.core.llm_tracker import make_tracked_client
@@ -185,7 +188,7 @@ def run_task(keyword, city, start_page, target_jobs, salary, sse_task_id=None, l
         my_env["PYTHONPATH"] = PROJECT_ROOT
         my_env["PYTHONIOENCODING"] = "utf-8"
 
-        process = subprocess.Popen(
+        process = popen_hidden(
             cmd, cwd=CURRENT_DIR,
             env=my_env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

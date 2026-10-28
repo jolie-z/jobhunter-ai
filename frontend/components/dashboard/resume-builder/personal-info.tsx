@@ -8,6 +8,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Plus, ShieldCheck, X, UserCircle2, ChevronDown, Loader2 } from "lucide-react"
 import { useOptionalStrategyStore } from "@/hooks/use-strategy-store"
 import { useResumeV2Store } from "@/hooks/use-resume-v2-store"
+import { fetchActiveResumeAvatar } from "@/lib/resume-avatar"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -97,9 +98,9 @@ export function PersonalInfo() {
   const [avatarDataUrl, setAvatarDataUrl] = useState<string>("")
 
   useEffect(() => {
-    const fetchAndSetAvatar = (url: string) => {
-      // Sync URL to store so print/export can use it
-      if (resumeData?.personalInfo?.avatar_url !== url) {
+    const fetchAndSetAvatar = (url: string, persist = true) => {
+      // Sync URL to store so print/export can use it（persist=false 仅展示，见 fetchActiveAvatar 调用处）
+      if (persist && resumeData?.personalInfo?.avatar_url !== url) {
         updatePersonalInfo({ avatar_url: url })
       }
       const cacheKey = `avatar_${url}`
@@ -134,20 +135,17 @@ export function PersonalInfo() {
       return
     }
 
-    // 自动读取“飞书-我的简历库-当前状态=启用”的照片字段
+    // 自动读取“飞书-我的简历库-当前状态=启用”的照片字段。
+    // 🌟 回写权归属（2026-10-22 未保存误报根因修复，double-check PASS）：岗位工作区
+    // （无简历库上下文）只展示不回写——store 基线由 workspace 装载链路经同一 helper
+    // 在基线建立前回填，组件侧回写落在基线之后会造成「零编辑即 dirty」误报；
+    // 简历库页面（StrategyContext 存在）保留原回写语义。
+    // 回写判据直接复用 canEditAvatar（同一出处，防两处条件日后静默分叉）
     const fetchActiveAvatar = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/strategy/config`)
-        const data = await res.json()
-        if (data.status === "success" && Array.isArray(data.resumes)) {
-          const activeResume = data.resumes.find((r: any) => r.status === "启用" || r.status === "Active")
-          if (activeResume && activeResume.avatar_url) {
-            fetchAndSetAvatar(activeResume.avatar_url)
-            return
-          }
-        }
-      } catch (e) {
-        console.error("Failed to fetch active resume avatar:", e)
+      const activeAvatar = await fetchActiveResumeAvatar()
+      if (activeAvatar) {
+        fetchAndSetAvatar(activeAvatar, canEditAvatar)
+        return
       }
       setAvatarDataUrl("")
     }

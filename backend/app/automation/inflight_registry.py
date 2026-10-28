@@ -18,9 +18,12 @@ from typing import Any
 
 from app.core.config import BASE_DIR
 
+# M2 收口：JOBHUNTER_DATA_DIR 注入时落用户数据目录
+from app.core.db_paths import writable_path
+
 logger = logging.getLogger(__name__)
 
-_REGISTRY_PATH = Path(BASE_DIR) / "data" / "inflight_pipelines.json"
+_REGISTRY_PATH = writable_path(Path(BASE_DIR) / "data" / "inflight_pipelines.json", "inflight_pipelines.json")
 # 兜底 TTL：超过该时长的登记项在加载时静默清理（正常生命周期由注销负责，这只是防残留）
 _REGISTRY_TTL_SECONDS = 24 * 3600
 

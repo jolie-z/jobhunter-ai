@@ -21,6 +21,7 @@ const DEFAULT_FILTERS = {
   expFilter: "全部",
   scaleFilter: "全部",
   platformFilter: "全部",
+  customRewriteFilter: "全部", // 全部 / 已自定义改写 / 未自定义改写
 }
 
 interface JobFilterState {
@@ -32,6 +33,7 @@ interface JobFilterState {
   expFilter: string
   scaleFilter: string
   platformFilter: string
+  customRewriteFilter: string
   pageSize: number
   currentPage: number
 
@@ -43,6 +45,7 @@ interface JobFilterState {
   setExpFilter: (v: string) => void
   setScaleFilter: (v: string) => void
   setPlatformFilter: (v: string) => void
+  setCustomRewriteFilter: (v: string) => void
   setPageSize: (v: number) => void
   setCurrentPage: (v: number) => void
   resetAll: () => void
@@ -62,6 +65,7 @@ export const useJobFilterStore = create<JobFilterState>((set) => ({
   setExpFilter: (v) => set({ expFilter: v, currentPage: 1 }),
   setScaleFilter: (v) => set({ scaleFilter: v, currentPage: 1 }),
   setPlatformFilter: (v) => set({ platformFilter: v, currentPage: 1 }),
+  setCustomRewriteFilter: (v) => set({ customRewriteFilter: v, currentPage: 1 }),
   setPageSize: (v) => set({ pageSize: v, currentPage: 1 }),
   setCurrentPage: (v) => set({ currentPage: v }),
   resetAll: () => set({ ...DEFAULT_FILTERS, currentPage: 1 }),

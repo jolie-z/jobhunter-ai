@@ -22,6 +22,22 @@ from resume_editor.platforms.boss_write_back import (
 
 client = TestClient(app)
 
+
+@pytest.fixture(autouse=True)
+def sandbox_data_dir(tmp_path, monkeypatch):
+    """resume_editor 数据目录沙箱隔离（2026-10-23 修复，autouse：本文件所有用例默认生效）。
+
+    此前本套件 test_03 直写真实 resume_editor/data/boss_fields.json（save 端点为
+    全量覆盖、无合并），用户真实 BOSS 编辑器数据被测试桩销毁；且稀疏桩数据又被
+    writeback-save 的 C5 空数据守卫正确拒绝，致本用例自 2026-08-30 起恒失败。
+    DATA_DIR 在 editor_routes / agent_map_routes / common 三处各有模块级绑定，须一并打桩。
+    设为 autouse 防后续新增接口级用例漏传 fixture 再次穿透写坏真实数据。
+    """
+    from app.api.resume_editor import agent_map_routes, common, editor_routes
+    for mod in (editor_routes, agent_map_routes, common):
+        monkeypatch.setattr(mod, "DATA_DIR", str(tmp_path))
+    return tmp_path
+
 # Standard mock reference dictionaries for trees
 MOCK_COUNTRY_TREE = [
     {"code": 101, "name": "中国香港"},
@@ -313,18 +329,34 @@ class TestBossTabFullIntegration:
         work_res = next(r for r in report_mismatch if r["module"] == "work_experience")
         assert work_res["match"] is False, "当官网技能未同步成功时，对账必须判定为 False"
 
-    def test_03_api_endpoints_integration(self):
-        """测试 FastAPI 后端对 BOSS 简历保存、快照生成及回写调度的接口级集成"""
-        # 1. 测试保存字段 /api/resume-editor/save/boss
+    def test_03_api_endpoints_integration(self, sandbox_data_dir, monkeypatch):
+        """测试 FastAPI 后端对 BOSS 简历保存、快照生成及回写调度的接口级集成。
+
+        2026-10-23 修复：① 数据目录沙箱隔离（此前真实 boss_fields.json 被测试桩全量
+        覆盖，稀疏数据又被 C5 守卫拒绝，用例恒失败）；② 载荷补齐 ≥3 个非空模块，
+        保住 writeback-save 200 成功链路的集成覆盖；③ 回写调度 mock 登录预检与子进程
+        （DOM 预检依赖真实浏览器、dry-run 子进程读真实数据目录，单测环境均不可成立）。
+        """
+        # 1. 测试保存字段 /api/resume-editor/save/boss（3 个非空模块，满足回写源丰富度门槛）
         mock_payload = {
             "personal_advantage": {
                 "label": "个人优势",
                 "current_value": "接口集成测试优势内容"
-            }
+            },
+            "job_status": {
+                "label": "求职状态",
+                "current_value": "离职-随时到岗"
+            },
+            "gender": {
+                "label": "性别",
+                "current_value": "女"
+            },
         }
         res_save = client.post("/api/resume-editor/save/boss", json=mock_payload)
         assert res_save.status_code == 200
         assert res_save.json()["success"] is True
+        # 沙箱隔离生效：数据只落在 tmp 沙箱，真实数据目录不被触碰
+        assert (sandbox_data_dir / "boss_fields.json").exists()
 
         # 2. 测试固化快照 /api/agent-map/writeback-save
         res_wb_save = client.post("/api/agent-map/writeback-save", json={"platform": "boss"})
@@ -333,13 +365,42 @@ class TestBossTabFullIntegration:
         assert "快照" in res_wb_save.json()["message"] or "ok" in res_wb_save.json()["message"]
 
         # 3. 测试调度回写 /api/agent-map/write-back (Dry-Run)
+        from app.api.resume_editor import agent_map_routes
+
+        class _FakeProc:
+            returncode = 0
+            stdout = 'RESULT_JSON: {"success": true, "plan": {"personal_advantage": "待写入"}}\n'
+            stderr = ""
+
+        monkeypatch.setattr(agent_map_routes, "precheck_writeback_login", lambda p: (True, ""))
+        monkeypatch.setattr(agent_map_routes, "run_hidden", lambda cmd, **kw: _FakeProc())
         res_wb = client.post("/api/agent-map/write-back", json={
             "platform": "boss",
             "dry_run": True,
             "paths": ["personal_advantage", "work_experience"]
         })
-        assert res_wb.status_code in (200, 500)
+        assert res_wb.status_code == 200
         data = res_wb.json()
-        assert "success" in data
-        if not data["success"]:
-            assert "全部与官网一致" not in data.get("message", "")
+        assert data["success"] is True
+        assert data["dry_run"] is True
+        assert "全部与官网一致" not in data.get("message", "")
+
+    def test_04_writeback_save_rejects_sparse_data(self, sandbox_data_dir):
+        """C5 空数据守卫负向用例（2026-08-30 质检）：非空模块 <3 拒绝保存为回写数据源。
+
+        正向 200 链路由 test_03 覆盖，此处独立锁定守卫拦截语义，替代此前
+        「稀疏数据期望 200」的过期断言。
+        """
+        sparse_payload = {
+            "personal_advantage": {
+                "label": "个人优势",
+                "current_value": "接口集成测试优势内容"
+            }
+        }
+        res_save = client.post("/api/resume-editor/save/boss", json=sparse_payload)
+        assert res_save.status_code == 200
+        assert (sandbox_data_dir / "boss_fields.json").exists()  # 稀疏数据同样只落沙箱
+
+        res_wb = client.post("/api/agent-map/writeback-save", json={"platform": "boss"})
+        assert res_wb.status_code == 400
+        assert "近乎为空" in res_wb.json()["message"]

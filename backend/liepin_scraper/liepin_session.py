@@ -21,10 +21,10 @@ for _p in (_SCRIPT_DIR, _PROJECT_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from app.session.registry import get_profile_path, get_platform_port
+from app.session.registry import get_liepin_cookie_file, get_profile_path, get_platform_port
 from engine_guard import EngineGuardError, verify_browser_identity
 
-COOKIE_FILE = os.path.join(_SCRIPT_DIR, 'liepin_cookies.json')
+COOKIE_FILE = get_liepin_cookie_file()
 LIEPIN_HOME_URL = "https://c.liepin.com/"
 
 _port = get_platform_port("liepin")
@@ -168,3 +168,15 @@ def ensure_login(wait_s: int = 0) -> bool:
             save_current_cookies()
             return True
     return False
+
+
+def inject_cookies_if_needed() -> bool:
+    """外部入口（投递预检/唤起路径用，2026-10-09）：确保专用浏览器处于登录态。
+
+    前置：浏览器已在目标调试端口运行（调用方负责，如预检的 _ensure_browser_ready）。
+    流程 = _inject_cookies_if_needed（profile 优先 → cookie 文件注入兜底，成功即回写）。
+    返回最终是否登录（URL 判定）。可能抛 EngineGuardError（端口被陌生浏览器占用），
+    调用方自行兜底。
+    """
+    _inject_cookies_if_needed()
+    return check_login_status()

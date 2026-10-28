@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import json
 import sqlite3
@@ -11,7 +12,13 @@ from DrissionPage import ChromiumPage, ChromiumOptions
 # 项目根目录
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
-DB_PATH = os.path.join(PROJECT_ROOT, "data", "job_hunter.db")
+# 双身份导入引导（对齐 boss_collector 先例）：脚本独立运行时也能 import backend 根的 app.*
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+from app.core.db_paths import job_hunter_db_path, writable_path  # noqa: E402
+
+# db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
+DB_PATH = job_hunter_db_path(os.path.join(PROJECT_ROOT, "data", "job_hunter.db"))
 
 # 全局停止标志
 _stop_flag = False
@@ -83,7 +90,10 @@ def setup_browser():
     co = ChromiumOptions()
     co.set_local_port(port)
     
-    user_data_path = os.path.abspath(os.path.join(PROJECT_ROOT, "data", "profiles", "xiaohongshu"))
+    user_data_path = str(writable_path(
+        os.path.abspath(os.path.join(PROJECT_ROOT, "data", "profiles", "xiaohongshu")),
+        "profiles/xiaohongshu",
+    ))
     os.makedirs(user_data_path, exist_ok=True)
     co.set_user_data_path(user_data_path)
     co.set_argument('--disable-blink-features=AutomationControlled')

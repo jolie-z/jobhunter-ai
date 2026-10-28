@@ -2,12 +2,13 @@
 
 import { useEffect, useState } from "react"
 import Link from "next/link"
-import { Sparkles, Mic, Beaker, Globe, TerminalSquare, Loader2, Zap, Briefcase, Trash2, Upload, Rocket } from "lucide-react"
+import { Sparkles, Mic, SlidersHorizontal, Globe, TerminalSquare, Loader2, Zap, Briefcase, Trash2, Upload, Rocket, type LucideIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { API_BASE } from "@/lib/api"
 import type { GlobalView } from "@/app/page"
 import { useTerminalStore } from "@/store/terminal-store"
 import { useSetupGuide } from "@/components/dashboard/setup-guide/setup-guide-provider"
+import { UpdateBadge } from "@/components/dashboard/update-badge"
 
 interface TopNavBarProps {
   currentView: GlobalView
@@ -18,6 +19,63 @@ interface TopNavBarProps {
   onToggleTrashBin?: () => void
   globalTaskStatus?: "idle" | "running" | "completed" | "interrupted"
 }
+
+// 🌟 顶部导览工具岛（与简历库工具栏同款交互：默认仅图标，hover 滑出名称）
+type NavLinkItem = {
+  key: string
+  label: string
+  icon: LucideIcon
+  href: string
+  external?: boolean
+  iconClass: string
+  textClass: string
+  expandWidth: string
+  title: string
+}
+
+const NAV_LINKS: NavLinkItem[] = [
+  {
+    key: "strategy",
+    label: "配置大盘",
+    icon: SlidersHorizontal,
+    href: "/strategy",
+    iconClass: "text-slate-500 group-hover:text-blue-600",
+    textClass: "text-slate-700 group-hover:text-blue-600",
+    expandWidth: "group-hover:max-w-[72px]",
+    title: "配置大盘：系统底层配置 / 飞书中台 / 基准简历库",
+  },
+  {
+    key: "analytics",
+    label: "数据大盘",
+    icon: Globe,
+    href: "/analytics",
+    iconClass: "text-slate-500 group-hover:text-blue-600",
+    textClass: "text-slate-700 group-hover:text-blue-600",
+    expandWidth: "group-hover:max-w-[72px]",
+    title: "数据大盘：全网招聘情报与趋势洞察分析",
+  },
+  {
+    key: "resume-sync",
+    label: "在线简历同步",
+    icon: Upload,
+    href: "/resume-editor",
+    external: true,
+    iconClass: "text-emerald-600",
+    textClass: "text-emerald-700",
+    expandWidth: "group-hover:max-w-[96px]",
+    title: "在线简历同步：与飞书云文档简历库双向同步（需单独启动 resume_server）",
+  },
+  {
+    key: "pipeline",
+    label: "全自动全链路中心",
+    icon: Zap,
+    href: "/prototype/command-center",
+    iconClass: "text-blue-600",
+    textClass: "text-blue-700",
+    expandWidth: "group-hover:max-w-[124px]",
+    title: "全链路执行导轨与自动化投递中枢",
+  },
+]
 
 export function TopNavBar({
   currentView,
@@ -63,11 +121,11 @@ export function TopNavBar({
   }, [])
 
   return (
-    <header className="sticky top-0 z-40 w-full h-14 bg-white/90 backdrop-blur-xl border-b border-slate-100 flex items-center justify-between px-6 shrink-0">
-      {/* Left: Logo & 配置大盘入口 */}
-      <div className="flex items-center gap-5">
+    <header className="sticky top-0 z-40 w-full h-14 bg-white/90 backdrop-blur-xl border-b border-slate-100 flex items-center justify-between px-4 sm:px-6 shrink-0 select-none">
+      {/* Left: Logo & 导览工具岛（默认仅图标，hover 滑出名称） */}
+      <div className="flex items-center gap-3 min-w-0">
         {/* 🌟 用 Link 包裹 Logo，点击即可回首页（v0 风格：Sparkles 方块 + 渐变 AI 字样） */}
-        <Link href="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
+        <Link href="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity shrink-0">
           <div className="size-7 rounded-lg bg-slate-900 flex items-center justify-center">
             <Sparkles className="size-3.5 text-white" />
           </div>
@@ -75,68 +133,71 @@ export function TopNavBar({
             JobHunter <span className="text-blue-600">AI</span>
           </span>
         </Link>
-        {/* 🌟 配置大盘入口 */}
-        <Link
-          href="/strategy"
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition-all"
-        >
-          <Beaker className="size-3.5" />
-          配置大盘
-        </Link>
 
-        {/* 🌟 全景数据大盘入口 (New Analytics Dashboard) */}
-        <Link
-          href="/analytics"
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition-all"
-        >
-          <Globe className="size-3.5" />
-          数据大盘
-        </Link>
+        <div className="w-px h-5 bg-slate-200/80 shrink-0" />
 
-        {/* 🌟 在线简历回写入口（/resume-editor 与本站同一 Next 应用，直接站内跳转；
-            其后端 resume_server.py 需单独启动，端口见 backend/resume_server.py） */}
-        <Link
-          href="/resume-editor"
-          target="_blank"
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50 transition-all"
-        >
-          <Upload className="size-3.5" />
-          在线简历同步
-        </Link>
+        {/* 🌟 导览工具岛（简历库工具栏同款 hover 展开） */}
+        <div className="flex items-center gap-0.5 bg-slate-100/80 p-0.5 rounded-lg border border-slate-200/60 shrink-0">
+          {NAV_LINKS.map((item) => {
+            const Icon = item.icon
+            return (
+              <Link
+                key={item.key}
+                href={item.href}
+                target={item.external ? "_blank" : undefined}
+                rel={item.external ? "noopener noreferrer" : undefined}
+                className="group h-8 px-2 rounded-md hover:bg-white hover:shadow-xs transition-all flex items-center cursor-pointer shrink-0"
+                title={item.title}
+                aria-label={item.label}
+              >
+                <Icon className={cn("size-4 shrink-0 transition-colors", item.iconClass)} />
+                <span
+                  className={cn(
+                    "max-w-0 overflow-hidden opacity-0 group-hover:opacity-100 group-hover:ml-1.5 text-xs font-medium whitespace-nowrap transition-all duration-200",
+                    item.expandWidth,
+                    item.textClass,
+                  )}
+                >
+                  {item.label}
+                </span>
+              </Link>
+            )
+          })}
 
-        {/* 🌟 全链路指挥中心入口 */}
-        <Link
-          href="/prototype/command-center"
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition-all"
-        >
-          <Zap className="size-3.5" />
-          全自动全链路中心
-        </Link>
-
-        {/* 🌟 新手引导入口 */}
-        <button
-          type="button"
-          onClick={openGuide}
-          className={cn(
-            "relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all",
-            setupIncomplete
-              ? "text-amber-600 bg-amber-50 hover:bg-amber-100"
-              : "text-slate-400 hover:text-slate-700 hover:bg-slate-50"
-          )}
-        >
-          <Rocket className="size-3.5" />
-          新手引导
-          {setupIncomplete && (
-            <span className="absolute -top-0.5 -right-0.5 flex size-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
-              <span className="relative inline-flex size-2 rounded-full bg-amber-500" />
+          {/* 🌟 新手引导入口（工作台指南 / 飞书指南 / 反馈 均收在其弹窗内，顶栏不再重复放置） */}
+          <button
+            type="button"
+            onClick={openGuide}
+            className="group relative h-8 px-2 rounded-md hover:bg-white hover:shadow-xs transition-all flex items-center cursor-pointer shrink-0"
+            title="新手引导：配置体检 · 工作台指南 · 飞书接入指南 · 反馈"
+            aria-label="新手引导"
+          >
+            <Rocket
+              className={cn(
+                "size-4 shrink-0 transition-colors",
+                setupIncomplete ? "text-amber-600" : "text-slate-500 group-hover:text-slate-800",
+              )}
+            />
+            <span
+              className={cn(
+                "max-w-0 overflow-hidden opacity-0 group-hover:max-w-[72px] group-hover:opacity-100 group-hover:ml-1.5 text-xs font-medium whitespace-nowrap transition-all duration-200",
+                setupIncomplete ? "text-amber-700" : "text-slate-700",
+              )}
+            >
+              新手引导
             </span>
-          )}
-        </button>
+            {setupIncomplete && (
+              <span className="absolute top-0.5 right-0.5 flex size-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
+                <span className="relative inline-flex size-2 rounded-full bg-amber-500" />
+              </span>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Center: Main Tabs（v0 风格 pill） */}
-      <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+      <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1 shrink-0">
         <button
           onClick={() => onMainTabChange("immersive")}
           className={cn(
@@ -164,15 +225,18 @@ export function TopNavBar({
       </div>
 
       {/* Right: 工具栏区 */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 shrink-0">
+        {/* 🌟 新版本下载角标（策略通道下发；无更新/无桌面壳不渲染） */}
+        <UpdateBadge />
+
         {/* 🌟 Token 消耗实时徽标 */}
         {tokenStats && (
           <Link
             href="/analytics"
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-50 text-amber-700 hover:bg-amber-100 transition-all"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200/80 hover:bg-amber-100 transition-all font-mono"
             title={`本月: ${tokenStats.month_tokens.toLocaleString()} tokens / ¥${tokenStats.month_cost_cny?.toFixed(2) ?? "0.00"} | 累计: ${tokenStats.total_tokens.toLocaleString()} tokens / ¥${tokenStats.total_cost_cny?.toFixed(2) ?? "0.00"}`}
           >
-            <Zap className="size-3.5" />
+            <Zap className="size-3.5 text-amber-500" />
             <span>
               {tokenStats.today_tokens >= 1000
                 ? `${(tokenStats.today_tokens / 1000).toFixed(1)}K`
@@ -183,23 +247,31 @@ export function TopNavBar({
           </Link>
         )}
 
-        {/* 🌟 任务控制台与拦截站切换按钮 */}
-        <div className="flex items-center gap-1.5 bg-slate-50 p-1 rounded-xl border border-slate-100">
+        {/* 🌟 右侧工具岛：拦截站 & 岗位爬取与清洗（默认仅图标，hover 滑出名称） */}
+        <div className="flex items-center gap-0.5 bg-slate-100/80 p-0.5 rounded-lg border border-slate-200/60">
           {onToggleTrashBin && (
             <button
               onClick={onToggleTrashBin}
               className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all relative border shrink-0",
+                "group h-8 px-2 rounded-md transition-all flex items-center cursor-pointer shrink-0 relative border",
                 isTrashBinOpen
-                  ? "bg-rose-50 text-rose-700 border-rose-200 shadow-xs"
-                  : "text-slate-600 bg-white hover:text-slate-900 hover:bg-slate-50/80 border-slate-200/80 shadow-xs"
+                  ? "bg-rose-50 text-rose-700 shadow-xs border-rose-200"
+                  : "border-transparent hover:bg-white hover:shadow-xs",
               )}
+              title={`拦截站：已拦截 ${trashBinCount} 条不合规任务`}
               aria-label="打开拦截回收站"
             >
-              <Trash2 className="size-3.5 text-rose-500" />
-              <span>拦截站</span>
+              <Trash2 className="size-4 shrink-0 text-rose-500" />
+              <span
+                className={cn(
+                  "max-w-0 overflow-hidden opacity-0 group-hover:max-w-[56px] group-hover:opacity-100 group-hover:ml-1.5 text-xs font-medium whitespace-nowrap transition-all duration-200",
+                  isTrashBinOpen ? "text-rose-700" : "text-slate-700",
+                )}
+              >
+                拦截站
+              </span>
               {trashBinCount > 0 && (
-                <span className="rounded-full bg-rose-50 text-rose-600 border border-rose-200/80 px-1.5 text-[10px] font-semibold leading-none py-0.5 ml-0.5">
+                <span className="rounded-full bg-rose-50 text-rose-600 border border-rose-200/80 px-1 text-[10px] font-semibold leading-none py-0.5 ml-1 shrink-0 font-mono">
                   {trashBinCount > 99 ? '99+' : trashBinCount}
                 </span>
               )}
@@ -209,19 +281,29 @@ export function TopNavBar({
           <button
             onClick={isTerminalOpen ? minimize : restoreFromMinimize}
             className={cn(
-              "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all shrink-0",
+              "group h-8 px-2 rounded-md transition-all flex items-center cursor-pointer shrink-0 border",
               isTerminalOpen
-                ? "bg-blue-50 text-blue-700 shadow-sm"
-                : "text-slate-500 hover:text-slate-800 hover:bg-white"
+                ? "bg-blue-50 text-blue-700 shadow-xs border-blue-200/80"
+                : "border-transparent hover:bg-white hover:shadow-xs",
             )}
+            title="岗位爬取与清洗控制台"
             aria-label="切换岗位爬取与清洗控制台"
           >
             {globalTaskStatus === "running" ? (
-              <Loader2 className="size-3.5 animate-spin text-blue-500" />
+              <Loader2 className="size-4 shrink-0 animate-spin text-blue-500" />
             ) : (
-              <TerminalSquare className="size-3.5" />
+              <TerminalSquare className={cn("size-4 shrink-0 transition-colors", isTerminalOpen ? "text-blue-600" : "text-slate-500 group-hover:text-slate-800")} />
             )}
-            岗位爬取与清洗
+            <span
+              className={cn(
+                "overflow-hidden text-xs font-medium whitespace-nowrap transition-all duration-200",
+                isTerminalOpen
+                  ? "max-w-[110px] opacity-100 ml-1.5 text-blue-700"
+                  : "max-w-0 opacity-0 group-hover:max-w-[110px] group-hover:opacity-100 group-hover:ml-1.5 text-slate-700",
+              )}
+            >
+              岗位爬取与清洗
+            </span>
           </button>
         </div>
       </div>

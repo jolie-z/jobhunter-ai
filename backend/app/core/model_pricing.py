@@ -3,6 +3,9 @@ import logging
 import os
 import sqlite3
 
+# JOBHUNTER_DB_PATH 主库覆盖阀门（M1 子项②）
+from app.core.db_paths import job_hunter_db_path
+
 logger = logging.getLogger("model_pricing")
 
 # 价格内部基准单位: CNY / 1K tokens
@@ -18,11 +21,12 @@ MIMO_PRICING: dict[str, dict[str, float]] = {
 # 默认兜底费率 (当非 MiMo 且用户未配置时使用，并标记为预估)
 DEFAULT_MIMO_RATE: dict[str, float] = MIMO_PRICING["mimo-v2.5-pro"]
 
-DB_PATH = os.path.join(
+# JOBHUNTER_DB_PATH 显式覆盖：未设 env 保持 backend/data 锚点原样
+DB_PATH = job_hunter_db_path(os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "data",
     "job_hunter.db",
-)
+))
 
 # 内存缓存自定义定价，避免每次调用均查询 SQLite
 _CUSTOM_PRICING_CACHE: dict[str, dict[str, float]] = {}

@@ -1,0 +1,463 @@
+{
+  "domains": {
+    "Core Entity (核心业务实体)": {
+      "color": "#a855f7"
+    },
+    "Ingestion & Pipeline (采集与流水线)": {
+      "color": "#38bdf8"
+    },
+    "AI Evaluation & Strategy (策略与AI打分)": {
+      "color": "#10b981"
+    },
+    "Autopilot & Wave Delivery (无人值守海投)": {
+      "color": "#f59e0b"
+    },
+    "Audit & Goal Reports (审计流水与目标战报)": {
+      "color": "#f43f5e"
+    },
+    "Intelligence & Parsing (社媒情报与简历纠偏)": {
+      "color": "#eab308"
+    },
+    "Sessions & Agent State (会话与智能体持久化)": {
+      "color": "#06b6d4"
+    }
+  },
+  "tables": {
+    "raw_jobs": {
+      "domain": "Core Entity (核心业务实体)",
+      "desc": "全网采集核心岗位流转表（全系统唯一核心主实体，3210+岗位，包含多平台抓取原始数据、AI多维评估分级、初筛淘汰原因、飞书多维表格同步映射与投递阶段全生命周期状态）",
+      "columns": {
+        "job_link": "岗位唯一链接 URL（全网核心主键）",
+        "job_title": "岗位名称/职称",
+        "company_name": "招聘公司全称",
+        "city": "工作所在城市",
+        "jd_text": "岗位职责与要求详情（LLM 评估核心语料）",
+        "salary": "薪资范围文本（如 15-25K·14薪）",
+        "work_address": "详细办公地址",
+        "hr_activity": "HR 活跃状态（如 刚刚活跃 / 本周活跃）",
+        "industry": "公司所属细分行业",
+        "welfare_tags": "福利待遇标签集合（五险一金/下午茶/年终等）",
+        "company_size": "公司人员规模",
+        "education_req": "学历硬性门槛（大专/本科/硕士/不限）",
+        "experience_req": "经验年限要求（1-3年/3-5年/应届等）",
+        "hr_skill_tags": "岗位关键技能要求标签",
+        "company_intro": "公司背景简介",
+        "role": "招聘人角色（HR/部门主管/猎头）",
+        "publish_date": "岗位在招聘平台的发布/更新时间",
+        "platform": "来源平台（Boss/51job/Liepin/Zhilian）",
+        "crawl_time": "本地采集入库时间戳",
+        "process_status": "全生命周期状态流转（已存入数据/已进行打分/待投递/已投递/已淘汰）",
+        "reject_reason": "淘汰/不匹配核心原因详细描述",
+        "is_synced": "是否已同步至飞书多维表格（0:未同步, 1:已同步）",
+        "feishu_record_id": "飞书多维表格关联 Record ID（跨系统全局关联主线）",
+        "updated_at": "记录最后修改时间（触发器自动维护）"
+      }
+    },
+    "job_strategies": {
+      "domain": "AI Evaluation & Strategy (策略与AI打分)",
+      "desc": "求职投递硬策略规则表（薪资/学历/经验年限下限门槛、正负面关键词过滤、AI侦查规则与大模型偏好提示词注入）",
+      "columns": {
+        "strategy_name": "策略方案名称",
+        "min_salary_k": "期望最低月薪（K）",
+        "max_salary_k": "期望最高月薪（K）",
+        "updated_at": "记录最后修改时间（触发器自动维护）",
+        "veto_keywords": "一票否决淘汰关键词列表（JSON）",
+        "positive_keywords": "优先加分正向关键词列表（JSON）",
+        "llm_prompt_preference": "给大模型评估器注入的个性化诉求"
+      }
+    },
+    "xhs_raw_posts": {
+      "domain": "Intelligence & Parsing (社媒情报与简历纠偏)",
+      "desc": "小红书职场与雇主口碑舆情采集清洗表（公司避雷贴、部门加班文化等社媒舆情情报）",
+      "columns": {
+        "crawl_time": "本地采集入库时间戳",
+        "publish_date": "帖子在小红书的发布/更新时间"
+      }
+    },
+    "token_log": {
+      "domain": "AI Evaluation & Strategy (策略与AI打分)",
+      "desc": "大语言模型 Token 消耗及折合人民币成本审计流水表（按模型、动作类型、具体岗位统计费用与Prompt缓存率）",
+      "columns": {
+        "prompt_tokens": "输入 Prompt Token 数量",
+        "completion_tokens": "模型输出 Completion Token 数量",
+        "total_tokens": "总计消耗 Token 数量",
+        "cost_cny": "该次请求折合人民币费用（元）",
+        "cached_tokens": "命中的上下文缓存 Token 数量"
+      }
+    },
+    "job_preferences": {
+      "domain": "AI Evaluation & Strategy (策略与AI打分)",
+      "desc": "精细化求职意向与偏好过滤表（企业黑名单、目标排除行业、硬性偏好条件，用于初筛一票否决）",
+      "columns": {
+        "record_id": "岗位全局关联识别码（对应 raw_jobs.feishu_record_id）"
+      }
+    },
+    "evaluation_weights": {
+      "domain": "AI Evaluation & Strategy (策略与AI打分)",
+      "desc": "AI 评估 8 大核心维度加权分配表（技能匹配、公司发展稳定性、薪资满意度等权重配比，用于加权打分）",
+      "columns": {
+        "dimension": "AI 评估维度名称（技能匹配、公司发展、薪资匹配等）",
+        "weight": "维度权重分值（总和为 1.0）"
+      }
+    },
+    "scrape_sessions": {
+      "domain": "Ingestion & Pipeline (采集与流水线)",
+      "desc": "跨平台多维度爬虫抓取会话表（记录关键词、城市、薪资维度的分页断点续爬状态与预测总量）",
+      "columns": {
+        "city": "工作所在城市",
+        "salary": "薪资范围文本（如 15-25K·14薪）",
+        "platform": "来源平台（Boss/51job/Liepin/Zhilian）"
+      }
+    },
+    "pipeline_scrape_config": {
+      "domain": "Ingestion & Pipeline (采集与流水线)",
+      "desc": "全自动流水线抓取调度全局配置（关键词池、平台开关集合、默认目标城市与薪资设置）",
+      "columns": {
+        "updated_at": "记录最后修改时间（触发器自动维护）"
+      }
+    },
+    "job_goals": {
+      "domain": "Audit & Goal Reports (审计流水与目标战报)",
+      "desc": "求职目标量化考核单例表（每日投递目标、日采集目标、周面试目标、战报推送时段与飞书接收人配置）",
+      "columns": {
+        "updated_at": "记录最后修改时间（触发器自动维护）"
+      }
+    },
+    "pipeline_keyword_history": {
+      "domain": "Ingestion & Pipeline (采集与流水线)",
+      "desc": "流水线搜索关键词运行历史表（记录每次自动调度产出的岗位数量与触发批次任务ID）",
+      "columns": {
+        "city": "工作所在城市",
+        "salary": "薪资范围文本（如 15-25K·14薪）"
+      }
+    },
+    "pipeline_latest_run": {
+      "domain": "Ingestion & Pipeline (采集与流水线)",
+      "desc": "当前/最近一次流水线批次运行快照（记录运行状态、已扫描行号、本次处理岗位ID集合与投递失败集合）",
+      "columns": {
+        "task_id": "执行批次/流水线任务全局唯一 UUID",
+        "updated_at": "记录最后修改时间（触发器自动维护）"
+      }
+    },
+    "custom_model_pricing": {
+      "domain": "AI Evaluation & Strategy (策略与AI打分)",
+      "desc": "大语言模型 Token 计费阶梯单价表（包含不同模型的输入、补全与 Prompt Cache 计费率）",
+      "columns": {
+        "updated_at": "记录最后修改时间（触发器自动维护）"
+      }
+    },
+    "resume_parse_corrections": {
+      "domain": "Intelligence & Parsing (社媒情报与简历纠偏)",
+      "desc": "简历解析快照结构化纠偏对比记录表（记录人工修改与LLM纠偏对比）",
+      "columns": {}
+    },
+    "collect_progress_51job": {
+      "domain": "Ingestion & Pipeline (采集与流水线)",
+      "desc": "前程无忧采集器增量水位线表（记录各检索维度最新采集入库时间戳）",
+      "columns": {}
+    },
+    "agent_task_handles": {
+      "domain": "Autopilot & Wave Delivery (无人值守海投)",
+      "desc": "后台自动化任务与 Worker 子进程令牌及生命周期租约管理表",
+      "columns": {
+        "task_id": "执行批次/流水线任务全局唯一 UUID",
+        "platform": "来源平台（Boss/51job/Liepin/Zhilian）",
+        "action": "执行动作（投递/淘汰/捞回/状态更新）",
+        "updated_at": "记录最后修改时间（触发器自动维护）"
+      }
+    },
+    "action_audit": {
+      "domain": "Audit & Goal Reports (审计流水与目标战报)",
+      "desc": "全系统操作审计流水日志（记录飞书卡片操作、状态变更、一键捞回、海投触发等1600+操作流水）",
+      "columns": {
+        "action": "执行动作（投递/淘汰/捞回/状态更新）",
+        "target_id": "审计目标对象标识（岗位链接或飞书ID）",
+        "job_label": "操作岗位标识摘要（如 公司名 - 岗位名）",
+        "result": "执行结果（success/failed）",
+        "detail": "操作详细内容与额外上下文说明"
+      }
+    },
+    "system_reports": {
+      "domain": "Audit & Goal Reports (审计流水与目标战报)",
+      "desc": "系统战报与多维数据画像报告存储表（存储 Markdown 正文与统计分析 JSON 元数据）",
+      "columns": {}
+    },
+    "automation_configs": {
+      "domain": "Autopilot & Wave Delivery (无人值守海投)",
+      "desc": "Autopilot 无人值守海投核心调度配置（Cron定时、自动投递等级门槛、平台波次与个性化招呼语模式）",
+      "columns": {
+        "cron_time": "自动投递每日定时表达式（如 09:30）",
+        "auto_deliver_grades": "自动投递允许的评级集合（JSON，如 [\"A\", \"B\"]）",
+        "auto_deliver_platforms": "允许自动投递的平台清单",
+        "is_enabled": "Autopilot 自动调度总开关",
+        "platform_configs": "各平台专属参数与并发限制",
+        "batch_limit": "单次执行最大投递数量上限",
+        "mass_apply_resume_id": "海投默认使用的基础简历 ID",
+        "greeting_prompt_mode": "招呼语生成模式（official官方 / custom自定义 / llm动态生成）",
+        "custom_greeting_prompt": "自定义个性化招呼语 Prompt 模板"
+      }
+    },
+    "automation_logs": {
+      "domain": "Autopilot & Wave Delivery (无人值守海投)",
+      "desc": "Autopilot 自动化波次任务执行记录（任务批次UUID、开始结束时间、处理岗位数与执行明细）",
+      "columns": {
+        "task_id": "执行批次/流水线任务全局唯一 UUID"
+      }
+    },
+    "platform_status": {
+      "domain": "Autopilot & Wave Delivery (无人值守海投)",
+      "desc": "各招聘平台运行状态与熔断/冷却时间戳表（防止短时间高频操作触发平台封禁）",
+      "columns": {
+        "platform": "来源平台（Boss/51job/Liepin/Zhilian）"
+      }
+    },
+    "pending_delivery_pool": {
+      "domain": "Autopilot & Wave Delivery (无人值守海投)",
+      "desc": "海投待发射暂存池（定时波次集中投递前暂存已审核通过的岗位待命队列）",
+      "columns": {
+        "record_id": "岗位全局关联识别码（对应 raw_jobs.feishu_record_id）",
+        "company_name": "招聘公司全称",
+        "platform": "来源平台（Boss/51job/Liepin/Zhilian）",
+        "task_id": "执行批次/流水线任务全局唯一 UUID",
+        "parked_at": "岗位进入待投递海投池的时间戳"
+      }
+    },
+    "boss_approvals": {
+      "domain": "Autopilot & Wave Delivery (无人值守海投)",
+      "desc": "老板/人工审批放行记录表（防误投二次确认门禁，放行后方可进入投递发射池）",
+      "columns": {
+        "record_id": "岗位全局关联识别码（对应 raw_jobs.feishu_record_id）",
+        "approved_at": "人工/老板放行审批通过时间戳"
+      }
+    },
+    "sessions": {
+      "domain": "Sessions & Agent State (会话与智能体持久化)",
+      "desc": "用户与 AI 助手多轮人机交互对话会话元数据表",
+      "columns": {}
+    },
+    "checkpoints": {
+      "domain": "Sessions & Agent State (会话与智能体持久化)",
+      "desc": "LangGraph 状态图执行检查点持久化快照表（存储 AI Agent 复杂决策的状态快照）",
+      "columns": {}
+    },
+    "writes": {
+      "domain": "Sessions & Agent State (会话与智能体持久化)",
+      "desc": "LangGraph 状态图通道增量写入日志表",
+      "columns": {
+        "task_id": "执行批次/流水线任务全局唯一 UUID"
+      }
+    }
+  },
+  "relationships": [
+    {
+      "source": "raw_jobs",
+      "target": "boss_approvals",
+      "type": "1:1",
+      "source_col": "feishu_record_id",
+      "target_col": "record_id",
+      "desc": "老板人工审批放行门禁：仅当在 boss_approvals 登记了 record_id，岗位才算获得最终放行资格，防误投双重保险门禁",
+      "domain": "跨库关联: job_hunter.db ➔ autopilot.db",
+      "kind": "fk"
+    },
+    {
+      "source": "raw_jobs",
+      "target": "pending_delivery_pool",
+      "type": "1:1",
+      "source_col": "feishu_record_id",
+      "target_col": "record_id",
+      "desc": "海投待发射暂存池：初筛通过且需要海投的岗位登记入池（去重），等待定时波次集中出库投递",
+      "domain": "跨库关联: job_hunter.db ➔ autopilot.db",
+      "kind": "fk"
+    },
+    {
+      "source": "raw_jobs",
+      "target": "token_log",
+      "type": "1:N",
+      "source_col": "job_link",
+      "target_col": "job_id",
+      "desc": "AI 评估与改写消耗审计：每次对岗位进行 LLM 深度评估、打分或定制招呼语均记录 Token 与费用",
+      "domain": "同库关联: job_hunter.db",
+      "kind": "fk"
+    },
+    {
+      "source": "raw_jobs",
+      "target": "action_audit",
+      "type": "1:N",
+      "source_col": "feishu_record_id",
+      "target_col": "target_id",
+      "desc": "操作审计流水关联：岗位投递、淘汰、一键捞回、飞书卡片操作均记录在流水日志中",
+      "domain": "同库关联: job_hunter.db",
+      "kind": "fk"
+    },
+    {
+      "source": "job_strategies",
+      "target": "raw_jobs",
+      "type": "1:N",
+      "source_col": "id",
+      "target_col": "process_status",
+      "desc": "策略硬门槛过滤：定义最低薪资、学历底线、年限上限及一票否决词，不达标者置为「已淘汰」",
+      "domain": "业务规则过滤",
+      "kind": "flow"
+    },
+    {
+      "source": "job_preferences",
+      "target": "raw_jobs",
+      "type": "1:N",
+      "source_col": "record_id",
+      "target_col": "reject_reason",
+      "desc": "企业黑名单与行业过滤：公司名或行业匹配偏好规则时，自动拒绝并记录淘汰原因",
+      "domain": "业务偏好过滤",
+      "kind": "flow"
+    },
+    {
+      "source": "evaluation_weights",
+      "target": "raw_jobs",
+      "type": "1:N",
+      "source_col": "dimension",
+      "target_col": "process_status",
+      "desc": "AI 打分权重配比：8 大维度（技能/背景/待遇等）加权计算综合分与 A/B/C/D 等级",
+      "domain": "AI 评分体系",
+      "kind": "flow"
+    },
+    {
+      "source": "pipeline_scrape_config",
+      "target": "scrape_sessions",
+      "type": "1:N",
+      "source_col": "keywords",
+      "target_col": "keyword",
+      "desc": "采集配置派发：按配置的关键词组合平台，生成并维护多平台抓取的分页会话",
+      "domain": "流水线调度",
+      "kind": "flow"
+    },
+    {
+      "source": "pipeline_scrape_config",
+      "target": "pipeline_keyword_history",
+      "type": "1:N",
+      "source_col": "id",
+      "target_col": "pipeline_task_id",
+      "desc": "关键词产出历史记录：跟踪每个关键词在各次流水线中抓取入库的岗位数量",
+      "domain": "流水线调度",
+      "kind": "flow"
+    },
+    {
+      "source": "scrape_sessions",
+      "target": "raw_jobs",
+      "type": "1:N",
+      "source_col": "platform",
+      "target_col": "platform",
+      "desc": "爬虫抓取流入：Boss、猎聘、51job、智联等爬虫抓取新岗位写入 raw_jobs（按 job_link 去重）",
+      "domain": "数据流入",
+      "kind": "flow"
+    },
+    {
+      "source": "collect_progress_51job",
+      "target": "raw_jobs",
+      "type": "1:N",
+      "source_col": "combo_key",
+      "target_col": "crawl_time",
+      "desc": "51job 专用增量控制：记录关键词与城市维度的最后采集时间戳，防止重复爬取",
+      "domain": "爬虫控制",
+      "kind": "flow"
+    },
+    {
+      "source": "custom_model_pricing",
+      "target": "token_log",
+      "type": "1:N",
+      "source_col": "model_name",
+      "target_col": "model_name",
+      "desc": "大模型计费映射：根据各厂商与模型阶梯单价，自动计算每笔 LLM 调用的实际人民币支出",
+      "domain": "成本核算",
+      "kind": "fk"
+    },
+    {
+      "source": "automation_configs",
+      "target": "automation_logs",
+      "type": "1:N",
+      "source_col": "id",
+      "target_col": "task_id",
+      "desc": "Autopilot 定时执行追踪：每次 Cron 触发的海投波次均在日志表中留下任务耗时与处理条数",
+      "domain": "无人值守调度",
+      "kind": "flow"
+    },
+    {
+      "source": "automation_configs",
+      "target": "pending_delivery_pool",
+      "type": "1:N",
+      "source_col": "auto_deliver_grades",
+      "target_col": "grade",
+      "desc": "海投波次等级门禁筛选：Autopilot 仅抓取符合设定评级（如仅A级或A+B级）的待投递岗位",
+      "domain": "无人值守调度",
+      "kind": "flow"
+    },
+    {
+      "source": "automation_logs",
+      "target": "platform_status",
+      "type": "1:1",
+      "source_col": "task_id",
+      "target_col": "platform",
+      "desc": "平台风控守卫：投递操作后更新平台最后操作时间与频次计数，触发冷却与熔断保护",
+      "domain": "平台风控",
+      "kind": "flow"
+    },
+    {
+      "source": "raw_jobs",
+      "target": "job_goals",
+      "type": "N:1",
+      "source_col": "crawl_time",
+      "target_col": "daily_crawl_target",
+      "desc": "求职 KPI 目标汇总：统计今日抓取总数、已投递总数、面试转化数，与设定目标对比",
+      "domain": "目标考核",
+      "kind": "flow"
+    },
+    {
+      "source": "job_goals",
+      "target": "system_reports",
+      "type": "1:N",
+      "source_col": "id",
+      "target_col": "key",
+      "desc": "定时战报生成：每日/每周定时提取目标达成情况并生成 Markdown 战报推送到飞书群",
+      "domain": "战报推送",
+      "kind": "flow"
+    },
+    {
+      "source": "raw_jobs",
+      "target": "xhs_raw_posts",
+      "type": "N:M",
+      "source_col": "company_name",
+      "target_col": "raw_text",
+      "desc": "雇主舆情背景调查：通过公司名称模糊匹配小红书职场避雷与真实员工评价",
+      "domain": "舆情背调",
+      "kind": "flow"
+    },
+    {
+      "source": "pipeline_latest_run",
+      "target": "raw_jobs",
+      "type": "1:N",
+      "source_col": "record_ids_json",
+      "target_col": "feishu_record_id",
+      "desc": "批次状态锁控：流水线运行期间记录当前批次扫描的岗位列表及执行进度",
+      "domain": "批次跟踪",
+      "kind": "fk"
+    },
+    {
+      "source": "agent_task_handles",
+      "target": "automation_logs",
+      "type": "1:1",
+      "source_col": "task_id",
+      "target_col": "task_id",
+      "desc": "Worker 子进程令牌管理：管理后台投递进程 PID、租约锁与双重确认令牌",
+      "domain": "进程调度",
+      "kind": "fk"
+    },
+    {
+      "source": "checkpoints",
+      "target": "writes",
+      "type": "1:N",
+      "source_col": "checkpoint_id",
+      "target_col": "checkpoint_id",
+      "desc": "LangGraph 状态快照与通道写入流：维持 AI Agent 长期多轮决策记忆与分支回溯",
+      "domain": "Agent记忆",
+      "kind": "fk"
+    }
+  ]
+}

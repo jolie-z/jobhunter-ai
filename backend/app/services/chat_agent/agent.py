@@ -12,12 +12,15 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from app.core.db_paths import writable_path
+
 logger = logging.getLogger(__name__)
 
 _agent_app = None
 _checkpointer = None
-# 绝对路径（backend/data/）：相对路径会随启动目录漂移，静默换库丢记忆
-_CHECKPOINT_DB = str(Path(__file__).resolve().parents[3] / "data" / "agent_chat_checkpoints.db")
+# 绝对路径（backend/data/）：相对路径会随启动目录漂移，静默换库丢记忆；
+# 经 writable_path 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
+_CHECKPOINT_DB = str(writable_path(Path(__file__).resolve().parents[3] / "data" / "agent_chat_checkpoints.db", "agent_chat_checkpoints.db"))
 
 # 会话上下文自动修剪：消息数超过 _HISTORY_TRIGGER 时，把旧消息压缩成一段摘要、
 # 保留最近 _HISTORY_KEEP 条原文。checkpoint 只添不剪会无限膨胀（实测 76MB/338 快照），
@@ -80,9 +83,9 @@ async def init_chat_agent() -> None:
         return
     import aiosqlite
     from langchain.agents import create_agent
-    from langchain_openai import ChatOpenAI
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+    from app.core.llm_langchain import GovernedChatOpenAI
     from app.services.chat_agent.tools import CHAT_TOOLS
     from common.config import _cfg
 
@@ -95,10 +98,11 @@ async def init_chat_agent() -> None:
     from app.core.llm_tracker import make_langchain_token_callback
     cb = make_langchain_token_callback(model_name, caller="chat_agent")
 
-    model = ChatOpenAI(
+    model = GovernedChatOpenAI(
         model=model_name, api_key=key, base_url=url,
-        temperature=0, timeout=180, max_retries=2,
+        temperature=0, timeout=180, max_retries=2,  # TODO(Phase1): SDK max_retries 归零收敛至统一策略层
         callbacks=[cb] if cb else None,
+        gate_caller="chat_agent",
     )
 
     conn = await aiosqlite.connect(_CHECKPOINT_DB)

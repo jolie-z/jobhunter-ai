@@ -144,6 +144,7 @@ CRITICAL: Do NOT output `...` anywhere in the JSON. If a list is empty or a stri
 
 ### CONTENT PRESERVATION RULES (CRITICAL - 内容丢失不可接受) ###
 1. additional（专业技能）模块：原文可能同时包含「散文描述」和「bullet point 技能条目」。所有非 bullet 的描述性句子必须【逐字】放进 `additional.skillOverview`（保持原语言原文，禁止概括改写）；只有具体的技能名词/短语才进 `additional.technicalSkills`。两者都要，缺一不可。
+   特别地，「大模型与 AI 工程：技能A、技能B、技能C」这类【分类名：技能清单】格式的整行内容（无论是否有 bullet 标记）必须【整行逐字】放进 `additional.skillOverview`（每行一条，用换行符分隔），严禁只保留技能名词或拆散分类结构；`technicalSkills` 仅作辅助索引同步收集具体技能名词。
 2. workExperience / personalProjects 的 description 数组：原文里的每一个 bullet point 都必须成为数组中独立的一个元素，并且【逐字保留原文措辞】（如原文有 **加粗** 标记也要保留）。禁止把多条 bullet 合并成一条，禁止丢弃任何一条，禁止改写、翻译或删减。
 3. 任何段落下的独立描述段落（非 bullet 的普通文字）也不允许丢弃：workExperience/personalProjects 里作为 description 数组的第一个元素保留；additional 里放进 `skillOverview`。
 

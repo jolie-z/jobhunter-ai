@@ -10,6 +10,9 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# JOBHUNTER_DB_PATH 主库覆盖阀门（M1 子项②），先例：AUTOPILOT_DB_PATH（373d866e）
+from app.core.db_paths import job_hunter_db_path, writable_path
+
 # ==========================================
 # 🌐 网络与环境变量配置
 # ==========================================
@@ -25,9 +28,10 @@ os.environ.setdefault("no_proxy", "open.feishu.cn,feishu.cn")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 BASE_DIR = PROJECT_ROOT
 
-# 数据与数据库路径
-SETTINGS_DATA_PATH = BASE_DIR / "data" / "settings.json"
-DB_PATH = BASE_DIR.parent / "data" / "job_hunter.db"
+# 数据与数据库路径（M2 收口：JOBHUNTER_DATA_DIR 注入时统一落用户数据目录）
+SETTINGS_DATA_PATH = writable_path(BASE_DIR / "data" / "settings.json", "settings.json")
+# JOBHUNTER_DB_PATH 显式覆盖：未设 env 保持仓根 data 锚点原样
+DB_PATH = job_hunter_db_path(BASE_DIR.parent / "data" / "job_hunter.db")
 
 def parse_cors(v: Any) -> list[str] | str:
     if isinstance(v, str) and not v.startswith("["):
@@ -83,7 +87,9 @@ class Settings(BaseSettings):
     # === LLM 大模型通用配置 (OpenAI / 小米 Mimo) ===
     OPENAI_API_KEY: str | None = None
     OPENAI_BASE_URL: str | None = None
-    OPENAI_MODEL: str | None = None
+    # 占位默认值：全新环境（无 .env/settings）模块级 ChatOpenAI 构造要求 model 为非空字符串
+    # （打包首启可启动，用户经配置大盘补真实值；未配置时 LLM 调用期报配置缺失而非 import 崩溃）
+    OPENAI_MODEL: str = "glm-5.3-flash"
     VISION_MODEL: str | None = None
     # 视觉（图片识别）独立通道：主网关不支持图片输入时，可单独指到支持 VL 的供应商
     VISION_API_KEY: str | None = None

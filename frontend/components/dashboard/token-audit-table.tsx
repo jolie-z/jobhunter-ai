@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState, useCallback } from "react"
+import { getApiBase } from "@/lib/api"
 import { Database, Zap, Clock, Activity, AlertCircle, TrendingUp, ChevronLeft, ChevronRight } from "lucide-react"
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -91,7 +92,7 @@ export function TokenAuditTable() {
 
   const fetchData = useCallback((r: RangeFilter, p: number) => {
     setLoading(true)
-    fetch(`http://localhost:8000/api/analytics/tokens?range=${r}&page=${p}&page_size=${pageSize}`)
+    fetch(`${getApiBase()}/api/analytics/tokens?range=${r}&page=${p}&page_size=${pageSize}`)
       .then((res) => res.json())
       .then((data) => {
         if (data.code === 0) setStats(data.data)

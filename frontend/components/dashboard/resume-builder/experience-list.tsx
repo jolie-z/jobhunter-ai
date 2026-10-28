@@ -14,9 +14,11 @@ interface ExperienceListProps {
   syncQueue?: string[]
   grillQueue?: string[]
   onWizardComplete?: (tool: string, sectionId?: string) => void
+  /** 当前岗位 JD（定制面板传入）：ATS 对齐 / 经历拷问据此靶向；不传则两面板回退全局画像（简历库） */
+  customJdContext?: string
 }
 
-export function ExperienceList({ type, moduleKey, wizardStep, atsQueue, syncQueue, grillQueue, onWizardComplete }: ExperienceListProps) {
+export function ExperienceList({ type, moduleKey, wizardStep, atsQueue, syncQueue, grillQueue, onWizardComplete, customJdContext }: ExperienceListProps) {
   const store = useResumeV2Store()
   const { resumeData } = store
   if (!resumeData) return null
@@ -84,6 +86,7 @@ export function ExperienceList({ type, moduleKey, wizardStep, atsQueue, syncQueu
           atsQueue={atsQueue}
           syncQueue={syncQueue}
           onWizardComplete={onWizardComplete}
+          customJdContext={customJdContext}
           onUpdate={(patch: any) => handleUpdate(index, patch)}
           onDelete={() => handleDelete(index)} 
           canMoveUp={index > 0}

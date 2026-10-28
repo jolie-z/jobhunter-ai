@@ -6,23 +6,56 @@ import json
 import os
 import threading
 
-# 路径常量
+# 路径常量：数据目录只认 resume_editor.paths 真源（读/写锚点拆分 2026-10-26，
+# 用户数据打包态落用户数据目录，字典随包只读）；本模块不再自算 data 路径
+from resume_editor.paths import DATA_DIR, DICT_DIR, UNIFIED_PATH  # noqa: F401
+
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-DATA_DIR = os.path.join(_BACKEND_DIR, "resume_editor", "data")
 PLATFORMS_DIR = os.path.join(_BACKEND_DIR, "resume_editor", "platforms")
 SCRIPTS_DIR = PLATFORMS_DIR
-UNIFIED_PATH = os.path.join(DATA_DIR, "unified_resume.json")
 
 PLATFORMS = ["boss", "liepin", "51job", "zhilian"]
 
 
 def atomic_write_json(path: str, data) -> None:
     """原子写 JSON：进程唯一临时文件 + os.replace，写一半被杀不会留下损坏文件（与采集落盘同一规范）。
-    tmp 名带 pid：多进程并发写同一文件时不会互踩临时文件。"""
+    tmp 名带 pid：多进程并发写同一文件时不会互踩临时文件。
+    目标目录按需创建：打包态全新安装时用户数据目录尚不存在。"""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp_path = f"{path}.tmp.{os.getpid()}"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     os.replace(tmp_path, path)
+
+
+def merge_platform_fields(existing: dict | None, incoming: dict) -> dict:
+    """平台字段文件的模块级增量合并（2026-10-23 保存接口改造）。
+
+    - incoming 的顶层键整体替换同名模块（不做列表深合并——工作经历等有序数组
+      按下标/ID 合并必然错位，模块级替换与前端 Tab 的数据形状一致）；
+    - 值为 None 表示删除该模块（合并语义无法靠「省略」表达删除；整表清空走 /clear-data）；
+    - 未提及的模块原样保留——根治「局部数据当全量发」把未带模块整份销毁的事故
+      （test_03 曾把 17 模块的 boss_fields.json 覆盖成 1 模块）；
+    - existing=None 表示「文件不存在」的首存场景；existing/incoming 非 dict 抛 ValueError
+      （调用方对 existing 映射为 fail-closed 500、对 incoming 映射为 400）。
+    返回新 dict，不修改入参。
+    """
+    if incoming is None or not isinstance(incoming, dict):
+        raise ValueError("增量载荷必须是模块字典")
+    if existing is None:
+        base: dict = {}
+    elif isinstance(existing, dict):
+        base = dict(existing)
+    else:
+        raise ValueError("现有数据不是模块字典（疑似损坏）")
+
+    merged = base
+    for key, value in incoming.items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    return merged
 
 
 # ============================================================
@@ -51,7 +84,7 @@ def release_writeback_slot(platform: str) -> None:
 # 回写日志落盘（用户案例 2026-08-31）：个别字段「接口回执成功、官网实际没生效」，
 # 只有拿到官网逐操作的原话返回才能定位。每次回写把脚本完整 stdout/stderr、
 # 复核明细与写入结果明细存成日志文件，路径随响应的 log_file 字段返回。
-# 日志目录在 resume_editor/data/ 下（整个 data/ 已被 gitignore，不会进仓库）。
+# 日志目录在用户数据目录 resume_editor/writeback_logs/ 下（打包态随 JOBHUNTER_DATA_DIR，不进仓库不进包）。
 # ============================================================
 
 def persist_writeback_log(platform: str, stdout: str = "", stderr: str = "",
@@ -60,6 +93,7 @@ def persist_writeback_log(platform: str, stdout: str = "", stderr: str = "",
     """把一次平台回写的完整输出存成日志文件，返回文件路径。调用方自行吞异常。"""
     import datetime as _dt
 
+    # 运行时从 DATA_DIR 派生（而非绑定导入期常量）：测试按模块 patch common.DATA_DIR 即可整体隔离
     target_dir = log_dir or os.path.join(DATA_DIR, "writeback_logs")
     os.makedirs(target_dir, exist_ok=True)
     now = _dt.datetime.now()

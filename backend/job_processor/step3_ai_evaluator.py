@@ -3,14 +3,15 @@ import os
 from .structural_filter import StructuralFilterEngine
 
 def run_db_filter():
+    from app.core.db_paths import job_hunter_db_path
     current_dir = os.path.dirname(os.path.abspath(__file__))
     parent_dir = os.path.dirname(current_dir)
-    # 根据你的项目结构调整路径
-    abs_db_path = os.path.join(parent_dir, "data", "job_hunter.db")
-    
+    # 根据你的项目结构调整路径（db_paths 阀门：dev 态逐字保持原锚点，打包态落 JOBHUNTER_DATA_DIR）
+    abs_db_path = str(job_hunter_db_path(os.path.join(parent_dir, "data", "job_hunter.db")))
+
     if not os.path.exists(abs_db_path):
         # 兼容当前目录情况
-        abs_db_path = os.path.join(current_dir, "data", "job_hunter.db")
+        abs_db_path = str(job_hunter_db_path(os.path.join(current_dir, "data", "job_hunter.db")))
         if not os.path.exists(abs_db_path):
             print(f"❌ 找不到数据库文件: {abs_db_path}")
             return

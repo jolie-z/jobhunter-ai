@@ -221,6 +221,10 @@ TERMINAL_FOLLOW_STATUSES = {
     "一面", "二面", "三面", "HR面", "面试", "Offer", "录用"
 }
 
+# 跟进状态：AI 评估失败（2026-10-10 词表收敛——Windows agent 排查报告建议：
+# 新状态词绝不散落硬编码。语义=8维评估未产出有效评级，待重试，非终态（可重新流转））
+FOLLOW_STATUS_EVAL_FAILED = "AI评估失败"
+
 
 def is_terminal_or_post_delivery_status(status: str | None) -> bool:
     """判断岗位跟进状态是否属于已投递或终态/面试态（严禁倒流回简历人工复核）。"""

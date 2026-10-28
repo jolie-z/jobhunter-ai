@@ -74,9 +74,39 @@ def test_lsof_blindspot_rejected(monkeypatch):
 
 
 def test_probe_untrusted_rejected(monkeypatch):
-    """矩阵③：lsof 无监听但 HTTP 超时/非2xx → 超时是「有监听者未应答」信号，绝不放行（岗哨3 P1）。"""
+    """矩阵③：lsof 无监听但 HTTP 超时/非2xx → 超时是「有监听者未应答」信号，绝不放行（岗哨3 P1）。
+
+    2026-10-08 复探语义：两次探测都 untrusted 维持 fail-closed（_mock_primitives 的
+    固定桩天然模拟此场景）；sleep 打桩避免测试真等 1.5s。
+    """
+    monkeypatch.setattr(eg.time, "sleep", lambda s: None)
     _mock_primitives(monkeypatch, http_ok="untrusted", pids=[])
     ok, reason = verify_browser_identity(19222, _FAKE_PROF, platform="boss")
+    assert not ok
+    assert "不可信" in reason
+
+
+def test_untrusted_then_refused_reprobe_allows_launch(monkeypatch):
+    """矩阵③复探放行：首探 untrusted、1.5s 后复探 refused（关停竞态吞 RST）→ port_free。
+
+    2026-10-08 15:30 猎聘事故：浏览器确已退出却报「探测不可信」，投递引擎 fail-closed
+    拒绝且不自拉。复探给这类偶发误判一条确定性出路——只有复探 refused 才放行。
+    """
+    seq = iter(["untrusted", "refused"])
+    monkeypatch.setattr(eg, "_probe_http", lambda port: next(seq))
+    monkeypatch.setattr(eg, "_lsof_pids", lambda port: [])
+    monkeypatch.setattr(eg.time, "sleep", lambda s: None)
+    ok, reason = verify_browser_identity(9226, _FAKE_PROF, platform="liepin")
+    assert ok and reason == "port_free"
+
+
+def test_untrusted_reprobe_still_untrusted_rejected(monkeypatch):
+    """矩阵③复探拒绝：两次 untrusted → 维持 fail-closed（盲区语义不弱化）。"""
+    seq = iter(["untrusted", "untrusted"])
+    monkeypatch.setattr(eg, "_probe_http", lambda port: next(seq))
+    monkeypatch.setattr(eg, "_lsof_pids", lambda port: [])
+    monkeypatch.setattr(eg.time, "sleep", lambda s: None)
+    ok, reason = verify_browser_identity(9226, _FAKE_PROF, platform="liepin")
     assert not ok
     assert "不可信" in reason
 
@@ -203,6 +233,46 @@ def test_ps_exit_semantics(monkeypatch):
     assert eg._ps_command("1") is None
 
 
+def test_win_netstat_pids(monkeypatch):
+    """2026-10-06 Windows 适配：netstat LISTENING 行解析；仅匹配指定端口与 LISTENING 态。"""
+    netstat_out = (
+        "  TCP    127.0.0.1:9227     0.0.0.0:0      LISTENING    4321\n"
+        "  TCP    [::]:9227          [::]:0         LISTENING    4321\n"
+        "  TCP    127.0.0.1:19222    0.0.0.0:0      LISTENING    8765\n"
+        "  TCP    127.0.0.1:9227     1.2.3.4:5555   ESTABLISHED  9999\n"
+        "  TCP    127.0.0.1:139      0.0.0.0:0      LISTENING    1111\n"
+    )
+    monkeypatch.setattr(eg.sys, "platform", "win32")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _run_proc(0, netstat_out))
+    assert eg._lsof_pids(9227) == ["4321"]  # IPv4+IPv6 去重；ESTABLISHED 不算监听
+    assert eg._lsof_pids(19222) == ["8765"]
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _run_proc(0, ""))
+    assert eg._lsof_pids(9227) == []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _run_proc(1, ""))
+    assert eg._lsof_pids(9227) is None  # 非 0 退出码且无结果 = 探测异常 fail-closed
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _run_proc(1, netstat_out))
+    assert eg._lsof_pids(9227) is None  # R1 P2：非 0 退出码即便解析出结果也不信任（fail-closed）
+
+
+def test_win_commandline_and_quoted_profile(monkeypatch):
+    """Windows：PowerShell CIM 查命令行；--user-data-dir 引号包裹路径需完整提取（否则假拒绝）。"""
+    monkeypatch.setattr(eg.sys, "platform", "win32")
+    quoted = 'msedge.exe --user-data-dir="C:\\Users\\Jo hn\\AppData\\Roaming\\jobhunter-desktop\\profiles\\51job" --flag'
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _run_proc(0, quoted))
+    assert eg._ps_command("123") == quoted
+    extracted = eg._extract_user_data_dir(quoted)
+    assert extracted == "C:\\Users\\Jo hn\\AppData\\Roaming\\jobhunter-desktop\\profiles\\51job"
+
+    unquoted = 'msedge.exe --user-data-dir=C:\\Users\\Administrator\\AppData\\Roaming\\jobhunter-desktop\\profiles\\51job --flag'
+    assert eg._extract_user_data_dir(unquoted) == "C:\\Users\\Administrator\\AppData\\Roaming\\jobhunter-desktop\\profiles\\51job"
+    assert eg._extract_user_data_dir("msedge.exe --other=1") is None
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _run_proc(1, ""))
+    assert eg._ps_command("123") is None  # 查询失败 fail-closed
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _run_proc(0, ""))
+    assert eg._ps_command("123") is None  # 进程已死（空输出）fail-closed
+
+
 def test_probe_http_three_states(monkeypatch):
     """HTTP 探测三态：2xx=ok；立即拒绝=refused；超时/非2xx/其他异常=untrusted，不坍缩。"""
 
@@ -324,21 +394,15 @@ def test_51job_delivery_reject(monkeypatch):
 
 
 def test_51job_collector_reject(monkeypatch):
-    """2026-09-24 反爬改造后：引擎锁拒绝时 collector 直接返回（不拉起 patchright driver）。"""
-    # 采集新栈依赖 patchright（51job 采集侧保留新栈），但其未入 pyproject 依赖声明，
-    # 干净环境（CI Linux runner）无此包 → collector 模块无法导入，本用例只能跳过；
-    # 守卫语义已由 test_51job_delivery_reject 覆盖（同一 engine.launch_or_fail 闸门）。
-    pytest.importorskip("patchright")
-    # collector 顶层 eager `from engine import ...`：必须先挂 51job_scraper 到 sys.path
-    # 再 _load_scraper（勿依赖其他用例残留的路径插入，消除用例顺序耦合）
-    _51dir = str(_BACKEND_ROOT / "51job_scraper")
-    if _51dir not in sys.path:
-        sys.path.insert(0, _51dir)
+    """2026-10-07 熔断语义升级：守卫拒绝时 collector sys.exit(1)（此前裸 return 以退出码 0
+    结束，调度器感知不到环境故障，继续派页白烧翻页休眠——Windows 真机连烧 4 轮实证）。"""
     j51c = _load_scraper("51job_scraper/51job_collector.py", "q24_51job_collector")
 
-    import engine as engine_mod  # collector 内 engine.launch_or_fail 同理
-    def _reject(purpose="collect"):
-        raise RuntimeError("Profile 已被其他进程持有（pid=1, purpose=deliver, 心跳 0s 前更新）。")
-    monkeypatch.setattr(engine_mod, "launch_or_fail", _reject)
+    _patch_engine_verify(monkeypatch, j51c, (False, "占用者陌生"))
 
-    j51c.start_collector(1, keyword="python")  # 拒绝路径：内部捕获 RuntimeError 打印后 return
+    pw = MagicMock()
+    monkeypatch.setattr(j51c, "sync_playwright", lambda: pw)
+    with pytest.raises(SystemExit) as exc_info:
+        j51c.start_collector(1, keyword="python")
+    assert exc_info.value.code == 1  # 非 0 退出码供调度器熔断
+    pw.__enter__.assert_not_called()  # 守卫在 with 之外：拒绝时连 playwright driver 都不拉起

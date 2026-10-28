@@ -2,16 +2,15 @@
 
 import { useState, useEffect, useCallback, useRef } from "react"
 import {
-  Radio, MessageSquare, Bell, Eye, RefreshCw, CheckCircle2,
+  Radio, Bell, Eye, RefreshCw, CheckCircle2,
   AlertCircle, Sparkles, LayoutGrid
 } from "lucide-react"
 import type { Goals, GoalsForm, FeishuChat, DiagResult } from "./types"
 import { FeishuConnectCard } from "./feishu-connect-card"
-import { ChatOpsGuideCard } from "./chatops-guide-card"
 import { ReportStudioCard } from "./report-studio-card"
 import { API_BASE, apiFetch } from "@/lib/api"
 
-type TabId = "all" | "connect" | "chatops" | "report"
+type TabId = "all" | "connect" | "report"
 
 export function FeishuHub() {
   const [activeTab, setActiveTab] = useState<TabId>("all")
@@ -205,9 +204,9 @@ export function FeishuHub() {
     { id: "all", label: "完整全景", icon: LayoutGrid },
     { id: "connect", label: "通道连接", icon: Radio },
     { id: "report", label: "战报中心", icon: Bell },
-    // ChatOps 纯指令参考、无需配置，垫底收尾
-    { id: "chatops", label: "ChatOps", icon: MessageSquare },
   ] as const
+  // ChatOps 指令集模块已下线（2026-10-11 用户决策：功能未完善，用户看到会困惑；
+  // chatops-guide-card.tsx 保留，后续 ChatOps 重构为 Agent 后以新形态回归）
 
   const handleSelectTab = (id: TabId) => {
     setActiveTab(id)
@@ -302,12 +301,6 @@ export function FeishuHub() {
             </div>
           )}
 
-          {/* 模块 3: ChatOps 机器人指南与话术（纯指令参考，垫底） */}
-          {(activeTab === "all" || activeTab === "chatops") && (
-            <div id="card-chatops" className="scroll-mt-6">
-              <ChatOpsGuideCard apiBase={API_BASE} />
-            </div>
-          )}
         </div>
       </div>
 

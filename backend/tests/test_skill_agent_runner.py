@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from ai_agents.skills.skill_agent_runner import run_progressive_skill_agent, SKILL_AGENT_TOOLS
-from ai_agents.skills.skill_dirs import list_job_skill_artifacts, delete_job_results
+from ai_agents.skills.skill_dirs import delete_job_results
 
 
 class TestSkillAgentRunner(unittest.TestCase):
@@ -77,9 +77,26 @@ class TestSkillAgentRunner(unittest.TestCase):
         resp2.choices = [MagicMock(message=msg2)]
         resp2.usage = MagicMock(prompt_tokens=600, completion_tokens=150)
 
-        # 模拟第 3 轮回复：Agent 生成最终简历并定稿
+        # 模拟第 3 轮回复：Agent 生成最终简历并定稿。
+        # 内容必须是真实可用的长简历（>=300 字且含 2 个以上简历模块），
+        # 短文本/过程性过渡语会被 _looks_like_resume 拒绝（2026-10-25 工单）。
+        final_resume = """# 张三 - AI 全栈工程师
+## 个人优势
+- 熟练掌握 LangGraph、Agent 工具调用与多轮编排，具备从原型到生产落地的完整经验。
+- 熟悉 RAG、评测体系、Prompt 工程与结构化输出治理，能够独立承担复杂业务链路。
+## 工作经历
+- 某科技公司 AI 工程师：负责 Agent 工作流编排、工具调用协议与评测体系建设，支撑日均万级请求。
+- 主导简历改写智能体的多轮推演与产物归档链路，完成截断检测、失败重试与写回对账保护。
+## 项目经历
+- 智能求职助手：设计多轮工具调用、参考资料检索与简历改写流水线，显著提升投递转化率。
+- 企业知识库问答：搭建检索增强生成链路，优化召回与重排策略，降低幻觉率并提升回答可追溯性。
+## 教育背景
+- 某大学 计算机科学与技术 本科
+## 专业技能
+- Python / TypeScript / LangGraph / OpenAI Function Calling / RAG / 数据分析
+"""
         msg3 = MagicMock()
-        msg3.content = "<FINAL_RESUME>\n# 张三 - AI 全栈工程师\n## 个人优势\n- 熟练掌握 LangGraph 与 Agent 研发\n</FINAL_RESUME>"
+        msg3.content = f"<FINAL_RESUME>\n{final_resume}\n</FINAL_RESUME>"
         msg3.tool_calls = []
         msg3.reasoning_content = "完成定稿"
 
@@ -89,7 +106,7 @@ class TestSkillAgentRunner(unittest.TestCase):
 
         mock_client.chat.completions.create.side_effect = [resp1, resp2, resp3]
 
-        final_md, usage, artifacts = run_progressive_skill_agent(
+        result = run_progressive_skill_agent(
             skill_id=self.skill_id,
             main_skill_content=self.main_skill,
             reference_map=self.ref_map,
@@ -101,16 +118,14 @@ class TestSkillAgentRunner(unittest.TestCase):
         )
 
         # 验证断言
-        self.assertIn("张三 - AI 全栈工程师", final_md)
-        self.assertEqual(usage["total_tokens"], 2250)
-        self.assertTrue(len(artifacts) >= 1)
-        self.assertEqual(artifacts[0]["name"], "01_jd_analysis.md")
-
-        # 验证文件系统确实落地了产物
-        saved_files = list_job_skill_artifacts(self.job_id, self.skill_id)
-        self.assertTrue(len(saved_files) >= 1)
-        filenames = [f["name"] for f in saved_files]
-        self.assertIn("01_jd_analysis.md", filenames)
+        self.assertIn("张三 - AI 全栈工程师", result.markdown)
+        self.assertEqual(result.usage["total_tokens"], 2250)
+        self.assertTrue(len(result.artifacts) >= 1)
+        self.assertEqual(result.artifacts[0]["name"], "01_jd_analysis.md")
+        # 标签定稿会自动补一份 06 主稿（runner 不再直接写磁盘）
+        self.assertTrue(any(a["name"] == "06_targeted_resume.md" for a in result.artifacts))
+        # 只保存了 1 份阶段产物 + 06，属于部分成功（SOP 要求 11 份）
+        self.assertTrue(result.partial)
         print("🎉 Tool-Use Skill Agent Runner Unit Test 100% PASS!")
 
 

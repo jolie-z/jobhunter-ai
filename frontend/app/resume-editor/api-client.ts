@@ -9,7 +9,9 @@ export type Platform = "boss" | "liepin" | "51job" | "zhilian"
 export const PLATFORM_KEYS: Platform[] = ["boss", "liepin", "51job", "zhilian"]
 
 /**
- * 保存平台数据（整份覆盖 POST /api/resume-editor/save/{platform}）。
+ * 保存平台数据（POST /api/resume-editor/save/{platform}，2026-10-23 起为模块级增量合并：
+ * 只需发送变化的模块，未发送的模块服务端原样保留；调用方应经 buildIncrementalSavePayload
+ * 构建载荷。发整份文档仍兼容——所有模块都被替换，结果与旧覆盖写等价）。
  * 返回 { ok, message }；message 供调用方 toast 展示具体失败原因。
  */
 export async function savePlatformData(

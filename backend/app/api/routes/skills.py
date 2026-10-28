@@ -91,6 +91,53 @@ async def get_default_skill():
         )
 
 
+@router.get("/{skill_id}/scan")
+async def scan_skill_outputs(skill_id: str):
+    """扫描技能输出契约：预计产物数量/类型、是否含简历、token 预估（仅技能包）。"""
+    try:
+        from ai_agents.skills.skill_contract import (
+            contract_summary,
+            estimate_skill_run,
+            get_skill_contract,
+        )
+
+        manager = get_skill_manager()
+        meta = manager.skills.get(skill_id)
+        if not meta:
+            raise HTTPException(status_code=404, detail=f"Skill not found: {skill_id}")
+
+        contract = get_skill_contract(skill_id)
+        estimate = estimate_skill_run(
+            skill_id=skill_id,
+            contract=contract,
+            main_content=manager.loaded_contents.get(skill_id, ""),
+            reference_map=manager.reference_maps.get(skill_id, {}),
+        )
+        return {
+            "success": True,
+            "data": {
+                "skill_id": skill_id,
+                "name": meta.name,
+                "is_package": meta.is_package,
+                "references_count": meta.references_count,
+                "contract": contract,
+                "summary": contract_summary(contract),
+                "estimated_tokens": estimate,
+                "estimate_scope": (
+                    "history_full_run" if estimate.get("source") == "history" else "skill_only"
+                ),
+                "warnings": contract.get("warnings", []),
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse(
+            content={"success": False, "error": str(e)},
+            status_code=500,
+        )
+
+
 @router.get("/{skill_id}")
 async def get_skill_detail(skill_id: str):
     """获取指定技能的详细信息（含组装后的 Prompt 与 Reference 资料清单）"""

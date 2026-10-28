@@ -7,42 +7,23 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog"
-import { API_BASE } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { 
-  Sparkles, 
-  Loader2, 
-  Layers, 
-  CheckCircle2, 
-  AlertCircle, 
-  Terminal, 
-  FileText, 
+import {
+  Loader2,
+  Layers,
+  CheckCircle2,
+  AlertCircle,
+  FileText,
   FolderArchive,
   ArrowRight,
   Clock,
-  ExternalLink,
-  ShieldCheck,
+  Coins,
   Cpu
 } from "lucide-react"
+import { useSkillAgentStream, formatAgentElapsed, type SkillAgentCompletePayload } from "@/hooks/use-skill-agent-stream"
 
-export interface AgentLogItem {
-  id: string
-  timestamp: string
-  type: string
-  message: string
-  detail?: string
-  tool?: string
-  file?: string
-  size?: number
-}
-
-export interface SavedArtifactChip {
-  name: string
-  title: string
-  size: number
-  is_final_resume?: boolean
-}
+export type { AgentLogItem, SavedArtifactChip } from "@/hooks/use-skill-agent-stream"
 
 export interface SkillAgentLiveModalProps {
   open: boolean
@@ -50,7 +31,7 @@ export interface SkillAgentLiveModalProps {
   taskId: string | null
   jobTitle?: string
   skillId?: string
-  onComplete: (data: { parsed_json: any; markdown: string; usage: any }) => void
+  onComplete: (data: SkillAgentCompletePayload) => void
   onOpenStudio: () => void
 }
 
@@ -64,159 +45,18 @@ export function SkillAgentLiveModal({
   onComplete,
   onOpenStudio
 }: SkillAgentLiveModalProps) {
-  const [logs, setLogs] = useState<AgentLogItem[]>([])
-  const [artifacts, setArtifacts] = useState<SavedArtifactChip[]>([])
-  const [status, setStatus] = useState<"connecting" | "running" | "completed" | "error">("connecting")
-  const [errorMessage, setErrorMessage] = useState<string>("")
-  const [currentStep, setCurrentStep] = useState<number>(1)
-  const [maxTurns, setMaxTurns] = useState<number>(8)
-  const [elapsedSeconds, setElapsedSeconds] = useState<number>(0)
-  
+  // SSE 订阅/事件分发/状态机/计时器全部在共享 hook（行内状态条同源消费）
+  const { logs, artifacts, status, errorMessage, currentStep, maxTurns, elapsedSeconds, usage, resultKind } =
+    useSkillAgentStream({ taskId, active: open, onComplete })
+
   const terminalEndRef = useRef<HTMLDivElement>(null)
-  const eventSourceRef = useRef<EventSource | null>(null)
-  const timerRef = useRef<NodeJS.Timeout | null>(null)
 
-  // 1. 计时器
-  useEffect(() => {
-    if (open && (status === "connecting" || status === "running")) {
-      setElapsedSeconds(0)
-      timerRef.current = setInterval(() => {
-        setElapsedSeconds((prev) => prev + 1)
-      }, 1000)
-    } else {
-      if (timerRef.current) {
-        clearInterval(timerRef.current)
-        timerRef.current = null
-      }
-    }
-    return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current)
-        timerRef.current = null
-      }
-    }
-  }, [open, status])
-
-  // 2. 建立 SSE 连接
-  useEffect(() => {
-    if (!open || !taskId) {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close()
-        eventSourceRef.current = null
-      }
-      return
-    }
-
-    setLogs([])
-    setArtifacts([])
-    setStatus("connecting")
-    setErrorMessage("")
-    setCurrentStep(1)
-
-    const sseUrl = `${API_BASE}/api/strategy/skill_agent_logs?task_id=${taskId}`
-    console.log("📡 [SSE] 连接 Skill Agent 日志流:", sseUrl)
-    const es = new EventSource(sseUrl)
-    eventSourceRef.current = es
-
-    const addLog = (type: string, message: string, detail?: string) => {
-      const now = new Date()
-      const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`
-      setLogs((prev) => [
-        ...prev,
-        {
-          id: Math.random().toString(36).substring(7),
-          timestamp: timeStr,
-          type,
-          message,
-          detail
-        }
-      ])
-    }
-
-    es.onopen = () => {
-      setStatus("running")
-      addLog("system", "📡 成功建立 Agent 实时推演长连接通道")
-    }
-
-    es.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data)
-        if (data.type === "close") {
-          es.close()
-          eventSourceRef.current = null
-          return
-        }
-
-        if (data.type === "agent_start") {
-          setStatus("running")
-          addLog("agent_start", data.message || "智能体启动")
-        } else if (data.type === "step_start") {
-          setCurrentStep(data.step || 1)
-          if (data.max_turns) setMaxTurns(data.max_turns)
-          addLog("step_start", data.message || `正在执行第 ${data.step} 阶段推演`)
-        } else if (data.type === "thinking") {
-          addLog("thinking", data.message || "🧠 深度思考中...")
-        } else if (data.type === "tool_call") {
-          addLog("tool_call", data.message || `调用工具: ${data.tool}`)
-        } else if (data.type === "artifact_saved") {
-          addLog("artifact_saved", data.message || `产物已落盘: ${data.filename}`)
-          setArtifacts((prev) => {
-            if (prev.some((a) => a.name === data.filename)) return prev
-            return [
-              ...prev,
-              {
-                name: data.filename,
-                title: data.title || data.filename,
-                size: data.size || 0,
-                is_final_resume: Boolean(data.is_final_resume)
-              }
-            ]
-          })
-        } else if (data.type === "agent_done") {
-          addLog("agent_done", data.message || "🎉 智能体推演定稿完毕！")
-        } else if (data.type === "complete") {
-          setStatus("completed")
-          addLog("complete", "✅ 全套改写数据与飞书字段落盘完成！")
-          if (data.data) {
-            onComplete(data.data)
-          }
-        } else if (data.type === "error") {
-          setStatus("error")
-          setErrorMessage(data.detail || data.message || "推演过程中出现异常")
-          addLog("error", `❌ 错误: ${data.detail || data.message}`)
-        }
-      } catch (err) {
-        console.error("SSE parse error:", err)
-      }
-    }
-
-    es.onerror = (err) => {
-      console.warn("SSE connection error or closed:", err)
-      // 如果已经处于 completed 状态，直接关闭即可
-      if (status !== "completed") {
-        es.close()
-        eventSourceRef.current = null
-      }
-    }
-
-    return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close()
-        eventSourceRef.current = null
-      }
-    }
-  }, [open, taskId])
-
-  // 3. 自动滚动终端到底部
+  // 自动滚动终端到底部
   useEffect(() => {
     terminalEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [logs])
 
-  const formatSeconds = (s: number) => {
-    const mins = Math.floor(s / 60)
-    const secs = s % 60
-    return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
-  }
+  const fmtTokens = (n: number) => (n >= 10000 ? `${(n / 1000).toFixed(1)}K` : String(n))
 
   const progressPercent = Math.min(
     100,
@@ -227,7 +67,7 @@ export function SkillAgentLiveModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="!max-w-[860px] w-[92vw] h-[82vh] flex flex-col p-0 gap-0 overflow-hidden rounded-2xl border-slate-800 shadow-2xl bg-slate-950 text-slate-100 focus:outline-none sm:!max-w-[860px]">
+      <DialogContent className="!max-w-[600px] w-[92vw] h-[58vh] max-h-[640px] flex flex-col p-0 gap-0 overflow-hidden rounded-2xl border-slate-800 shadow-2xl bg-slate-950 text-slate-100 focus:outline-none">
         {/* 顶部 Header：极具极客质感的大模型推演控制台 */}
         <div className="px-6 py-4 border-b border-slate-800/80 bg-slate-900/90 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
@@ -261,9 +101,18 @@ export function SkillAgentLiveModal({
           </div>
 
           <div className="flex items-center gap-3 pr-6">
+            {usage && usage.total_tokens > 0 && (
+              <div
+                className="flex items-center gap-1.5 text-xs font-mono text-emerald-300 bg-emerald-950/50 border border-emerald-500/30 px-2.5 py-1 rounded-lg"
+                title={`Prompt ${usage.prompt_tokens.toLocaleString()} + Completion ${usage.completion_tokens.toLocaleString()}${usage.cached_tokens ? ` (缓存命中 ${usage.cached_tokens.toLocaleString()})` : ""}`}
+              >
+                <Coins className="size-3.5 text-emerald-400" />
+                <span>{fmtTokens(usage.total_tokens)}</span>
+              </div>
+            )}
             <div className="flex items-center gap-1.5 text-xs font-mono text-slate-400 bg-slate-800/60 border border-slate-700/60 px-2.5 py-1 rounded-lg">
               <Clock className="size-3.5 text-amber-400" />
-              <span>{formatSeconds(elapsedSeconds)}</span>
+              <span>{formatAgentElapsed(elapsedSeconds)}</span>
             </div>
           </div>
         </div>
@@ -390,7 +239,12 @@ export function SkillAgentLiveModal({
             ) : status === "completed" ? (
               <span className="text-emerald-400 flex items-center gap-1.5 font-medium">
                 <CheckCircle2 className="size-4" />
-                改写成功！全套作战产物与飞书 AI改写JSON 已全部落盘
+                {resultKind === "resume"
+                  ? "改写成功！全套作战产物与飞书 AI改写JSON 已全部落盘"
+                  : "技能执行完成！产物已归档到作战产物库（未写回简历库）"}
+                {usage && usage.total_tokens > 0 && (
+                  <span className="text-emerald-300/80 font-mono text-xs">（消耗 Token {usage.total_tokens.toLocaleString()}）</span>
+                )}
               </span>
             ) : status === "error" ? (
               <span className="text-rose-400 flex items-center gap-1.5">

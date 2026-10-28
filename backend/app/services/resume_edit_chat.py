@@ -26,13 +26,15 @@ from app.core.feishu_messaging import (
 logger = logging.getLogger(__name__)
 
 # 跨消息会话状态（与聊天录入共用持久化机制）
+# db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
+from app.core.db_paths import writable_path  # noqa: E402
 from app.services.job_entry_chat import _LINK_TTL_SECONDS, _PendingStore  # noqa: E402
 
-_EDIT_SESSION_PATH = BASE_DIR / "data" / "pending_resume_edit.json"
-_LAST_DELIVERED_PATH = BASE_DIR / "data" / "last_delivered_job.json"
-_PENDING_LOCATE_PATH = BASE_DIR / "data" / "pending_job_locate.json"
-_EDIT_TARGET_PATH = BASE_DIR / "data" / "active_edit_target.json"
-_PENDING_TARGET_CONFIRM_PATH = BASE_DIR / "data" / "pending_edit_target_confirm.json"
+_EDIT_SESSION_PATH = writable_path(BASE_DIR / "data" / "pending_resume_edit.json", "pending_resume_edit.json")
+_LAST_DELIVERED_PATH = writable_path(BASE_DIR / "data" / "last_delivered_job.json", "last_delivered_job.json")
+_PENDING_LOCATE_PATH = writable_path(BASE_DIR / "data" / "pending_job_locate.json", "pending_job_locate.json")
+_EDIT_TARGET_PATH = writable_path(BASE_DIR / "data" / "active_edit_target.json", "active_edit_target.json")
+_PENDING_TARGET_CONFIRM_PATH = writable_path(BASE_DIR / "data" / "pending_edit_target_confirm.json", "pending_edit_target_confirm.json")
 
 # 编辑会话：chat_id → {"record_id", "stage", "updated", "orig"}（JSON 字符串存入 store）
 _edit_sessions = _PendingStore(_EDIT_SESSION_PATH, _LINK_TTL_SECONDS)

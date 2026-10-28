@@ -41,7 +41,7 @@ QUOTA_ERR = upload_quota.QUOTA_EXHAUSTED_ERROR
 # =====================================================================
 
 def test_quota_state_defaults_and_marks():
-    assert upload_quota.get_state() == {"date": TODAY, "uploads_used": 0, "exhausted": False, "mass_resume_date": ""}
+    assert upload_quota.get_state() == {"date": TODAY, "uploads_used": 0, "exhausted": False, "mass_resume_date": "", "mass_resume_file_token": ""}
     assert not upload_quota.is_exhausted_today()
     assert not upload_quota.is_mass_resume_fresh_today()
 
@@ -68,7 +68,7 @@ def test_quota_state_resets_on_new_day():
     assert upload_quota.get_state()["uploads_used"] == 0
     # 新一天首次写入应以今日为基准，不继承昨日计数
     upload_quota.mark_upload_success()
-    assert upload_quota.get_state() == {"date": TODAY, "uploads_used": 1, "exhausted": False, "mass_resume_date": ""}
+    assert upload_quota.get_state() == {"date": TODAY, "uploads_used": 1, "exhausted": False, "mass_resume_date": "", "mass_resume_file_token": ""}
 
 
 def test_quota_state_tolerates_corrupt_file():

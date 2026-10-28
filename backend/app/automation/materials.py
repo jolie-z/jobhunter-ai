@@ -16,6 +16,7 @@
 """
 import asyncio
 import logging
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -87,8 +88,17 @@ async def resolve_mass_resume_id(config: dict[str, Any] | None) -> str:
         return resume_id
     from app.services.feishu_service import get_active_resume_record_id
     resume_id = str((await asyncio.to_thread(get_active_resume_record_id)) or "").strip()
-    logger.info(f"🛠️ [物料] 配置未指定海投母本简历，自动回退飞书当前激活简历: {resume_id or '(仍为空)'}")
-    return resume_id
+    if resume_id:
+        logger.info(f"🛠️ [物料] 配置未指定海投母本简历，自动回退飞书当前激活简历: {resume_id}")
+        return resume_id
+    # 2026-10-07：回退仍为空 = 物料必然挂不上 → 所有海投岗都会被写成「海投人工复核」。
+    # 旧版只留 INFO 一行极易被淹没（Windows 真机排查实证），升级 WARNING 给出可操作指引
+    logger.warning(
+        "⚠️ [物料] 海投母本简历不可用：配置 mass_apply_resume_id 为空，且飞书无「启用」状态的简历。"
+        "所有海投岗位将停留「海投人工复核」。请到简历库将一份简历设为启用，"
+        "或在自动化配置中指定海投简历。"
+    )
+    return ""
 
 
 async def _render_mass_resume_materials(resume_record_id: str, need_image: bool = True) -> dict[str, str] | None:
@@ -185,8 +195,12 @@ async def _render_mass_resume_materials_with_name_internal(resume_record_id: str
 
     # 🌟 写入临时文件并渲染
     ts = int(time.time())
-    tmp_pdf = Path(f"/tmp/mass_resume_{ts}.pdf")
-    tmp_img = Path(f"/tmp/mass_resume_{ts}.jpg")
+    # 2026-10-07 Windows 真机修复：/tmp 硬编码在 Windows 解析为当前盘根 \tmp\（不存在）
+    # → FileNotFoundError → 全部海投物料挂载失败 → 岗位卡「海投人工复核」。
+    # 改跨平台系统临时目录（finally 统一清理，不留垃圾）
+    tmp_dir = Path(tempfile.gettempdir())
+    tmp_pdf = tmp_dir / f"mass_resume_{ts}.pdf"
+    tmp_img = tmp_dir / f"mass_resume_{ts}.jpg"
     try:
         # 单一可信源：Playwright 渲染只认 FRONTEND_BASE_URL（已声明字段且带默认值，不会 AttributeError）
         frontend_base = settings.FRONTEND_BASE_URL.rstrip("/")
@@ -268,8 +282,9 @@ async def _render_custom_resume_materials(
 
     name = custom_pdf_name[:-4] if custom_pdf_name.endswith(".pdf") else custom_pdf_name
     ts = int(time.time())
-    tmp_pdf = Path(f"/tmp/custom_resume_{ts}.pdf")
-    tmp_img = Path(f"/tmp/custom_resume_{ts}.jpg")
+    tmp_dir = Path(tempfile.gettempdir())
+    tmp_pdf = tmp_dir / f"custom_resume_{ts}.pdf"
+    tmp_img = tmp_dir / f"custom_resume_{ts}.jpg"
     try:
         html_str = build_resume_html(resume_dict, skin=skin)
         if need_image:

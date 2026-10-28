@@ -52,6 +52,22 @@ def normalize_platform_code(plat: str | None) -> str:
     return p
 
 
+def collapse_blank_lines(lines: list[str]) -> str:
+    """逐行压缩行内空白 + 连续空行折叠为 1 个段间距空行、去首尾空行（JD 排版共用，2026-10-07）。"""
+    lines = [re.sub(r'[ \t\u3000\xa0]+', ' ', ln).strip() for ln in lines]
+    collapsed: list[str] = []
+    blank_pending = False
+    for ln in lines:
+        if ln:
+            if blank_pending and collapsed:
+                collapsed.append("")
+            collapsed.append(ln)
+            blank_pending = False
+        else:
+            blank_pending = bool(collapsed)
+    return "\n".join(collapsed).strip()
+
+
 def is_greeting_supported_platform(plat: str | None) -> bool:
     """判定平台是否具备微聊/IM打招呼外发能力（白名单机制，排除 51job 等纯附件平台）"""
     return normalize_platform_code(plat) in GREETING_SUPPORTED_PLATFORMS

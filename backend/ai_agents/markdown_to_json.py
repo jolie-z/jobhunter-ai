@@ -1,7 +1,7 @@
 import json
 import re
 from typing import Dict, Any
-from app.core.llm_client import get_openai_client
+from app.core.llm_client import chat_create_no_thinking, get_openai_client
 from app.core.config import settings
 import logging
 
@@ -125,17 +125,28 @@ def parse_markdown_to_json(markdown_content: str) -> Dict[str, Any]:
     prompt += f"\n{markdown_content}\n"
     
     try:
-        # 使用 gpt-4o-mini 或 glm-4-flash，这里因为环境配置通常会有 gpt-4o 或者 glm
-        response = client.chat.completions.create(
-            model=settings.OPENAI_MODEL, # 遵循全局模型配置
+        # 结构化提取任务关闭推理思考（2026-10-23 工单：思考计入输出预算且对纯提取无增益）
+        # ——公共入口含网关拒参降级，见 app/core/llm_client.chat_create_no_thinking
+        response = chat_create_no_thinking(
+            client,
+            model=settings.OPENAI_MODEL,  # 遵循全局模型配置
             messages=[
                 {"role": "system", "content": "你是一个严格的 JSON 解析器。必须按照用户要求的字段返回合法的 JSON 对象。"},
                 {"role": "user", "content": prompt}
             ],
             response_format={"type": "json_object"},
-            temperature=0.1
+            temperature=0.1,
         )
-        json_str = response.choices[0].message.content or "{}"
+        choice = response.choices[0] if getattr(response, "choices", None) else None
+        finish_reason = (getattr(choice, "finish_reason", "") or "").strip()
+        json_str = (getattr(getattr(choice, "message", None), "content", "") or "").strip()
+
+        # content 为空 + length：截断的铁证形态——不得用 "{}" 兜底吞掉归因静默返回空结构
+        if not json_str and finish_reason == "length":
+            logger.error("解析调用输出为空且 finish_reason=length（输出预算被思考/正文耗尽）")
+            return {"error": "JSON 输出为空且被截断（finish_reason=length），疑似输出预算被耗尽", "original_markdown": markdown_content}
+        if not json_str:
+            json_str = "{}"
         
         # 清理可能带有的 ```json 标签
         if json_str.startswith("```json"):
@@ -164,6 +175,12 @@ def parse_markdown_to_json(markdown_content: str) -> Dict[str, Any]:
             parsed_json = next((x for x in parsed_json if isinstance(x, dict)), {})
 
         return parsed_json
+    except json.JSONDecodeError as e:
+        if finish_reason == "length":
+            logger.error(f"解析 Markdown 为 JSON 失败（输出被截断 finish_reason=length，疑似输出预算被思考/正文耗尽）: {e}")
+            return {"error": f"JSON 输出被截断（finish_reason=length），疑似输出预算被耗尽: {e}", "original_markdown": markdown_content}
+        logger.exception(f"解析 Markdown 为 JSON 失败: {e}")
+        return {"error": str(e), "original_markdown": markdown_content}
     except Exception as e:
         logger.exception(f"解析 Markdown 为 JSON 失败: {e}")
         return {"error": str(e), "original_markdown": markdown_content}

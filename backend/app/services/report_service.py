@@ -9,19 +9,21 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any
 
+# 主项目 live DB：默认用本仓库内 backend/data/job_hunter.db，
+# 特殊部署可用环境变量 MAIN_PROJECT_DB 指向外部主库
+# _LOCAL_DB 走 db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
+from app.core.db_paths import job_hunter_db_path  # noqa: E402
 from app.services.report_insights import (
     generate_daily_suggestions,
     generate_monthly_suggestions,
     generate_weekly_suggestions,
 )
 
-# 主项目 live DB：默认用本仓库内 backend/data/job_hunter.db，
-# 特殊部署可用环境变量 MAIN_PROJECT_DB 指向外部主库
 _MAIN_PROJECT_DB = os.environ.get("MAIN_PROJECT_DB", "")
-_LOCAL_DB = os.path.join(
+_LOCAL_DB = str(job_hunter_db_path(os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "data", "job_hunter.db"
-)
+)))
 DB_PATH = os.environ.get("ANALYTICS_DB_PATH") or (
     _MAIN_PROJECT_DB if _MAIN_PROJECT_DB and os.path.exists(_MAIN_PROJECT_DB) else _LOCAL_DB
 )
@@ -161,7 +163,7 @@ def _crawl_stats(conn, start: str, end: str) -> dict[str, Any]:
     rejected = conn.execute("""
         SELECT COUNT(*) as cnt FROM raw_jobs
         WHERE crawl_time >= ? AND crawl_time < ?
-        AND process_status IN ('清洗淘汰', 'ai清洗淘汰', '已确认淘汰')
+        AND process_status IN ('清洗淘汰', 'ai清洗淘汰', '已确认淘汰', '已淘汰')  -- 词表: app/core/process_status.REJECTED_STATUSES
     """, (start, end)).fetchone()["cnt"]
 
     return {
@@ -375,7 +377,7 @@ def generate_monthly_report(month: str | None = None) -> dict[str, Any]:
     rejected_rows = conn.execute("""
         SELECT platform, COUNT(*) as cnt FROM raw_jobs
         WHERE crawl_time >= ? AND crawl_time < ?
-        AND process_status IN ('清洗淘汰', 'ai清洗淘汰', '已确认淘汰')
+        AND process_status IN ('清洗淘汰', 'ai清洗淘汰', '已确认淘汰', '已淘汰')  -- 词表: app/core/process_status.REJECTED_STATUSES
         GROUP BY platform
     """, (month_start, next_month_start)).fetchall()
     rejected_map: dict[str, int] = defaultdict(int)

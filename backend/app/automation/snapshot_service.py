@@ -12,10 +12,12 @@ import asyncio
 import logging
 import re
 import sqlite3
+from datetime import datetime
 from typing import Any
 
 from app.automation import db as automation_db
 from app.automation import run_snapshot as _rs
+from app.core import process_status
 from app.core.utils import is_greeting_supported_platform, normalize_platform_code
 from app.services import feishu_service
 
@@ -25,44 +27,92 @@ _last_snapshot_params: tuple[Any, ...] | None = None
 _last_jobs_status_sig: tuple[Any, ...] | None = None
 
 
+def _mass_review_reason(grade: Any, platform: Any, feishu_fields: dict, config: dict) -> str:
+    """复算海投岗停留「人工复核」的真实原因，替换旧硬编码「命中大厂规则，待人工过目」。
+
+    2026-10-07 Windows 真机实证：待审批岗绝大多数是「评级 B 未在自动投递白名单」而非
+    大厂规模拦截，旧文案让用户误以为 5000 阈值失效。这里与 workflow.evaluate_delivery_gate
+    用同一判定口径复算（config 注入避免逐条读库）；安检全过却停在复核 = 物料挂载未完成
+    （\\tmp 路径 bug 期间的遗留形态），文案如实区分。
+    """
+    try:
+        from app.automation.workflow import evaluate_delivery_gate
+
+        state = {"grade": grade, "platform": platform or "", "feishu_fields": feishu_fields or {}}
+        gate_ok, reason = evaluate_delivery_gate(state, config=config)
+        if gate_ok:
+            return "安检已过，物料未就绪/流程中断，待人工处理"
+        return f"{reason}，待人工过目"
+    except Exception as e:
+        logger.warning(f"复算海投拦截原因失败，回退通用文案: {e}")
+        return "命中大厂规则，待人工过目"
+
+
 def _get_raw_db_path() -> str:
     import sys
     fa = sys.modules.get("app.automation.full_auto")
     if fa and hasattr(fa, "RAW_DB_PATH"):
         return fa.RAW_DB_PATH
     import os
-    return os.path.join(
+
+    from app.core.db_paths import job_hunter_db_path
+    return str(job_hunter_db_path(os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
         "data", "job_hunter.db"
-    )
+    )))
 
 
 # SQLite process_status → 快照卡片状态白名单映射。
-# 未知值兜底为 running+ai_eval_queued（评估排队），绝不输出裸 running——
-# 裸 running 会被前端合并层乐观注入 sub_status="delivering"，卡片误锁成「正在自动投递中」
-# （召回待初评/已确认淘汰/待投递遗留值曾中招）。
-_SQLITE_REJECTED_STATUSES = {"清洗淘汰", "ai清洗淘汰", "已确认淘汰"}
+# 淘汰词表以 app/core/process_status 为单一事实源（2026-10-09 事故：飞书归档写入「已淘汰」
+# 不在白名单，兜底把它画成「评估中」幽灵卡）。未知值兜底为 rejected+告警文案——绝不输出
+# 裸 running 或活跃近似态伪装岗位在流转（旧兜底 running+ai_eval_queued 正是幽灵卡根源；
+# 词表漂移宁可显示为淘汰态让人发现，也不能让已归档岗位假装还在评估）。
+_SQLITE_REJECTED_STATUSES = process_status.REJECTED_STATUSES
+
+
+_RUNNING_CLEAN_STATES = (process_status.CLEANING, process_status.PENDING_AI, process_status.PENDING_AI_LEGACY)
 
 
 def _map_sqlite_process_status(p_status: str) -> dict[str, str | None]:
-    """把 raw_jobs.process_status 映射为快照卡片的 {status, sub_status, last_action_desc}。"""
-    if p_status == "ai清洗淘汰":
-        return {"status": "rejected", "sub_status": None, "last_action_desc": "触发AI排雷规则淘汰"}
-    if p_status == "清洗淘汰":
-        return {"status": "rejected", "sub_status": None, "last_action_desc": "触发规则清洗淘汰"}
-    if p_status == "已确认淘汰":
-        return {"status": "rejected", "sub_status": None, "last_action_desc": "已确认淘汰"}
-    if p_status == "已存入数据":
+    """把 raw_jobs.process_status 映射为快照卡片的 {status, sub_status, last_action_desc}。
+
+    取值一律来自 app/core/process_status 词表(含旧变体归一),不再内联硬编码字符串。
+    """
+    p_status = process_status.normalize_legacy((p_status or "").strip())
+    if not p_status:
+        # NULL/空串真实可达（import_service 自建表无默认值）——按建表默认「已存入数据」语义呈现
         return {"status": "scraped", "sub_status": None, "last_action_desc": "入库待清洗"}
-    if p_status == "召回待初评":
+    if p_status == process_status.REJECT_AI:
+        return {"status": "rejected", "sub_status": None, "last_action_desc": "触发AI排雷规则淘汰"}
+    if p_status == process_status.REJECT_RULE:
+        return {"status": "rejected", "sub_status": None, "last_action_desc": "触发规则清洗淘汰"}
+    if p_status == process_status.REJECT_CONFIRMED:
+        return {"status": "rejected", "sub_status": None, "last_action_desc": "已确认淘汰"}
+    if p_status == process_status.REJECT_ARCHIVED_LEGACY:
+        # [存量兼容] 2026-10-09 前飞书卡片归档旧词（现行归档统一写「已确认淘汰」）
+        return {"status": "rejected", "sub_status": None, "last_action_desc": "已确认淘汰（历史归档）"}
+    if p_status == process_status.ABANDONED:
+        return {"status": "rejected", "sub_status": None, "last_action_desc": "已放弃"}
+    if p_status == process_status.STORED:
+        return {"status": "scraped", "sub_status": None, "last_action_desc": "入库待清洗"}
+    if p_status == process_status.RECALL_PENDING_EVAL:
         return {"status": "running", "sub_status": "ai_eval_queued", "last_action_desc": "♻️ 已召回，等待AI重新初评"}
-    if p_status == "待推送至飞书":
+    if p_status == process_status.PUSH_PENDING:
         return {"status": "running", "sub_status": "ai_eval_queued", "last_action_desc": "已入库，待推送至飞书"}
-    if p_status == "已进行打分":
+    if p_status == process_status.SCORED:
         return {"status": "running", "sub_status": "ai_eval_queued", "last_action_desc": "AI打分完成，等待流转"}
-    if p_status == "待投递":
+    if p_status in _RUNNING_CLEAN_STATES:
+        return {"status": "running", "sub_status": "ai_eval_queued", "last_action_desc": "清洗排雷处理中"}
+    if p_status == process_status.READY_TO_DELIVER:
         return {"status": "ready_to_deliver", "sub_status": None, "last_action_desc": "待投递"}
-    return {"status": "running", "sub_status": "ai_eval_queued", "last_action_desc": "入库待清洗"}
+    if p_status == process_status.SYNCED:
+        return {"status": "done", "sub_status": None, "last_action_desc": "已同步飞书"}
+    # 未知状态兜底：按淘汰呈现+告警文案（绝不伪装成活跃流转态——词表漂移宁可显眼也不误导）
+    return {
+        "status": "rejected",
+        "sub_status": None,
+        "last_action_desc": f"⚠️ 未知状态「{p_status[:12]}」按淘汰兜底，请反馈开发者",
+    }
 
 
 def _triage_classify(error: str) -> str:
@@ -233,6 +283,29 @@ async def build_jobs_snapshot() -> dict[str, Any]:
             return crawl_time_map[ckey]
         return default_val
 
+    def _is_recent_crawl(raw_time: str, window_seconds: int = 2 * 3600) -> bool:
+        """抓取时间落在 window 内视为「刚入库还在排队评估」。
+
+        宽容解析多格式时间源（SQLite crawl_time / 飞书「抓取时间」）。两处时间源均为
+        本地时间（SQLite 建表 DEFAULT datetime('now','localtime')，见 app/core/db_bootstrap.py），
+        与 datetime.now() 同基准，无时区换算问题。解析失败一律返回 False 走保守文案
+        （「评估未完成」），宁可少排期也不误报排队。
+        """
+        if not raw_time:
+            return False
+        clean_time_str = str(raw_time).strip()
+        fmts = ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M", "%Y-%m-%dT%H:%M:%S")
+        dt = None
+        for fmt in fmts:
+            try:
+                dt = datetime.strptime(clean_time_str[:19], fmt)
+                break
+            except ValueError:
+                continue
+        if dt is None:
+            return False
+        return abs(datetime.now() - dt).total_seconds() <= window_seconds
+
     # 1. 查询 SQLite 岗位（仅限本轮新抓取与本轮清洗淘汰的记录）
     if has_active_run and start_rowid >= 0:
         try:
@@ -245,14 +318,20 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                     date_expr = "publish_date" if "publish_date" in cols else ("created_at" if "created_at" in cols else "'' AS publish_date")
                     crawl_expr = "crawl_time" if "crawl_time" in cols else "'' AS crawl_time"
 
+                    # 已确认淘汰与已放弃同为终态归档，不再上板（2026-10-10 用户报修：
+                    # 飞书卡片确认淘汰后桌面端淘汰tab仍显示待确认——看板语义是
+                    # 「待人工处理」队列，归档完成即离场；桌面端确认按钮同语义
+                    # （confirm-reject 后 removeJob）。词取自单一事实源。）
                     query = f"""
                         SELECT rowid, platform, job_title, company_name, salary, city,
                                education_req, experience_req, jd_text, job_link, process_status, reject_reason, {crawl_expr}, {date_expr}
                         FROM raw_jobs
-                        WHERE rowid > ? AND process_status != '已放弃'
+                        WHERE rowid > ? AND process_status NOT IN (?, ?)
                         ORDER BY rowid DESC
                     """
-                    return [dict(r) for r in conn.execute(query, (start_rowid,)).fetchall()]
+                    return [dict(r) for r in conn.execute(
+                        query, (start_rowid, process_status.ABANDONED, process_status.REJECT_CONFIRMED)
+                    ).fetchall()]
 
             sqlite_rows = await asyncio.to_thread(_fetch_sqlite_jobs)
             for r in sqlite_rows:
@@ -306,6 +385,7 @@ async def build_jobs_snapshot() -> dict[str, Any]:
     if has_active_run and run_record_ids:
         try:
             pending_feishu = feishu_lists["pending"]
+            gate_config = automation_db.get_autopilot_config()  # 复算真实拦截原因，一次读取整批复用
             for pj in (pending_feishu or []):
                 pj_id = pj.get("job_id") or pj.get("record_id")
                 if pj_id not in run_record_ids:
@@ -334,7 +414,10 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                     "is_current_run": True,
                     "crawl_time": c_time,
                     "last_action_time": c_time,
-                    "last_action_desc": "已生成定制简历，待细审放行" if is_custom_job else "命中大厂规则，待人工过目",
+                    "last_action_desc": "已生成定制简历，待细审放行" if is_custom_job else _mass_review_reason(
+                        pj.get("grade"), pj.get("platform"),
+                        {"公司规模": pj.get("company_scale") or ""}, gate_config,
+                    ),
                 })
         except Exception as e:
             logger.warning(f"jobs_snapshot 查询飞书待审批异常: {e}")
@@ -519,6 +602,7 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                     extract_job_grade,
                     is_custom_record,
                 )
+                detail_gate_config = automation_db.get_autopilot_config()  # 复算真实拦截原因，一次读取整批复用
                 # 🚀 Q21 配套：逐条记录详情并发获取（Semaphore 限流防飞书 429），按原 missing_ids 顺序消费（卡片顺序不变）
                 _detail_sem = asyncio.Semaphore(10)
 
@@ -561,7 +645,9 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                         last_action_desc = "已加入待投递队列"
                     elif is_waiting:
                         status, node, sub_status = "waiting", "manual_review_node", "waiting"
-                        last_action_desc = "已生成定制简历，待细审放行" if is_custom_job else "命中大厂规则，待人工过目"
+                        last_action_desc = "已生成定制简历，待细审放行" if is_custom_job else _mass_review_reason(
+                            grade, raw_plat, f, detail_gate_config,
+                        )
                     elif is_delivered:
                         status, node, sub_status = "delivered", "delivery_node", "ai_eval"
                         last_action_desc = "已成功投递"
@@ -584,11 +670,26 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                     elif has_rating:
                         # 🌟 无论在线还是停机，只要已有客观评级且尚未落盘待投递，均安全归入「待审批」人工把关池，杜绝误投
                         status, node, sub_status = "waiting", "manual_review_node", "waiting"
-                        last_action_desc = "已生成定制简历，待细审放行" if is_custom_job else "海投话术已装配，待人工审批"
+                        if is_custom_job:
+                            last_action_desc = "已生成定制简历，待细审放行"
+                        else:
+                            # 海投轨（C/D 级）安检免审、不需要人工审批——窗口期只是物料尚在装配/门牌未落位，
+                            # 「待人工审批」字样会制造假审批观感（2026-10-09 用户实测三 tab 之谜）
+                            last_action_desc = "评估完成，海投物料装配中，过安检后自动进待投递"
                     elif pipeline_stopped:
-                        # 流水线已停机且无评级：判定为异常中断/半成品
-                        status, node, sub_status = "error", "error", "incomplete"
-                        last_action_desc = "流水线已停机，评估未完成"
+                        # 流水线已停机且无评级：区分「刚入库还在排队评估」与「本轮评估没跑到/没评成」——
+                        # 停机+无评级一律不再标 error（曾让新岗位在边界期闪现执行失败 tab，
+                        # 2026-10-09 用户实测三 tab 之谜），改归 waiting 中性可见：
+                        # 真故障不进失败 tab 制造「投递失败」恐慌，但在待审批 tab 持续可见、描述直说。
+                        crawl_recent = _is_recent_crawl(
+                            _txt(f.get("抓取时间", "")) or _lookup_crawl_time(
+                                _txt(f.get("岗位链接", "")), _txt(f.get("公司名称", "")), _txt(f.get("岗位名称", ""))
+                            )
+                        )
+                        status = "waiting"
+                        node = "evaluate_node"
+                        sub_status = "eval_pending" if crawl_recent else "eval_incomplete"
+                        last_action_desc = "已入库，评估排队中" if crawl_recent else "本轮评估未完成，建议在详情页重新评估"
                     else:
                         # 仅当流水线在线运行中且完全未出评级时，才展示为评估中
                         status, node, sub_status = "running", "evaluate_node", "ai_eval"

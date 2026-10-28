@@ -67,7 +67,12 @@ async def init_automation_pipeline(db_path: str = ""):
 
     if not db_path or db_path == "checkpoints.db":
         from pathlib import Path
-        db_path = str(Path(__file__).resolve().parents[2] / "langgraph_checkpoints.db")
+
+        from app.core.db_paths import writable_path
+        db_path = str(writable_path(
+            Path(__file__).resolve().parents[2] / "langgraph_checkpoints.db",
+            "langgraph_checkpoints.db",
+        ))
 
     logger.info(f"⚙️ 正在初始化 LangGraph 状态机与持久化存储 [db_path={db_path}]...")
 
@@ -159,6 +164,9 @@ def start_scheduler():
         replace_existing=True,
     )
     logger.info("🔄 会话续期心跳已注册（每 2 天 07:40）")
+
+    # JD 画像每日自动重建已移除（2026-10-12 用户拍板：单次重建 token 消耗大，不值得无人值守烧）；
+    # 陈旧提醒（>7 天角标）保留在画像弹窗前端，重建改由用户手动点「重新生成」
 
     # SQLite 核心库每日热备：04:00 VACUUM INTO 快照（先于 04:30 的 GC，
     # 天然形成 GC 前还原点）；保留最近 7 份，结果落 automation_logs

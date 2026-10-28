@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 from typing import Any, TypedDict
 
@@ -27,6 +28,7 @@ from app.core.feishu_utils import (
 )
 from app.core.utils import is_valid_greeting, sanitize_filename
 from app.services.feishu_service import extract_record_id
+from app.session.registry import platform_display_to_key
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +170,40 @@ async def evaluate_node(state: JobApplicationState) -> dict[str, Any]:
 
     if not result.get("success"):
         logger.error(f"⚠️ [LangGraph] 初评失败: {result.get('error')}")
-        return {"error": result.get("error"), "status": "评估失败"}
+        # 评估失败（如 8维JSON解析失败）也要可见可救：跟进状态写「AI评估失败」+
+        # 登记失败台账（step=AI初步评估，job_id 尽量用 raw_<rowid>——前端执行失败
+        # tab 的重试按钮对 raw 分支会整条重跑 evaluate_node 并回写飞书）
+        eval_update = result.get("update_data") or {}
+        if eval_update:
+            try:
+                await update_feishu_status.ainvoke({
+                    "record_id": state["record_id"],
+                    "updates": eval_update,
+                })
+            except Exception as wb_err:
+                logger.warning(f"⚠️ [LangGraph] 评估失败态回写飞书失败: {wb_err}")
+        raw_job_id = await _resolve_raw_job_id(state)
+        try:
+            from app.automation import run_snapshot as _rs
+            from app.core.feishu_utils import FOLLOW_STATUS_EVAL_FAILED
+            _rs.record_delivery_failure(
+                raw_job_id or str(state.get("record_id") or ""),
+                error=str(result.get("error") or "评估失败")[:200],
+                step="AI初步评估",
+                company=state.get("company_name", ""),
+                job_name=state.get("job_name", ""),
+                platform=state.get("platform", ""),
+                job_url=state.get("job_url", ""),
+                grade="",
+            )
+        except Exception as reg_err:
+            logger.warning(f"⚠️ [LangGraph] 评估失败登记台账异常: {reg_err}")
+        return {
+            "error": result.get("error"),
+            "status": FOLLOW_STATUS_EVAL_FAILED,
+            "parse_failed": bool(result.get("parse_failed")),
+            "grade": "",
+        }
 
     # 将初评结果回写飞书 (使用 Tool)
     await update_feishu_status.ainvoke({
@@ -181,11 +216,38 @@ async def evaluate_node(state: JobApplicationState) -> dict[str, Any]:
     return {
         "ai_score": raw_score,
         "score": raw_score,
-        "grade": result.get("grade", "C"),
+        "grade": result.get("grade", ""),  # 缺失即空串：折算成 C 会被海投轨当真实评级自动投出
         "status": result.get("status", "待人工评估"),
         "diagnosis_dict": result["update_data"],
         "company_intel": intel,
     }
+
+
+async def _resolve_raw_job_id(state: JobApplicationState) -> str:
+    """按 record_id/job_link 反查本地台账 rowid，返回 raw_<rowid>（查不到返回空串）。
+
+    执行失败 tab 的重试按钮对 raw_ 前缀走整条重评链路——评估失败的岗位必须以
+    raw_ 形态登记台账才能被一键重评（rec_ 前缀的重试语义是重投，不对症）。
+    """
+    record_id = str(state.get("record_id") or "")
+    job_url = str(state.get("job_url") or "")
+    if not record_id and not job_url:
+        return ""
+    def _lookup():
+        import sqlite3
+
+        from app.automation.scrape_runner import _get_raw_db_path
+        try:
+            with sqlite3.connect(_get_raw_db_path()) as conn:
+                row = conn.execute(
+                    "SELECT rowid FROM raw_jobs WHERE (feishu_record_id = ? AND feishu_record_id != '') OR (? != '' AND job_link = ?) LIMIT 1",
+                    (record_id, job_url, job_url),
+                ).fetchone()
+                return row[0] if row else None
+        except Exception:
+            return None
+    rowid = await asyncio.to_thread(_lookup)
+    return f"raw_{rowid}" if rowid else ""
 
 
 async def _emit_node_running(state: JobApplicationState, node_name: str, sub_status: str):
@@ -523,12 +585,32 @@ async def _delivery_node_inner(state: JobApplicationState) -> dict[str, Any]:
     logger.info("🚀 [LangGraph] 进入 delivery_node，准备发射！")
     fresh_record_id = extract_record_id(state.get("record_id") or state.get("job_id") or "")
     from app.automation import abort as abort_mod
+    # 全链路终止（2026-10-24 工单）：全局终止优先于单岗取消——指令下达后，任何尚未
+    # 唤起引擎的投递一律拦截，避免「已终止但仍在真实投递」。
+    if abort_mod.is_aborted():
+        logger.warning("🛑 [LangGraph] 收到全局终止指令，投递节点在发射前拦截，不唤起浏览器")
+        return {"error": "[用户主动终止] 收到全局终止指令，投递已拦截（未执行）"}
     if fresh_record_id and abort_mod.is_job_delivery_cancelled(fresh_record_id):
         logger.warning(f"🛑 [LangGraph] 岗位 {fresh_record_id} 在准备发射前已被用户取消投递，立即拦截")
         abort_mod.clear_job_delivery_cancelled(fresh_record_id)
         return {"error": "[用户主动终止] 在指挥中心手动终止投递流程"}
 
     await _emit_node_running(state, "delivery_node", "delivering")
+
+    # 批次/单岗投递预检（2026-10-09，全链路 pipeline / 波次恢复 / 手动重试的公共必经点）：
+    # 浏览器探活/僵尸自愈/拉起 + 登录判定（猎聘失效先 JSON 注入再等扫码）。未就绪判环境
+    # 失败——transient 分流会保留「待投递」由下轮自愈重试。成功有 TTL 缓存，波次逐岗不重探。
+    # pytest 环境跳过：单测无真实浏览器，探活会误拉起 Edge（同 delivery_tasks PYTEST 门先例）。
+    _plat_key = platform_display_to_key(state.get("platform"))
+    if _plat_key and not os.environ.get("PYTEST_CURRENT_TEST"):
+        try:
+            from app.session.preflight import ensure_delivery_platforms_ready
+            ready = await ensure_delivery_platforms_ready([_plat_key])
+            if not ready.get(_plat_key, False):
+                logger.warning(f"⛔ [LangGraph] {_plat_key} 浏览器/登录态预检未通过，投递拦截（保留待投递下轮自愈重试）")
+                return {"error": f"[环境] {_plat_key} 浏览器/登录态预检未通过，本轮投递拦截"}
+        except Exception as pre_e:
+            logger.warning(f"[LangGraph] 投递预检异常（不阻断投递，按原流程继续）: {pre_e}")
 
     fields = state.get("feishu_fields") or {}
 
@@ -683,7 +765,10 @@ async def _delivery_node_inner(state: JobApplicationState) -> dict[str, Any]:
 
     platform = state["platform"].lower()
 
-    # 1. 获取锁前取消检查
+    # 1. 获取锁前取消检查（单岗取消 + 全局终止）
+    if abort_mod.is_aborted():
+        logger.warning("🛑 [LangGraph] 收到全局终止指令，获取投递锁前拦截执行")
+        return {"error": "[用户主动终止] 收到全局终止指令，投递已拦截（未执行）"}
     if fresh_record_id and abort_mod.is_job_delivery_cancelled(fresh_record_id):
         logger.warning(f"🛑 [LangGraph] 岗位 {fresh_record_id} 在获取锁前已被用户取消投递，拦截执行")
         abort_mod.clear_job_delivery_cancelled(fresh_record_id)
@@ -693,7 +778,10 @@ async def _delivery_node_inner(state: JobApplicationState) -> dict[str, Any]:
     async with _delivery_serial_lock:
         logger.info(f"🔒 [LangGraph] 已获取投递互斥锁，开始执行 [{platform}] 投递...")
 
-        # 2. 获取锁后检查是否在排队期间被取消
+        # 2. 获取锁后检查是否在排队期间被取消（单岗取消 + 全局终止）
+        if abort_mod.is_aborted():
+            logger.warning("🛑 [LangGraph] 收到全局终止指令，排队期间拦截，不唤起浏览器")
+            return {"error": "[用户主动终止] 收到全局终止指令，投递已拦截（未执行）"}
         if fresh_record_id and abort_mod.is_job_delivery_cancelled(fresh_record_id):
             logger.warning(f"🛑 [LangGraph] 岗位 {fresh_record_id} 在排队期间已被用户取消投递，拦截唤起浏览器")
             abort_mod.clear_job_delivery_cancelled(fresh_record_id)
@@ -714,7 +802,12 @@ async def _delivery_node_inner(state: JobApplicationState) -> dict[str, Any]:
             res = f"❌ 投递异常中断: {str(e)[:100]}"
         finally:
             # 无论正常退出还是异常中断，均清理本岗取消标记
-            was_cancelled = bool(fresh_record_id and abort_mod.is_job_delivery_cancelled(fresh_record_id))
+            # 全局终止与单岗取消同权归因（2026-10-24 工单）：引擎执行期间收到全局终止指令，
+            # 同样按用户主动终止收尾（已真实送达的仍保留成功，见下方归因补丁）。
+            was_cancelled = (
+                bool(fresh_record_id and abort_mod.is_job_delivery_cancelled(fresh_record_id))
+                or abort_mod.is_aborted()
+            )
             if fresh_record_id:
                 abort_mod.clear_job_delivery_cancelled(fresh_record_id)
 
@@ -796,17 +889,22 @@ def route_after_evaluate(state: JobApplicationState) -> str:
         return "quick_greeting_node"
 
 
-def evaluate_delivery_gate(state: JobApplicationState) -> tuple[bool, str]:
+def evaluate_delivery_gate(state: JobApplicationState, config: dict | None = None) -> tuple[bool, str]:
     """投递前安检闸门：安检1 大厂规模拦截 + 安检2 等级/平台免审白名单。
 
     供 route_before_delivery（决定路由走向）与 quick_greeting_node（决定预写门牌）共用，
     保证飞书「跟进状态」与状态机实际走向永远一致。
+    config 可选注入（snapshot 复算真实拦截原因时避免逐条读库）；缺省现取。
     返回 (是否放行, 拦截原因)。
     """
-    config = get_autopilot_config()
-    grade = (state.get("grade") or "C").upper()
+    config = config or get_autopilot_config()
+    # 空 grade 保持空串：兜底成 C 会被海投白名单放行（静默折 C 的 gate 版，2026-10-10 根治）
+    grade = (state.get("grade") or "").upper()
 
-    # 1. 海投大厂门槛拦截：C-F 海投路径上，若公司规模下限 ≥ 门槛 (默认 1000 人)，不放行
+    # 1. 海投大厂门槛拦截：C-F 海投路径上，若公司规模 ≥ 门槛 (默认 1000 人)，不放行。
+    #    规模区间（如「1000-9999人」）按区间上限参与比较——2026-10-08 修复：此前只取
+    #    首个数字=区间下限，5000 门槛被「1000」骗过（兴趣岛/卡尔蔡司直接海投事故）；
+    #    平台标签的上限即该档最坏情况，取上限才符合「大厂拦截」本意。
     is_mass_track = not bool(
         state.get("final_markdown")
         or is_custom_record(state.get("feishu_fields") or {})
@@ -816,29 +914,31 @@ def evaluate_delivery_gate(state: JobApplicationState) -> tuple[bool, str]:
             threshold = int(config.get("mass_apply_max_headcount", 1000) or 1000)
             fields = state.get("feishu_fields") or {}
             size_txt = extract_feishu_text(fields.get("公司规模", ""))
-            m = re.search(r"(\d+)", size_txt or "")
-            if m and int(m.group(1)) >= threshold:
+            m_range = re.search(r"(\d+)\s*[-~—到至]\s*(\d+)", size_txt or "")
+            if m_range:
+                size_num = int(m_range.group(2))
+            else:
+                m = re.search(r"(\d+)", size_txt or "")
+                size_num = int(m.group(1)) if m else None
+            if size_num is not None and size_num >= threshold:
                 return False, f"公司规模 {size_txt} ≥ 门槛 {threshold}"
         except Exception as e:
             logger.warning(f"[LangGraph] 海投门槛校验异常: {e}")
 
-    # 2. 平台与等级免审白名单判定
-    platform = (state.get("platform") or "").lower()
-    platform_key = ""
-    if "boss" in platform:
-        platform_key = "boss"
-    elif "猎聘" in platform or "liepin" in platform:
-        platform_key = "liepin"
-    elif "智联" in platform or "zhilian" in platform:
-        platform_key = "zhilian"
-    elif "51job" in platform or "前程无忧" in platform:
-        platform_key = "51job"
-    elif "小红书" in platform or "xiaohongshu" in platform:
-        platform_key = "xiaohongshu"
+    # 2. 平台与等级免审白名单判定（平台名归一走 registry 单一事实源；
+    #    未识别平台透传后不匹配任何白名单键，自然走「未开启自动投递」拦截）
+    platform_key = platform_display_to_key(state.get("platform"))
 
     auto_deliver_platforms = config.get("auto_deliver_platforms", ["boss", "liepin", "51job", "zhilian"])
     if platform_key not in auto_deliver_platforms:
-        return False, f"平台 {platform_key or platform or '未知'} 未开启自动投递"
+        return False, f"平台 {platform_key or state.get('platform') or '未知'} 未开启自动投递"
+
+    # 解析失败岗无条件豁免：不管白名单怎么配，评估失败的评级是空壳，绝不自动投递
+    # （2026-10-10 蛙蔻事故：伪造 F 进海投轨被通用简历投出）
+    if state.get("parse_failed"):
+        return False, "AI评估解析失败，已挂起待重试，禁止自动投递"
+    if not grade:
+        return False, "评级缺失（评估异常），禁止自动投递"
 
     auto_grades = config.get("auto_deliver_grades", ["C", "D", "F"])
     if grade not in auto_grades:
@@ -864,7 +964,11 @@ def route_before_delivery(state: JobApplicationState) -> str:
         return "manual_review_node"
 
     if state.get("stop_at_review"):
-        logger.info(f"📦 [LangGraph] 定时链路模式：{state.get('job_name')} 普通海投免审通过，飞书保留「待投递」就绪态，等待定时发射")
+        # 2026-10-07 诚实化：旧文案无条件宣称「保留待投递」，但物料挂载失败时
+        # quick_greeting 实际写的是「海投人工复核」，排查时被误导（Windows 真机实证）
+        follow_status = state.get("status") or "未知"
+        logger.info(f"📦 [LangGraph] 定时链路模式：{state.get('job_name')} 安检通过"
+                    f"（跟进状态={follow_status}），等待定时发射统一拉起")
         return END
 
     logger.info(f"🚦 [LangGraph] {(state.get('grade') or 'C').upper()} 级命中自动投递白名单且规模合规，立即放行自动投递！")

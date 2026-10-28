@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/dialog"
 import { apiFetch } from "@/lib/api"
 import { dispatchStrategySetSection } from "@/lib/strategy-events"
+import { FEEDBACK_URL, FEISHU_GUIDE_URL, DASHBOARD_GUIDE_URL, openGuide } from "@/lib/guide-urls"
 
 export const SETUP_GUIDE_FLAG_KEY = "jobhunter:setup-guide:v1"
 
@@ -133,7 +134,8 @@ export function SetupGuideDialog({ open, onClose, onComplete }: SetupGuideDialog
   ]
 
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+    <>
+      <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-lg max-h-[88vh] overflow-y-auto border-slate-200 bg-white">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-lg font-bold text-slate-900">
@@ -146,6 +148,31 @@ export function SetupGuideDialog({ open, onClose, onComplete }: SetupGuideDialog
             必配项已为你收拢成一张体检单：按顺序走完三步，即可原汁原味体验整个项目。去配置后回到这里，状态会自动点亮。
           </DialogDescription>
         </DialogHeader>
+
+        {/* 在线教程与反馈入口（服务端维护，更新无需重新发包；Electron 外链走系统浏览器） */}
+        <div className="grid grid-cols-3 gap-2">
+          <button
+            type="button"
+            onClick={() => openGuide(DASHBOARD_GUIDE_URL)}
+            className="flex items-center justify-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50/70 px-2 py-2 text-[11px] font-medium text-indigo-900 transition-colors hover:bg-indigo-100/70"
+          >
+            🖥️ 工作台指南
+          </button>
+          <button
+            type="button"
+            onClick={() => openGuide(FEISHU_GUIDE_URL)}
+            className="flex items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50/70 px-2 py-2 text-[11px] font-medium text-blue-900 transition-colors hover:bg-blue-100/70"
+          >
+            📖 飞书接入指南
+          </button>
+          <button
+            type="button"
+            onClick={() => openGuide(FEEDBACK_URL)}
+            className="flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50/70 px-2 py-2 text-[11px] font-medium text-emerald-900 transition-colors hover:bg-emerald-100/70"
+          >
+            🙋 反馈 / 提需求
+          </button>
+        </div>
 
         {!status ? (
           <div className="flex items-center justify-center gap-2 py-10 text-xs text-slate-400">
@@ -267,6 +294,7 @@ export function SetupGuideDialog({ open, onClose, onComplete }: SetupGuideDialog
           </div>
         )}
       </DialogContent>
-    </Dialog>
+      </Dialog>
+    </>
   )
 }

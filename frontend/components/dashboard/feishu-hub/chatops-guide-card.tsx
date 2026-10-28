@@ -18,6 +18,7 @@ import {
   type ChatOpsCommandGroup,
   type Tutorial,
 } from "../strategy-lab/system-config-meta"
+import { FeishuFullGuideButton } from "../strategy-lab/feishu-guide-link"
 
 interface ChatOpsGuideCardProps {
   apiBase: string
@@ -178,6 +179,8 @@ export function ChatOpsGuideCard({ apiBase }: ChatOpsGuideCardProps) {
             </DialogDescription>
           </DialogHeader>
 
+          {FEISHU_CHATOPS_TUTORIAL.fullGuide && <FeishuFullGuideButton />}
+
           <div className="mt-4 space-y-3">
             {FEISHU_CHATOPS_TUTORIAL.steps.map((step, idx) => (
               <div key={step.title} className="flex gap-3 rounded-xl border border-border/60 bg-muted/20 p-3.5">
@@ -202,6 +205,7 @@ export function ChatOpsGuideCard({ apiBase }: ChatOpsGuideCardProps) {
           </div>
         </DialogContent>
       </Dialog>
+
     </div>
   )
 }

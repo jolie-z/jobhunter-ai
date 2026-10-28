@@ -35,8 +35,11 @@ _pending_images: dict[str, dict] = {}
 _ACK_TASKS = set()
 
 # 跨消息会话状态（落盘持久化：只放内存的话，后端一重启反问就失效）
-_PENDING_LINKS_PATH = Path(BASE_DIR) / "data" / "pending_job_links.json"
-_PENDING_PIPELINE_PATH = Path(BASE_DIR) / "data" / "pending_pipeline_confirm.json"
+# db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
+from app.core.db_paths import writable_path  # noqa: E402
+
+_PENDING_LINKS_PATH = writable_path(Path(BASE_DIR) / "data" / "pending_job_links.json", "pending_job_links.json")
+_PENDING_PIPELINE_PATH = writable_path(Path(BASE_DIR) / "data" / "pending_pipeline_confirm.json", "pending_pipeline_confirm.json")
 _LINK_TTL_SECONDS = 24 * 3600
 
 

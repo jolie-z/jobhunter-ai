@@ -11,6 +11,7 @@ from typing import Any
 
 import common.config as _ccfg
 from app.core.error_messages import friendly_error
+from app.core.llm_usage import log_prompt_cache_hit
 from app.strategy.schemas import (
     GrillExperienceRequest,
     GrillSuggestionRequest,
@@ -90,19 +91,32 @@ def _build_grill_context(payload: GrillExperienceRequest) -> str:
 
 
 def _build_grill_messages(payload: GrillExperienceRequest, system_prompt: str) -> list:
-    messages = [{"role": "system", "content": system_prompt}]
-    if not payload.chat_history:
-        messages.append({"role": "user", "content": f"这是我的原始经历：\n{payload.original_experience}\n\n请开始你的首次追问。"})
-    else:
-        messages.append({"role": "user", "content": f"这是我的原始经历：\n{payload.original_experience}"})
-        for msg in payload.chat_history:
-            messages.append({"role": msg.role, "content": msg.content})
+    """按「稳定前缀优先」排布消息，让多轮、多条目请求都能命中网关的前缀缓存。
+
+    网关缓存只认字节级相同的消息前缀，因此必须守住：
+    - [0] system（规则 + 画像 [+ 全量简历]）跨轮次、跨经历条目字节一致；
+    - [1] user「原始经历」同一条目各轮字节一致——首轮不得追加任何后缀，开局指令固化在 system；
+    - [2..] chat_history 只追加、不改写、不插入；
+    - 轮次 ≥4 的强制收束指令只能放在队尾；
+    - 轮次号、时间戳等随请求变化的内容不得进入前两条消息。
+    """
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"这是我的原始经历：\n{payload.original_experience}"},
+    ]
+    for msg in payload.chat_history:
+        messages.append({"role": msg.role, "content": msg.content})
     if payload.current_turn >= 4:
         messages.append({
             "role": "system",
             "content": "【最高优先级强制指令】：用户已明确要求结束拷问或达到最大轮次！\n你必须立即停止任何追问，直接进入【阶段二：区块化融合】。\n必须设置 `is_finished: true`，并将所有提炼出的细节缝合到 `blocks` 中输出！绝对不允许再输出任何新问题！",
         })
     return messages
+
+
+def _log_prompt_cache_hit(func_name: str, usage: Any, turn: int | None = None) -> None:
+    """共享实现见 app/core/llm_usage.py（观测与「稳定前缀优先」排布约束成对出现）。"""
+    log_prompt_cache_hit(func_name, usage, turn)
 
 
 def _grill_system_prompt(context_instruction: str) -> str:
@@ -114,6 +128,7 @@ def _grill_system_prompt(context_instruction: str) -> str:
         "  阶段二（区块化融合）：当挖掘结束时，将所有隐藏细节原位融合进原始经历中，并以“区块（Blocks）”的颗粒度输出 Diff 对比，供用户局部采纳。\n\n"
         "===== 阶段一：追问规则（全局 -> 局部策略） =====\n"
         "1. 你的追问必须**有条理、分步骤**：\n"
+        "   - 对话刚开始（尚无任何追问记录）时，无需等待用户指令，直接抛出首个问题。\n"
         "   - 首个问题必须从【全局视角】切入：关注整段经历的业务背景、核心痛点、最终量化价值或整体技术架构。\n"
         "   - 后续问题必须转入【局部深挖】：逐个锁定用户原文里的大 Bullet Point，追问里面隐藏的技术选型、过程难点、或者是模糊的动作。\n"
         "2. 每次仅抛出 1 个最犀利的问题，聚焦核心。\n"
@@ -193,13 +208,14 @@ async def grill_experience_service(payload: GrillExperienceRequest) -> dict:
             temperature=0.7,
             response_format={"type": "json_object"},
         )
-        return response.choices[0].message.content or "{}"
+        return response.choices[0].message.content or "{}", getattr(response, "usage", None)
 
     start_time = time.time()
     try:
-        llm_reply_str = await asyncio.to_thread(call_llm)
+        llm_reply_str, usage = await asyncio.to_thread(call_llm)
         elapsed = time.time() - start_time
         logger.info(f"[Func: grill_experience_service] ✅ 大模型 Grill 响应成功，耗时 {elapsed:.2f}秒。")
+        _log_prompt_cache_hit("grill_experience_service", usage, payload.current_turn)
 
         return _parse_grill_reply(llm_reply_str)
     except Exception as e:
@@ -247,6 +263,7 @@ async def grill_experience_stream_service(payload: GrillExperienceRequest) -> As
         total = 0
         parts: list[str] = []
         stream = None
+        stream_usage: Any = None
         try:
             stream = client.chat.completions.create(
                 model=_ccfg.OPENAI_MODEL if _ccfg.OPENAI_MODEL else "gpt-4o",
@@ -259,6 +276,10 @@ async def grill_experience_stream_service(payload: GrillExperienceRequest) -> As
                 if cancel_event.is_set():
                     logger.info("[Func: grill_experience_stream_service] 客户端已断开，中断上游流式调用。")
                     return
+                # 部分网关在末块携带 usage（不加 stream_options 以免不支持的网关 400）
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage:
+                    stream_usage = chunk_usage
                 try:
                     delta = chunk.choices[0].delta.content if chunk.choices else None
                 except Exception:
@@ -278,6 +299,7 @@ async def grill_experience_stream_service(payload: GrillExperienceRequest) -> As
                         return
             elapsed = time.time() - start
             logger.info(f"[Func: grill_experience_stream_service] ✅ 流式 Grill 完成，耗时 {elapsed:.2f}秒，生成 {total} 字。")
+            _log_prompt_cache_hit("grill_experience_stream_service", stream_usage, payload.current_turn)
             try:
                 _push("final", _parse_grill_reply("".join(parts)))
             except Exception:

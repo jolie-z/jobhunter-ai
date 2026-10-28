@@ -41,7 +41,7 @@ export function MassGreetingCard({
         onChangeMassGreeting(result.greeting)
         toast.success("AI 通用打招呼语模版生成成功！")
       } else {
-        toast.error(result.detail || "生成失败，请确认已上传启用简历与A级画像")
+        toast.error(result.detail || "生成失败，请确认简历库已有启用简历")
       }
     } catch {
       toast.error("网络异常，无法生成通用打招呼语")
@@ -138,7 +138,7 @@ export function MassGreetingCard({
                 </button>
               </TooltipTrigger>
               <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed p-2.5">
-                结合当前启用的基准简历与全局 A 级岗位画像，调用破冰打招呼引擎一键生成高匹配度的通用开场白。
+                结合当前启用的基准简历一键生成高匹配度通用开场白；已生成 A 级岗位画像时自动结合画像强化匹配，无画像（新装系统）也能直接生成。
               </TooltipContent>
             </Tooltip>
           </div>

@@ -16,14 +16,17 @@ from typing import Any
 
 from app.automation.db import mark_job_approved
 from app.automation.scrape_runner import _get_raw_db_path
+from app.core import process_status
 from app.core.feishu_messaging import send_feishu_card, send_feishu_message
 from app.core.feishu_utils import extract_feishu_text
 from app.services import feishu_service
+from app.services import job_action_service as jas
 from app.services.pipeline_card_builders import (
     SUB_CARD_MAX,
     JobCardItem,
     build_action_result_card,
     build_sub_card_ab,
+    build_sub_card_delivered,
     build_sub_card_mass,
     build_sub_card_rejected,
     extract_job_record_id,
@@ -34,8 +37,8 @@ logger = logging.getLogger("report_card_actions")
 
 # 战报卡片支持的全部 action 标识
 REPORT_CARD_ACTIONS = {
-    "open_ab_card", "open_mass_card", "open_rejected_card",
-    "open_sub_card_ab", "open_sub_card_mass", "open_sub_card_rejected",
+    "open_ab_card", "open_mass_card", "open_rejected_card", "open_delivered_card",
+    "open_sub_card_ab", "open_sub_card_mass", "open_sub_card_rejected", "open_sub_card_delivered",
     "approve_all_ab", "approve_selected_ab", "approve_all_mass",
     "approve_selected_mass", "recall_selected_rejected",
     "confirm_recall", "confirm_trash",
@@ -73,8 +76,8 @@ async def handle_report_card_action(
     try:
         # 1. 调出分流子卡片（动态拉取真实数据）
         if action in (
-            "open_ab_card", "open_mass_card", "open_rejected_card",
-            "open_sub_card_ab", "open_sub_card_mass", "open_sub_card_rejected",
+            "open_ab_card", "open_mass_card", "open_rejected_card", "open_delivered_card",
+            "open_sub_card_ab", "open_sub_card_mass", "open_sub_card_rejected", "open_sub_card_delivered",
         ):
             raw_target_ids = (action_value or {}).get("record_ids")
             if isinstance(raw_target_ids, list):
@@ -161,6 +164,8 @@ async def _handle_open_sub_card(
         "open_sub_card_mass": ("🏢 海投复核清单", "mass", build_sub_card_mass),
         "open_rejected_card": ("🗑️ 淘汰清单", "rejected", build_sub_card_rejected),
         "open_sub_card_rejected": ("🗑️ 淘汰清单", "rejected", build_sub_card_rejected),
+        "open_delivered_card": ("🚀 自动投递详情", "delivered", build_sub_card_delivered),
+        "open_sub_card_delivered": ("🚀 自动投递详情", "delivered", build_sub_card_delivered),
     }
     label, cat, builder = card_map.get(action, ("", "", None))
     if not builder:
@@ -349,6 +354,42 @@ def _fetch_real_jobs_for_sub_card(category: str, target_ids: list[str] | None = 
                         extra_info=f"淘汰原因: {reason}",
                     ))
 
+        elif category == "delivered":
+            # 自动投递详情：从飞书多维表格拉投递结果（跟进状态=已投递/投递失败），
+            # 按当次任务 record_ids 精确过滤；失败岗位带【自动投递失败日志】原因。
+            # 新卡按钮恒带 record_ids，无旧卡兼容语义——target_ids is None 只会来自
+            # 异常路径，强制空态（R1 审查 P1：回退全表扫描会把历史投递伪装成本轮动作）
+            if target_ids is None:
+                logger.info("[战报卡片交互] category=delivered 未传任务 record_ids（如本轮 0 投递的旧入口），按空态处理")
+                return []
+            all_delivery = feishu_service.get_delivery_result_jobs() or []
+            candidates = [
+                j for j in all_delivery
+                if str(j.get("record_id") or "").strip() in target_id_set
+            ]
+            if target_ids is not None and not candidates:
+                logger.warning(f"[战报卡片交互] category=delivered 指定了 {len(target_id_set)} 个目标 ID，但飞书表格未匹配到投递结果记录: {target_ids}")
+
+            for idx, job in enumerate(candidates[:SUB_CARD_MAX], 1):
+                record_id = str(job.get("record_id") or "").strip()
+                platform = str(job.get("platform") or "渠道")
+                company = str(job.get("company") or "目标企业")
+                job_title = str(job.get("job_title") or "岗位")
+                follow = str(job.get("follow_status") or "").strip()
+                is_ok = "已投递" in follow and "失败" not in follow
+                fail_log = str(job.get("fail_log") or "").strip()
+
+                status_txt = "✅ 投递成功" if is_ok else f"❌ 投递失败：{fail_log[:40] or '原因未记录'}"
+                items.append(JobCardItem(
+                    job_id=record_id,
+                    title=f"{idx}. [{platform}] {company} - {job_title}",
+                    grade=status_txt,
+                    short_name=f"{company[:8]} · {job_title[:8]}",
+                    color="green" if is_ok else "red",
+                    detail_url=f"{base_url}&record={record_id}" if base_url and record_id else "",
+                    extra_info=status_txt,
+                ))
+
     except Exception as e:
         logger.warning(f"[战报卡片交互] 真实岗位数据拉取异常: {e}")
 
@@ -368,23 +409,35 @@ async def _batch_approve_jobs(chat_id: str, record_ids: list[str], job_type_labe
     logger.info(f"[战报放行] 开始批量放行 {len(valid_ids)} 个{job_type_label} (is_all={is_all}) | IDs={valid_ids}")
 
     sem = _get_semaphore()
-    succeeded: list[str] = []
+    succeeded: list[tuple[str, str]] = []   # (rid, "公司 - 岗位")
     failed: list[tuple[str, str]] = []
 
     async def _update_single(rid: str):
         async with sem:
             try:
+                # 读本地岗位名（回执明细用；查不到不阻塞放行动作本身）
+                def _load_label():
+                    with sqlite3.connect(_get_raw_db_path()) as conn:
+                        row = conn.execute(
+                            "SELECT company_name, job_title FROM raw_jobs WHERE feishu_record_id = ?", (rid,)
+                        ).fetchone()
+                    return f"{(row[0] or '未知公司')[:20]} - {(row[1] or '未知岗位')[:28]}" if row else rid
+                job_label = await asyncio.to_thread(_load_label)
+
                 # 严格锚定现有飞书多维表格「跟进状态」字段为「待投递」
                 ok = await asyncio.to_thread(feishu_service.update_feishu_record, rid, {"跟进状态": "待投递"})
                 if not ok:
                     failed.append((rid, "飞书多维表格更新接口返回 False"))
+                    jas.record_action_audit("feishu_card", "approve", rid, job_label, "failed", "多维表格更新返回 False")
                     return
 
                 # 标记 SQLite 放行状态与内存防抖
                 await asyncio.to_thread(mark_job_approved, rid)
-                succeeded.append(rid)
+                succeeded.append((rid, job_label))
+                jas.record_action_audit("feishu_card", "approve", rid, job_label, "success")
             except Exception as ex:
                 failed.append((rid, str(ex)))
+                jas.record_action_audit("feishu_card", "approve", rid, "", "failed", str(ex)[:200])
 
     await asyncio.gather(*[_update_single(r) for r in valid_ids], return_exceptions=False)
 
@@ -395,6 +448,7 @@ async def _batch_approve_jobs(chat_id: str, record_ids: list[str], job_type_labe
     logger.info(f"[战报放行] 批量放行完成 | 总计={total} | 成功={succ_cnt} | 失败={fail_cnt}")
 
     flow_desc = "已成功推入电脑端 **「待投递」Tab**，将在设定的投递时间由自动投递波次发射！"
+    succ_details = _truncate_details([label for _, label in succeeded])
 
     # 严格遵循防假成功：只有当成功数 > 0 且失败为 0 时才判定全胜
     if succ_cnt > 0 and fail_cnt == 0:
@@ -406,6 +460,7 @@ async def _batch_approve_jobs(chat_id: str, record_ids: list[str], job_type_labe
             target_status="待投递",
             flow_desc=flow_desc,
             theme="turquoise",
+            succ_details=succ_details,
         )
     elif succ_cnt > 0 and fail_cnt > 0:
         fail_details = "\n".join([f"  - `{rid}`: {err}" for rid, err in failed[:5]])
@@ -418,6 +473,7 @@ async def _batch_approve_jobs(chat_id: str, record_ids: list[str], job_type_labe
             fail_cnt=fail_cnt,
             fail_details=fail_details,
             theme="orange",
+            succ_details=succ_details,
         )
     else:
         fail_details = "\n".join([f"  - `{rid}`: {err}" for rid, err in failed[:5]]) if failed else "无有效可更新项目"
@@ -435,10 +491,8 @@ async def _batch_approve_jobs(chat_id: str, record_ids: list[str], job_type_labe
     await send_feishu_card(chat_id, card, "chat_id")
 
 
-# 召回复评进行中台账：防同岗位并发双跑（推送建档/评估双烧 token、双写状态）。
-# check-and-add 原子段必须置于任何 await（含推送）之前；进程重启集合清空，
-# 重启窗口的投递段由 delivery_node 的 inflight 防重（workflow._DELIVERY_INFLIGHT_RECORD_IDS）兜底。
-_recall_evaluating: set[str] = set()
+# 召回复评进行中台账已下沉 job_action_service（ jas._recall_evaluating + register/is_job_recalling），
+# 桌面端守卫经公共查询 is_job_recalling 共用同一事实源，不再跨模块读私有集合（岗哨3 R3 P2）。
 
 # 复评后台任务强引用：防 task 被垃圾回收中断（asyncio 规范要求保存引用，同 delivery_router._DELIVERY_BG_TASKS 惯例）
 _recall_background_tasks: set[asyncio.Task] = set()
@@ -531,8 +585,20 @@ async def _trigger_recall_reevaluation(job: dict) -> None:
                     return
 
             from app.automation.graph_runner import run_single_job_pipeline_async
-            await run_single_job_pipeline_async(record_id, raw_rowid, stop_at_review=True)
-            logger.info(f"[召回复评] 岗位 {key} 复评完成，已按评级进入流转")
+            res = await run_single_job_pipeline_async(record_id, raw_rowid, stop_at_review=True)
+            # 🌟 复评完成后回写 raw 门牌（2026-10-09 双端撕裂事故：此前 graph 全程不写 raw_jobs，
+            # 召回岗位的 raw 永久停留在淘汰旧值，双端状态撕裂）。岗位一旦建档进飞书，流转真源
+            # =飞书跟进状态，raw 侧统一记「已同步」表示数据源使命完成；评估失败则保持召回态交人工。
+            outcome = (res or {}).get("outcome") if isinstance(res, dict) else ""
+            if outcome and outcome != "failed":
+                def _mark_synced():
+                    with sqlite3.connect(_get_raw_db_path()) as conn:
+                        conn.execute(
+                            "UPDATE raw_jobs SET process_status = ? WHERE rowid = ?",
+                            (process_status.SYNCED, _rowid_int()),
+                        )
+                await asyncio.to_thread(_mark_synced)
+            logger.info(f"[召回复评] 岗位 {key} 复评完成（outcome={outcome or '未知'}），已按评级进入流转")
     except Exception as ex:
         logger.warning(f"[召回复评] 岗位 {key} 复评异常: {ex}")
         if not record_id:
@@ -548,7 +614,7 @@ async def _trigger_recall_reevaluation(job: dict) -> None:
             except Exception as msg_ex:
                 logger.warning(f"[召回复评] 失败提醒发送失败: {msg_ex}")
     finally:
-        _recall_evaluating.discard(key)
+        jas.register_recall_end(key)
 
 
 async def _batch_recall_rejected_jobs(chat_id: str, job_ids: list[str]) -> None:
@@ -566,7 +632,7 @@ async def _batch_recall_rejected_jobs(chat_id: str, job_ids: list[str]) -> None:
     logger.info(f"[战报召回] 开始批量召回放行 {len(valid_ids)} 个岗位进入自动复评 | IDs={valid_ids}")
 
     sem = _get_semaphore()
-    succeeded: list[str] = []
+    succeeded: list[tuple[str, str]] = []   # (rid, "公司 - 岗位")
     failed: list[tuple[str, str]] = []
     reevaluation_jobs: list[dict] = []
 
@@ -600,11 +666,10 @@ async def _batch_recall_rejected_jobs(chat_id: str, job_ids: list[str]) -> None:
                         ).fetchone()
                     key = _raw_rowid_str(row[0]) if row else raw_jid
                 else:
-                    key = _raw_rowid_str(int(raw_jid))
-                if key in _recall_evaluating:
+                    key = _raw_rowid_str(int(str(raw_jid).replace("raw_", "")))
+                if not jas.register_recall_start(key):
                     failed.append((raw_jid, "该岗位正在复评中，请稍候"))
                     return
-                _recall_evaluating.add(key)
                 added = True
 
                 if raw_jid.startswith("rec"):
@@ -620,33 +685,35 @@ async def _batch_recall_rejected_jobs(chat_id: str, job_ids: list[str]) -> None:
 
                     def _find_rowid_and_mark():
                         with sqlite3.connect(db_path) as conn:
+                            conn.row_factory = sqlite3.Row
                             row = conn.execute(
-                                "SELECT rowid FROM raw_jobs WHERE feishu_record_id = ?", (raw_jid,)
+                                "SELECT rowid, company_name, job_title FROM raw_jobs WHERE feishu_record_id = ?", (raw_jid,)
                             ).fetchone()
                             if not row:
-                                return None
+                                return None, ""
                             conn.execute(
-                                "UPDATE raw_jobs SET process_status = ? WHERE rowid = ?", (_RECALL_MARK_STATUS, row[0])
+                                "UPDATE raw_jobs SET process_status = ? WHERE rowid = ?", (_RECALL_MARK_STATUS, row["rowid"])
                             )
-                            return _raw_rowid_str(row[0])
-                    raw_rowid = await asyncio.to_thread(_find_rowid_and_mark)
+                            return _raw_rowid_str(row["rowid"]), jas.format_job_label(row["company_name"], row["job_title"])
+                    found = await asyncio.to_thread(_find_rowid_and_mark)
+                    raw_rowid, job_label = found
                     if not raw_rowid:
                         # 本地无对应行：飞书状态已重置但无 raw 数据可复评，按失败口径提示人工
                         failed.append((raw_jid, "飞书状态已重置，但本地无对应记录，未能自动复评（需人工处理）"))
                         return
-                    succeeded.append(raw_jid)
+                    succeeded.append((raw_jid, job_label))
                     reevaluation_jobs.append({"raw_rowid": raw_rowid, "record_id": raw_jid, "key": key, "chat_id": chat_id, "sem": eval_sem})
                     ownership_handed_off = True
                 else:
                     # 2. 本地 SQLite 纯数字 rowid 记录
-                    rowid = int(raw_jid)
+                    rowid = int(str(raw_jid).replace("raw_", ""))
                     record_id = None
                     prev_status = ""
                     def _load():
                         with sqlite3.connect(db_path) as conn:
                             conn.row_factory = sqlite3.Row
                             return conn.execute(
-                                "SELECT feishu_record_id, job_link, process_status FROM raw_jobs WHERE rowid = ?", (rowid,)
+                                "SELECT feishu_record_id, job_link, process_status, company_name, job_title FROM raw_jobs WHERE rowid = ?", (rowid,)
                             ).fetchone()
                     r = await asyncio.to_thread(_load)
                     if r is None:
@@ -654,6 +721,7 @@ async def _batch_recall_rejected_jobs(chat_id: str, job_ids: list[str]) -> None:
                         return
                     record_id = (r["feishu_record_id"] or "").strip()
                     prev_status = r["process_status"] or ""
+                    job_label = jas.format_job_label(r["company_name"], r["job_title"])
                     if record_id:
                         # 推送后人工确认淘汰的岗位：飞书记录在，守卫同 rec 路径（白名单 fail-closed）
                         guard_err = await _feishu_recall_guard(record_id)
@@ -670,7 +738,7 @@ async def _batch_recall_rejected_jobs(chat_id: str, job_ids: list[str]) -> None:
                                     "UPDATE raw_jobs SET process_status = ? WHERE rowid = ?", (_RECALL_MARK_STATUS, rowid)
                                 )
                         await asyncio.to_thread(_mark)
-                        succeeded.append(raw_jid)
+                        succeeded.append((raw_jid, job_label))
                         reevaluation_jobs.append({"raw_rowid": _raw_rowid_str(rowid), "record_id": record_id, "key": key, "chat_id": chat_id, "sem": eval_sem})
                         ownership_handed_off = True
                     else:
@@ -684,7 +752,7 @@ async def _batch_recall_rejected_jobs(chat_id: str, job_ids: list[str]) -> None:
                                     "UPDATE raw_jobs SET process_status = '待推送至飞书' WHERE rowid = ?", (rowid,)
                                 )
                         await asyncio.to_thread(_mark_push)
-                        succeeded.append(raw_jid)
+                        succeeded.append((raw_jid, job_label))
                         reevaluation_jobs.append({
                             "raw_rowid": _raw_rowid_str(rowid), "record_id": None, "key": key,
                             "chat_id": chat_id, "prev_status": prev_status, "job_link": r["job_link"], "sem": eval_sem,
@@ -695,7 +763,7 @@ async def _batch_recall_rejected_jobs(chat_id: str, job_ids: list[str]) -> None:
             finally:
                 # "正在复评中"分支（未 add）不动他人租约；非移交路径释放自己；移交路径由复评协程 finally 释放
                 if added and not ownership_handed_off:
-                    _recall_evaluating.discard(key)
+                    jas.register_recall_end(key)
 
     await asyncio.gather(*[_recall_single(j) for j in valid_ids], return_exceptions=False)
 
@@ -705,25 +773,34 @@ async def _batch_recall_rejected_jobs(chat_id: str, job_ids: list[str]) -> None:
         _recall_background_tasks.add(task)
         task.add_done_callback(_recall_background_tasks.discard)
 
+    for _rid, _label in succeeded:
+        jas.record_action_audit("feishu_card", "recall", _rid, _label, "success")
+    for _rid, _err in failed:
+        jas.record_action_audit("feishu_card", "recall", _rid, "", "failed", _err[:200])
+
     succ_cnt, fail_cnt = len(succeeded), len(failed)
     flow_desc = (
-        "已跳过 AI 初筛，正在自动重新评估：推送飞书 → AI 初步评估 → 按评级进入精投/海投流转"
+        "已跳过 AI 初筛，后台自动重新评估中：推送飞书 → AI 初步评估 → 按评级进入精投/海投流转"
         "（停在待审批或待投递，投递由每日发射波次统一执行）。"
+        "⚠️ 复评完成前请勿在下方淘汰清单中勾选这些岗位「确认淘汰」，否则会打断复评造成双端状态撕裂。"
     )
+    succ_details = _truncate_details([label for _, label in succeeded])
 
     if succ_cnt > 0 and fail_cnt == 0:
         card = build_action_result_card(
-            title=f"♻️ 选中的 {succ_cnt} 个误杀岗位召回成功！",
+            title=f"♻️ 已受理 {succ_cnt} 个岗位的召回，后台自动复评中…",
             succ_cnt=succ_cnt, target_queue="AI 初步评估（已跳过初筛）", target_status="召回待初评",
             flow_desc=flow_desc, theme="turquoise",
+            succ_details=succ_details,
         )
     elif succ_cnt > 0 and fail_cnt > 0:
         fail_details = "\n".join([f"  - `{jid}`: {err}" for jid, err in failed[:5]])
         card = build_action_result_card(
-            title=f"⚠️ 误杀召回部分完成 (成功 {succ_cnt} / 失败 {fail_cnt})",
+            title=f"⚠️ 误杀召回部分受理 (成功 {succ_cnt} / 失败 {fail_cnt})",
             succ_cnt=succ_cnt, target_queue="AI 初步评估（已跳过初筛）", target_status="召回待初评",
             flow_desc=flow_desc + " 失败条目请见明细。",
             fail_cnt=fail_cnt, fail_details=fail_details, theme="orange",
+            succ_details=succ_details,
         )
     else:
         fail_details = "\n".join([f"  - `{jid}`: {err}" for jid, err in failed[:5]]) if failed else "无有效待召回项目"
@@ -736,63 +813,139 @@ async def _batch_recall_rejected_jobs(chat_id: str, job_ids: list[str]) -> None:
     await send_feishu_card(chat_id, card, "chat_id")
 
 
+def _truncate_details(labels: list[str], max_show: int = 5) -> str:
+    """回执明细列表：前 max_show 条 + 超出概括（防大批量操作撑爆飞书卡片消息体）。"""
+    if not labels:
+        return ""
+    lines = [f"  - {label}" for label in labels[:max_show]]
+    if len(labels) > max_show:
+        lines.append(f"  - …等共 {len(labels)} 条")
+    return "\n".join(lines)
+
+
 async def _batch_reject_jobs(chat_id: str, record_ids: list[str]) -> None:
-    """确认淘汰处理（实现飞书多维表格与本地 SQLite 双端一致性，带真实失败告警与防假成功）。"""
+    """确认淘汰处理（实现飞书多维表格与本地 SQLite 双端一致性，带真实失败告警与防假成功）。
+
+    2026-10-09 双端撕裂事故修复：
+    - 逐条守卫——召回中（_recall_evaluating）或已离开淘汰态（召回待初评/待推送/已同步等）的岗位
+      一律跳过归档并在回执说明，不再与召回动作赛跑无条件覆盖；
+    - 归档词统一为 process_status.REJECT_CONFIRMED（「已确认淘汰」）——旧实现写「已淘汰」全库无读取方；
+    - 回执带岗位明细（公司-岗位），让用户知道动作落在谁身上。
+    """
     valid_ids = [r for r in (record_ids or []) if r and str(r).strip()]
     sem = _get_semaphore()
     db_path = _get_raw_db_path()
 
-    succeeded: list[str] = []
+    succeeded: list[tuple[str, str]] = []   # (rid, "公司 - 岗位")
     failed: list[tuple[str, str]] = []
+    skipped: list[tuple[str, str]] = []
 
     if valid_ids:
         async def _reject_single(rid: str):
             async with sem:
                 try:
-                    if str(rid).startswith("rec"):
-                        ok = await asyncio.to_thread(feishu_service.update_feishu_record, rid, {"跟进状态": "不合适"})
+                    raw_jid = str(rid).strip()
+                    # 单次查询取全(rowid/当前状态/岗位名),守卫与明细共用,不再双开连接
+                    def _load_current():
+                        with sqlite3.connect(db_path) as conn:
+                            conn.row_factory = sqlite3.Row
+                            if raw_jid.startswith("rec"):
+                                return conn.execute(
+                                    "SELECT rowid, process_status, company_name, job_title FROM raw_jobs WHERE feishu_record_id = ?",
+                                    (raw_jid,),
+                                ).fetchone()
+                            return conn.execute(
+                                "SELECT rowid, process_status, company_name, job_title FROM raw_jobs WHERE rowid = ?",
+                                (int(str(raw_jid).replace("raw_", "")),),  # 防御:兼容未来上游带 raw_ 前缀
+                            ).fetchone()
+                    cur = await asyncio.to_thread(_load_current)
+                    # job_label 必须先于守卫 0 初始化——守卫 0 的审计调用会引用它(岗哨1 R2 P0:
+                    # 曾因后置定义触发 UnboundLocalError,复评中跳过被误记为更新异常)
+                    job_label = jas.format_job_label(cur["company_name"], cur["job_title"]) if cur else ""
+
+                    # 守卫 0：归一防重入键（有本地行用 raw_<rowid>,与召回动作共享同一槽;无行用原样 ID）,
+                    # 召回复评中的岗位绝不归档（与召回动作互斥）
+                    key = _raw_rowid_str(cur["rowid"]) if cur else raw_jid
+                    if jas.is_key_recalling(key):
+                        skipped.append((rid, "正在召回复评中，已跳过归档（如需淘汰请等复评完成后重新确认）"))
+                        jas.record_action_audit("feishu_card", "reject", rid, job_label, "skipped", "正在召回复评中")
+                        return
+
+                    # 守卫 1：读 raw 当前状态，非淘汰态（含 NULL/空串=刚入库待清洗、已流转态）一律跳过——
+                    # 「召回待初评」例外放行：复评进行中已被守卫 0（_recall_evaluating 集合）拦截；
+                    # 走到这里说明复评已结束但状态残留（复评失败/进程重启）——用户点「确认淘汰」
+                    # 是明确的处置意图，放行归档，否则失败残留岗位会被所有出口封死（岗哨1 R1 P1-2）。
+                    if cur:
+                        cur_status = (cur["process_status"] or "").strip()
+                        if not process_status.is_rejected(cur_status) and cur_status != process_status.RECALL_PENDING_EVAL:
+                            _why = f"当前状态「{cur_status or '（空，待清洗）'}」不在淘汰队列"
+                            skipped.append((rid, f"{job_label}：{_why}，已跳过归档"))
+                            jas.record_action_audit("feishu_card", "reject", rid, job_label, "skipped", _why)
+                            return
+
+                    if raw_jid.startswith("rec"):
+                        ok = await asyncio.to_thread(feishu_service.update_feishu_record, raw_jid, {"跟进状态": "不合适"})
                         if not ok:
                             failed.append((rid, "多维表格更新返回 False"))
+                            jas.record_action_audit("feishu_card", "reject", rid, job_label, "failed", "多维表格更新返回 False")
                             return
                         def _sync_db():
                             with sqlite3.connect(db_path) as conn:
-                                conn.execute("UPDATE raw_jobs SET process_status = '已淘汰' WHERE feishu_record_id = ?", (rid,))
+                                conn.execute(
+                                    "UPDATE raw_jobs SET process_status = ? WHERE feishu_record_id = ?",
+                                    (process_status.REJECT_CONFIRMED, raw_jid),
+                                )
                         await asyncio.to_thread(_sync_db)
                     else:
                         def _sync_db_row():
                             with sqlite3.connect(db_path) as conn:
-                                conn.execute("UPDATE raw_jobs SET process_status = '已淘汰' WHERE rowid = ?", (int(rid),))
+                                conn.execute(
+                                    "UPDATE raw_jobs SET process_status = ? WHERE rowid = ?",
+                                    (process_status.REJECT_CONFIRMED, int(str(raw_jid).replace("raw_", ""))),
+                                )
                         await asyncio.to_thread(_sync_db_row)
-                    succeeded.append(rid)
+                    succeeded.append((rid, job_label or raw_jid))
+                    jas.record_action_audit("feishu_card", "reject", rid, job_label or raw_jid, "success")
                 except Exception as ex:
                     logger.warning(f"[战报淘汰] 记录 {rid} 归档更新异常: {ex}")
                     failed.append((rid, str(ex)))
+                    # job_label 在守卫前已初始化,异常审计也带岗位标识
+                    jas.record_action_audit("feishu_card", "reject", rid, job_label, "failed", str(ex)[:200])
 
         await asyncio.gather(*[_reject_single(r) for r in valid_ids], return_exceptions=False)
 
     succ_cnt = len(succeeded)
     fail_cnt = len(failed)
+    skip_cnt = len(skipped)
+    succ_details = _truncate_details([label for _, label in succeeded])
+    skip_details = _truncate_details([f"`{rid}`: {reason}" for rid, reason in skipped])
 
     if fail_cnt == 0:
         card = build_action_result_card(
             title=f"🗑️ {succ_cnt} 个淘汰岗位已确认归档" if succ_cnt > 0 else "🗑️ 淘汰确认归档已锁定",
             succ_cnt=succ_cnt,
-            target_queue="已淘汰",
+            target_queue=process_status.REJECT_CONFIRMED,
             target_status="不合适",
             flow_desc="本轮清洗排雷岗位已完成归档锁定，未触发召回，数据已双端一致落盘锁定。" if succ_cnt > 0 else "本轮无待归档记录，系统已完成状态锁定。",
             theme="wathet",
+            succ_details=succ_details,
+            skip_cnt=skip_cnt,
+            skip_details=skip_details,
         )
     else:
         fail_details = "\n".join([f"  - `{rid}`: {err}" for rid, err in failed[:5]])
         card = build_action_result_card(
             title=f"⚠️ 淘汰归档部分异常 (成功 {succ_cnt} / 失败 {fail_cnt})",
             succ_cnt=succ_cnt,
-            target_queue="已淘汰",
+            target_queue=process_status.REJECT_CONFIRMED,
             target_status="不合适",
             flow_desc="部分岗位在多维表格同步归档状态时遇到异常，请在飞书多维表格中核对。",
             fail_cnt=fail_cnt,
             fail_details=fail_details,
             theme="orange",
+            succ_details=succ_details,
+            skip_cnt=skip_cnt,
+            skip_details=skip_details,
         )
 
     await send_feishu_card(chat_id, card, "chat_id")

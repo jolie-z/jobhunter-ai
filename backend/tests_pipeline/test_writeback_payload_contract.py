@@ -78,10 +78,10 @@ def _run_route(client, fake_stdout: str, returncode: int):
         r.stderr = "Traceback (most recent call last):\nRuntimeError: mock boom\n" if returncode else ""
         return r
 
+    # 2026-10-11 接缝迁移：路由子进程调用统一走 subprocess_utils.run_hidden（Windows 防闪窗），
+    # 打桩点从 ur.subprocess 迁到 ur.run_hidden（契约本身不变：仍拦「回写脚本执行」这一步）
     with patch.object(ur, "precheck_writeback_login", lambda p: (True, "mock 登录正常")), \
-         patch.object(ur, "subprocess") as m_sub:
-        m_sub.run = fake_run
-        m_sub.TimeoutExpired = Exception
+         patch.object(ur, "run_hidden", side_effect=fake_run):
         resp = client.post("/api/unified/sync-back", json={"platforms": ["boss"]}).json()
     return resp, captured
 

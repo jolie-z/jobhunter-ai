@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from "react"
 import { Textarea } from "@/components/ui/textarea"
 import { API_BASE } from "@/lib/api"
+import { fetchGlobalJdReport } from "@/hooks/use-skill-rewrite"
 import { Button } from "@/components/ui/button"
 import { Bot, Send, Sparkles, CheckCircle2, XCircle, Mic, MicOff, Radio } from "lucide-react"
 import { useDualChannelVoice } from "@/hooks/use-dual-channel-voice"
@@ -67,15 +68,12 @@ export function ExperienceGriller({ originalExperience, onAccept, onCancel, cust
         setJdReportContext(customJdContext)
         handleGrillRequest([], false, customJdContext)
       } else {
-        fetch(`${API_BASE}/api/strategy/get_jd_report`)
-          .then(res => res.json())
-          .then(data => {
-             if (data.status === "success" && data.data) {
-               setJdReportContext(data.data)
-               handleGrillRequest([], false, data.data)
-             } else {
-               handleGrillRequest([], false, "")
-             }
+        // 双轨契约：拷问只把画像当追问方向参考，注入速览版（fetchGlobalJdReport 已封装
+        // meta.llm_brief 优先、旧报告回退完整版）；无画像/拉取失败时沿用无上下文继续拷问
+        fetchGlobalJdReport()
+          .then(ctx => {
+            setJdReportContext(ctx)
+            handleGrillRequest([], false, ctx)
           })
           .catch(() => handleGrillRequest([], false, ""))
       }

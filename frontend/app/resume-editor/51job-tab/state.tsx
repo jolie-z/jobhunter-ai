@@ -24,6 +24,7 @@ import { Job51Catalogue } from "@/components/ui/51job-catalogue"
 import { DynamicFieldSlot } from "@/components/ui/dynamic-field-slot"
 import { ReportWarnings, ReportUnfilled, ChangedBadge, ModuleReportNotice, type PlatformReport } from "../agent-report-shared"
 import { savePlatformData } from "../api-client"
+import { buildIncrementalSavePayload } from "../incremental-save"
 
 import type { Job51TabProps } from "./constants"
 import { JOB51_MODULE_DEFAULT_SELECTED, type WritebackFeedbackState, type DeleteConfirmTarget, ResumeData } from "./constants"
@@ -175,7 +176,8 @@ function _computeChangedModuleKeys(report?: any): Set<string> {
   const persistData = async (updatedData: ResumeData): Promise<boolean> => {
     setSaving(true)
     try {
-      const { ok, message } = await savePlatformData(API_BASE, "51job", updatedData)
+      // 增量保存：只发与改前基线 localData 深比较有差异的模块，未发模块由后端合并保留
+      const { ok, message } = await savePlatformData(API_BASE, "51job", buildIncrementalSavePayload(updatedData, localData))
       if (ok) {
         setLocalData(updatedData)
         showToast("保存成功")

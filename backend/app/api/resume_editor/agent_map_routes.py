@@ -2,6 +2,7 @@
 多平台在线简历编辑器 - Agent 智能映射与真机回写 API 路由 (/api/agent-map/*)
 """
 
+import asyncio
 import json
 import os
 import subprocess
@@ -13,6 +14,10 @@ from fastapi.responses import JSONResponse
 
 from resume_editor import agent_mapper as am
 
+# Windows 防闪窗：子进程统一走防闪窗包装（backend 根模块，参照 engine_guard）
+from subprocess_utils import run_hidden
+
+from . import agent_map_tasks as amt
 from .common import (
     DATA_DIR,
     PLATFORMS,
@@ -57,11 +62,46 @@ def agent_map_master(record_id: str = None, use_active: bool = False):
     })
 
 
+def _generate_sync(platforms, master, selected_modules, record_id):
+    """同步映射全流程（既有行为原样保留：mode=sync 显式请求或异步开关回滚态走此路径）。"""
+    print(f"▶ [Agent映射] 开始执行映射(sync): platforms={platforms}, modules={selected_modules or '全部模块'}, record_id={record_id}")
+
+    reports = {}
+    for platform in platforms:
+        fields_data, err_msg = amt.load_fields_data(platform)
+        if fields_data is None:
+            reports[platform] = amt.missing_fields_report(platform, err_msg)
+            continue
+        report = am.map_platform(platform, fields_data, master, selected_modules=selected_modules)
+        if report.get("success"):
+            am.save_report(platform, report, selected_modules=selected_modules)
+        reports[platform] = report
+
+    am.set_selected_master_record(record_id)
+
+    # 顶层 success 反映真实聚合结果：任一平台映射失败（如回滚态下 BOSS 无 LLM 且关闭规则兜底时）
+    # 不再被硬编码的 True 掩盖，前端据此区分成功/部分失败提示
+    ok_all = all(isinstance(reports.get(p), dict) and reports[p].get("success") for p in platforms)
+    return {
+        "success": ok_all,
+        "master": {
+            "source": master["source"],
+            "char_count": master["char_count"],
+            "record_id": master.get("record_id"),
+            "name": master.get("name"),
+            "message": master["message"],
+        },
+        "reports": reports,
+    }
+
+
 @router.post("/generate")
-def agent_map_generate(request: dict):
+async def agent_map_generate(request: dict):
     """
     生成执行报告：主简历 → 各平台字段映射
-    Body: { "platforms": ["boss", "zhilian"], "record_id": "recXXX", "selected_modules": ["work_experience", "projects"] }
+    Body: { "platforms": ["boss", "zhilian"], "record_id": "recXXX", "selected_modules": ["work_experience", "projects"], "mode": "async"|"sync" }
+    默认走异步（AGENT_MAP_ASYNC_ENABLED，settings.json 可热控回滚）：秒回 task_id，
+    进度经 GET /generate/stream/{task_id} 推送，取消经 POST /generate/cancel。
     """
     platforms = [p for p in request.get("platforms", []) if p in PLATFORMS]
     if not platforms:
@@ -74,48 +114,43 @@ def agent_map_generate(request: dict):
         selected_modules = None
 
     record_id = request["record_id"] if "record_id" in request else am.get_selected_master_record()
-    master = am.load_master_resume(record_id=record_id)
+    # 主简历加载可能命中飞书网络往返，放线程池避免阻塞事件循环
+    master = await asyncio.to_thread(am.load_master_resume, record_id=record_id)
     if not master["ok"]:
         return JSONResponse(content={"success": False, "message": master["message"]})
 
-    print(f"▶ [Agent映射] 开始执行映射: platforms={platforms}, modules={selected_modules or '全部模块'}, record_id={record_id}")
+    # 熔断开关具有否决权（规范 §四：settings.json 置 false 必须 100% 立即生效，任何调用方不得绕过）：
+    # 开关关闭 → 一律同步；开关开启 → 默认异步，显式 mode=sync 仍可走同步（保留一个版本周期）
+    use_async = amt.is_agent_map_async_enabled() and request.get("mode") != "sync"
+    if use_async:
+        task_id = await amt.start_mapping_task(
+            platforms=platforms, master=master, selected_modules=selected_modules, record_id=record_id
+        )
+        return JSONResponse(content={
+            "success": True,
+            "mode": "async",
+            "task_id": task_id,
+            "platforms": platforms,
+            "message": "映射任务已启动，请订阅 /generate/stream/{task_id} 获取进度",
+        })
 
-    reports = {}
-    for platform in platforms:
-        file_path = os.path.join(DATA_DIR, f"{platform}_fields.json")
-        if not os.path.exists(file_path):
-            reports[platform] = {
-                "success": False,
-                "platform": platform,
-                "fields": [],
-                "unfilled": [],
-                "warnings": [],
-                "message": f"{platform} 字段数据不存在，请先采集",
-            }
-            continue
-        with open(file_path, encoding="utf-8") as f:
-            fields_data = json.load(f)
-        report = am.map_platform(platform, fields_data, master, selected_modules=selected_modules)
-        if report.get("success"):
-            am.save_report(platform, report, selected_modules=selected_modules)
-        reports[platform] = report
+    result = await asyncio.to_thread(_generate_sync, platforms, master, selected_modules, record_id)
+    return JSONResponse(content=result)
 
-    am.set_selected_master_record(record_id)
 
-    # 顶层 success 反映真实聚合结果：任一平台映射失败（如 BOSS 无 LLM 时）
-    # 不再被硬编码的 True 掩盖，前端据此区分成功/部分失败提示
-    ok_all = all(isinstance(reports.get(p), dict) and reports[p].get("success") for p in platforms)
-    return JSONResponse(content={
-        "success": ok_all,
-        "master": {
-            "source": master["source"],
-            "char_count": master["char_count"],
-            "record_id": master.get("record_id"),
-            "name": master.get("name"),
-            "message": master["message"],
-        },
-        "reports": reports,
-    })
+@router.get("/generate/stream/{task_id}")
+async def agent_map_generate_stream(task_id: str):
+    """映射任务 SSE 进度流：platform_start / platform_done / retry_wait / complete，断线可回放。"""
+    if amt.get_mapping_task(task_id) is None:
+        return JSONResponse(content={"success": False, "message": "任务不存在或已过期"}, status_code=404)
+    return amt.mapping_stream_response(task_id)
+
+
+@router.post("/generate/cancel")
+async def agent_map_generate_cancel(request: dict):
+    """协作取消映射任务：只立旗，当前请求收尾或平台边界生效。Body: { "task_id": "..." }"""
+    ok, msg = amt.cancel_mapping_task(str(request.get("task_id") or ""))
+    return JSONResponse(content={"success": ok, "message": msg}, status_code=200 if ok else 404)
 
 
 @router.get("/reports")
@@ -325,7 +360,7 @@ def agent_map_write_back(request: dict):
         if paths:
             cmd += ["--paths", ",".join(paths)]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
+            result = run_hidden(cmd, capture_output=True, text=True, timeout=300, env=env)
         except subprocess.TimeoutExpired:
             return JSONResponse(content={"success": False, "message": "回写超时(300s)"}, status_code=504)
         except Exception as e:

@@ -7,6 +7,9 @@ from typing import Any
 
 from app.automation.db import get_autopilot_config
 
+# Windows 防闪窗：子进程统一走防闪窗包装（backend 根模块，参照 engine_guard）
+from subprocess_utils import create_subprocess_exec_hidden
+
 logger = logging.getLogger(__name__)
 
 
@@ -220,7 +223,7 @@ async def run_scraper_with_rate_limit(platform: str, config: dict):
 
             cmd_args = [script_path, "--page", str(page)] + extra_args
 
-            process = await asyncio.create_subprocess_exec(
+            process = await create_subprocess_exec_hidden(
                 sys.executable, "-X", "utf8", *cmd_args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE

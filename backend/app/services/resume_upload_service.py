@@ -91,8 +91,12 @@ async def _run_structuring(task_id: str, raw_markdown: str) -> tuple[dict, dict,
 
     首次上传与失败重试共用的中段流水线，返回 (personal_info, structured, cleaned_md)。
     """
+    import time as _time
+
     from app.core.resume_parser import extract_and_truncate_personal_info
     from app.core.resume_structurer import json_to_markdown, parse_resume_to_json
+
+    _t_structure = _time.perf_counter()
 
     # Step 1: 脱敏（纯正则，毫秒级）
     await _update_stage(task_id, "desensitizing")
@@ -102,6 +106,7 @@ async def _run_structuring(task_id: str, raw_markdown: str) -> tuple[dict, dict,
     # Step 2: AI 结构化（唯一一次大模型调用；progress_cb 在 worker 线程回调，
     # 这里用并行 poll 协程把线程安全计数器每 0.8s 刷进 Redis，供 SSE 透出真进度）
     await _update_stage(task_id, "structuring")
+    logger.info(f"[任务 {task_id}] 结构化开始（脱敏后文本 {len(safe_text)} 字）——解析耗时的主导步骤就是这一次 LLM 调用")
     progress = {"chars": 0}
 
     def on_delta(chars: int) -> None:
@@ -122,6 +127,7 @@ async def _run_structuring(task_id: str, raw_markdown: str) -> tuple[dict, dict,
         structured = await llm_task
     finally:
         poll_task.cancel()
+    logger.info(f"[任务 {task_id}] 结构化完成，LLM 调用耗时 {_time.perf_counter() - _t_structure:.1f}s")
 
     # Step 3: 本地渲染 0ms
     await _update_stage(task_id, "finalizing")

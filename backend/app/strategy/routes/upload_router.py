@@ -105,7 +105,11 @@ async def upload_resume_vision(file: Annotated[UploadFile, File(...)]):
 
     task_id = await create_task(filename)
 
-    upload_dir = Path(__file__).resolve().parent.parent.parent.parent / "data" / "uploads"
+    from app.core.db_paths import writable_path
+
+    upload_dir = writable_path(
+        Path(__file__).resolve().parent.parent.parent.parent / "data" / "uploads", "uploads"
+    )
     upload_dir.mkdir(parents=True, exist_ok=True)
     file_path = upload_dir / f"{task_id}_{filename}"
 

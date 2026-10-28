@@ -1,10 +1,12 @@
 import json
 import logging
-import os
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+# M2 收口：JOBHUNTER_DATA_DIR 注入时落用户数据目录
+from app.core.db_paths import writable_path
 
 logger = logging.getLogger(__name__)
 
@@ -12,8 +14,9 @@ logger = logging.getLogger(__name__)
 # AUTOPILOT_DB_PATH 显式覆盖：MCP 侧车进程 PYTHONPATH 指向本仓时，模块锚定会落到
 # worktree 的 0 字节空库（0930 体检工具实测 OperationalError）——侧车启动必须带
 # AUTOPILOT_DB_PATH 指向生产 backend/autopilot.db（与 ANALYTICS_DB_PATH 同款铁律）。
+# M2 收口：JOBHUNTER_DATA_DIR 注入时落 <DATA_DIR>/autopilot.db（优先级低于 AUTOPILOT_DB_PATH）
 BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent
-DB_PATH = Path(os.environ.get("AUTOPILOT_DB_PATH") or (BACKEND_ROOT / "autopilot.db"))
+DB_PATH = writable_path(BACKEND_ROOT / "autopilot.db", "autopilot.db", env_var="AUTOPILOT_DB_PATH")
 
 _DEFAULT_GREETING_PLATFORMS = {"boss": True, "liepin": True, "zhilian": True, "51job": False}
 
@@ -567,6 +570,30 @@ def complete_autopilot_log(task_id: str, status: str, jobs_processed: int = 0, d
             conn.commit()
     except Exception as e:
         logger.error(f"完成 autopilot 日志记录失败: {e}", exc_info=True)
+
+def reconcile_stale_running_logs() -> int:
+    """进程启动清账：automation_logs 的 status='running' 只可能由本进程在链路启动时写入，
+    本函数在启动早期调用，此刻仍 running 的必为上次进程被杀/重启的僵尸残留——
+    批量补终态并盖 finished_at，杜绝「永久运行中」记录（2026-10-23 终止失效工单第 3 层）。
+    幂等：已完结（finished_at 非空）的行不动；异常吞掉返回 0，绝不阻断启动。
+    单实例前提：多 worker/多实例共库部署时，后启动实例会误清先启动实例的 running 行
+    （桌面应用单进程单实例，不涉及）。
+    """
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE automation_logs SET status = 'interrupted_on_restart', "
+                "finished_at = ?, "
+                "details = COALESCE(details, '') || ' [进程重启自动结账]' "
+                "WHERE status = 'running' AND finished_at IS NULL",
+                (datetime.now().isoformat(),),
+            )
+            conn.commit()
+            return cur.rowcount
+    except Exception as e:
+        logger.error(f"[automation_logs] 重启清账失败（不影响启动）: {e}", exc_info=True)
+        return 0
 
 def get_recent_autopilot_logs(limit: int = 50) -> list[dict[str, Any]]:
     with sqlite3.connect(DB_PATH) as conn:

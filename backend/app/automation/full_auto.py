@@ -41,10 +41,13 @@ from app.automation.scrape_runner import (
 )
 
 # 原始岗位数据库路径（供全局各模块与测试补丁统一访问）
-RAW_DB_PATH = os.path.join(
+# 经 db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
+from app.core.db_paths import job_hunter_db_path
+
+RAW_DB_PATH = job_hunter_db_path(os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "data", "job_hunter.db"
-)
+))
 
 # 平台 key → 中文展示名（与 raw_jobs.platform / 飞书「招聘平台」取值一致）
 PLATFORM_CN = {

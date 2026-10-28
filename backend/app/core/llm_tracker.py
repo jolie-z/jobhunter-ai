@@ -76,22 +76,23 @@ def _safe_log(
     threading.Thread(target=_write, daemon=True).start()
 
 
-def _guess_action_name(skip_frames: int = 3) -> str:
+def _guess_action_name(skip_frames: int = 2) -> str:
     """
     通过调用栈反推一个可读的 action_name。
-    跳过本模块内部的几层包装，定位到真正业务调用方的函数名。
+    跳过追踪/治理调度层与测试运行器自身的包装帧，精确定位到业务调用方。
     """
     try:
         stack = inspect.stack()
-        # 0=_guess_action_name, 1=_safe_log 调用方, 2=包装层, 3=业务调用方
         for frame_info in stack[skip_frames:]:
             mod = inspect.getmodule(frame_info.frame)
             mod_name = mod.__name__ if mod else "?"
-            # 跳过本模块自身
-            if "llm_tracker" in mod_name:
+            # 跳过测试框架自身运行帧（仅在 pytest/unittest 测试环境下生效，避免测试 runner 干扰真实业务栈归因）
+            if any(r in mod_name for r in ("_pytest", "pluggy", "unittest")):
+                continue
+            # 跳过追踪与治理层自身帧（按模块分段精确匹配，避免误伤 test_llm_tracker 等测试文件）
+            if set(mod_name.split(".")) & {"llm_tracker", "llm_governed", "llm_retry"}:
                 continue
             func = frame_info.function or "unknown"
-            # 用模块短名 + 函数名，方便在大盘里区分来源
             short_mod = mod_name.split(".")[-1] if mod_name != "?" else "?"
             return f"{short_mod}:{func}"
         return "llm_call"
@@ -195,25 +196,29 @@ def _estimate_tokens_from_messages(messages: list) -> tuple[int, int, int]:
 # ============================================================
 
 class _TrackedCompletions:
-    """劫持 chat.completions.create 的最小代理。"""
-    def __init__(self, raw_completions, model_default: str | None = None, caller: str = ""):
+    """劫持 chat.completions.create 的最小代理，挂载统一治理与埋点。"""
+    def __init__(self, raw_completions, model_default: str | None = None, caller: str = "", client: Any = None):
         self._raw = raw_completions
         self._model_default = model_default
         self._caller = caller
+        self._client = client
 
     def __getattr__(self, name):
         return getattr(self._raw, name)
 
     def create(self, *args, **kwargs):
-        """同步非流式：调原生 → 读 usage → 写库 → 原样返回。"""
+        """同步非流式：调 govern 统一治理（含重试策略） → 读 usage → 写库 → 原样返回。"""
         is_stream = kwargs.get("stream", False)
         messages = kwargs.get("messages") or []
         model = kwargs.get("model") or self._model_default or "unknown"
 
-        if is_stream:
-            return self._wrap_stream_sync(self._raw.create(*args, **kwargs), messages, model)
+        from app.core.llm_governed import govern_sync_call
 
-        response = self._raw.create(*args, **kwargs)
+        if is_stream:
+            raw_stream = govern_sync_call(self._raw.create, args, kwargs, caller=self._caller, client=self._client)
+            return self._wrap_stream_sync(raw_stream, messages, model)
+
+        response = govern_sync_call(self._raw.create, args, kwargs, caller=self._caller, client=self._client)
         try:
             pt, ct, tt, cached = _read_usage(response)
             action = _guess_action_name(skip_frames=2)
@@ -261,11 +266,12 @@ class _TrackedCompletions:
 
 
 class _TrackedAsyncCompletions:
-    """异步版 chat.completions.create 代理。"""
-    def __init__(self, raw_completions, model_default: str | None = None, caller: str = ""):
+    """异步版 chat.completions.create 代理，挂载统一治理与埋点。"""
+    def __init__(self, raw_completions, model_default: str | None = None, caller: str = "", client: Any = None):
         self._raw = raw_completions
         self._model_default = model_default
         self._caller = caller
+        self._client = client
 
     def __getattr__(self, name):
         return getattr(self._raw, name)
@@ -275,12 +281,13 @@ class _TrackedAsyncCompletions:
         messages = kwargs.get("messages") or []
         model = kwargs.get("model") or self._model_default or "unknown"
 
-        if is_stream:
-            return self._wrap_stream_async(
-                await self._raw.create(*args, **kwargs), messages, model
-            )
+        from app.core.llm_governed import govern_async_call
 
-        response = await self._raw.create(*args, **kwargs)
+        if is_stream:
+            raw_stream = await govern_async_call(self._raw.create, args, kwargs, caller=self._caller, client=self._client)
+            return self._wrap_stream_async(raw_stream, messages, model)
+
+        response = await govern_async_call(self._raw.create, args, kwargs, caller=self._caller, client=self._client)
         try:
             pt, ct, tt, cached = _read_usage(response)
             action = _guess_action_name(skip_frames=2)
@@ -357,19 +364,21 @@ class TrackedClient:
     透明代理：包住原生 OpenAI/AsyncOpenAI 实例。
     只重写 .chat.completions 这条路径以挂载埋点，其余属性全透传。
     """
-    def __init__(self, raw_client, model_default: str | None = None, caller: str = ""):
+    def __init__(self, raw_client, model_default: str | None = None, caller: str = "", client: Any = None):
         # 用 object.__setattr__ 避开本类 __setattr__/__getattr__ 递归
         object.__setattr__(self, "_raw", raw_client)
         object.__setattr__(self, "_model_default", model_default)
         object.__setattr__(self, "_caller", caller)
+        client_ref = client if client is not None else raw_client
+        object.__setattr__(self, "_client", client_ref)
         # 预先包装好 chat.completions
         raw_chat = raw_client.chat
         raw_completions = raw_chat.completions
         # 根据原生 client 类型选择同步/异步包装
         if _is_async_client(raw_client):
-            tracked = _TrackedAsyncCompletions(raw_completions, model_default, caller=caller)
+            tracked = _TrackedAsyncCompletions(raw_completions, model_default, caller=caller, client=client_ref)
         else:
-            tracked = _TrackedCompletions(raw_completions, model_default, caller=caller)
+            tracked = _TrackedCompletions(raw_completions, model_default, caller=caller, client=client_ref)
         # 重建一个轻量 chat 对象，只换掉 completions 属性
         chat_proxy = _ChatProxy(raw_chat, tracked)
         object.__setattr__(self, "_chat_proxy", chat_proxy)
@@ -406,24 +415,25 @@ def _is_async_client(client: Any) -> bool:
     return cls_name == "AsyncOpenAI"
 
 
-def make_tracked_client(raw_client: Any, model_default: str | None = None, caller: str = "") -> TrackedClient:
-    """
-    对外统一入口：把任意 OpenAI / AsyncOpenAI client 包装成带埋点的 TrackedClient。
-
-    用法（在 client 工厂函数里）：
-        return make_tracked_client(OpenAI(...), caller="ai_evaluator")
-
+def make_tracked_client(
+    raw_client: Any,
+    model_default: str | None = None,
+    caller: str = "",
+    client_for_policy: Any = None,
+) -> TrackedClient | None:
+    """对外统一入口：把任意 OpenAI / AsyncOpenAI client 包装成带埋点与统一治理的 TrackedClient。
     参数:
         raw_client: 原生 OpenAI 或 AsyncOpenAI 实例
         model_default: 默认模型名（调用方未在 create 中指定 model 时使用）
         caller: 调用来源标签（如 "ai_evaluator", "step1_ai_scout"），用于大盘按模块统计
+        client_for_policy: 原始 client 引用（携带 _configured_max_retries 供策略层读取）
     """
     if raw_client is None:
         return None
-    # 已经包装过就不重复包
     if isinstance(raw_client, TrackedClient):
         return raw_client
-    return TrackedClient(raw_client, model_default=model_default, caller=caller)
+    policy_client = client_for_policy if client_for_policy is not None else raw_client
+    return TrackedClient(raw_client, model_default=model_default, caller=caller, client=policy_client)
 
 
 # ============================================================

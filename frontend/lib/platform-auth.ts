@@ -8,15 +8,12 @@
  * 前端通过 GET /api/v1/auth/platforms 获取，禁止在前端硬编码端口。
  */
 
-// 与 lib/api.ts 的 API_BASE 同源：本地默认 8000，部署时由 NEXT_PUBLIC_API_URL 覆盖
+// 与 lib/api.ts 同源（M1 收口）：本地默认 8000，部署时由 NEXT_PUBLIC_API_URL 覆盖；
+// 经 getApiBase() 运行时解析，为桌面壳 M2 动态端口预留 seam
+import { getApiBase } from "./api"
+
 export function getMainApiBase(): string {
-  if (process.env.NEXT_PUBLIC_API_URL) {
-    return process.env.NEXT_PUBLIC_API_URL.replace(/\/api$/, "") + "/api"
-  }
-  if (typeof window !== "undefined" && window.location?.hostname) {
-    return `http://${window.location.hostname}:8000/api`
-  }
-  return "http://127.0.0.1:8000/api"
+  return getApiBase() + "/api"
 }
 
 export const MAIN_API_BASE = getMainApiBase()

@@ -16,11 +16,13 @@ from common.config import CLEANER_LLM_MODEL, CLEANER_VISION_MODEL, VISION_MODEL
 
 logger = logging.getLogger(__name__)
 
-# 本地数据库默认路径
-_LOCAL_DB = os.path.join(
+# 本地数据库默认路径（db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR）
+from app.core.db_paths import job_hunter_db_path  # noqa: E402
+
+_LOCAL_DB = str(job_hunter_db_path(os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "data", "job_hunter.db"
-)
+)))
 DEFAULT_DB_PATH = os.environ.get("ANALYTICS_DB_PATH") or _LOCAL_DB
 
 # 中文场景名映射字典（v1/v2 合并收录，缺条目会导致明细页渲染英文原名）

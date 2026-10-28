@@ -17,11 +17,17 @@ import os
 import threading
 from datetime import date
 
+# M2 收口：JOBHUNTER_DATA_DIR 注入时落用户数据目录
+from app.core.db_paths import writable_path
+
 logger = logging.getLogger("upload_quota")
 
-QUOTA_STATE_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data",
+QUOTA_STATE_FILE = writable_path(
+    os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "data",
+        "51job_upload_quota.json",
+    ),
     "51job_upload_quota.json",
 )
 
@@ -38,7 +44,7 @@ def _today() -> str:
 
 
 def _empty_state() -> dict:
-    return {"date": _today(), "uploads_used": 0, "exhausted": False, "mass_resume_date": ""}
+    return {"date": _today(), "uploads_used": 0, "exhausted": False, "mass_resume_date": "", "mass_resume_file_token": ""}
 
 
 def _read_state() -> dict:
@@ -84,6 +90,24 @@ def is_mass_resume_fresh_today() -> bool:
     return get_state().get("mass_resume_date") == _today()
 
 
+def is_mass_resume_content_current(file_token: str) -> bool:
+    """今日已传的海投附件与当前母本 PDF 是否同一份内容（file_token 一致）。
+
+    2026-10-08 真机反馈修复：旧新鲜度只看「今日传过」不看内容——母本简历当天
+    重新生成（飞书 file_token 变化）后，当日已传的旧文件仍被判新鲜继续投旧版。
+    三值语义：
+    - 有记录且 token 一致 → True（内容没换，维持复用）
+    - 有记录且 token 不一致 → False（母本已换，调用方应强制重传，配额允许时）
+    - 无 token 记录（旧状态文件/旧调用标记） → True（无法判定=不改变既有复用行为，
+      避免把「未记录」误判成「已更换」而白白烧掉当日复用配额；本次上传后会补记 token）
+    """
+    state = get_state()
+    recorded = str(state.get("mass_resume_file_token") or "")
+    if not recorded:
+        return True
+    return recorded == str(file_token or "")
+
+
 def mark_upload_success() -> None:
     with _lock:
         state = _read_state()
@@ -98,8 +122,10 @@ def mark_quota_exhausted() -> None:
         _write_state(state)
 
 
-def mark_mass_resume_uploaded_today() -> None:
+def mark_mass_resume_uploaded_today(file_token: str = "") -> None:
     with _lock:
         state = _read_state()
         state["mass_resume_date"] = _today()
+        if file_token:
+            state["mass_resume_file_token"] = str(file_token)
         _write_state(state)

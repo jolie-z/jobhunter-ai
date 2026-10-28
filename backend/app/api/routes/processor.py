@@ -5,13 +5,16 @@ import sqlite3
 import uuid
 from contextlib import contextmanager
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
+
+from app.core.db_paths import job_hunter_db_path
+from app.services import job_action_service
 
 # 获取项目根目录
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(CURRENT_DIR)))
-DB_PATH = os.path.join(PROJECT_ROOT, "data", "job_hunter.db")
+DB_PATH = job_hunter_db_path(os.path.join(PROJECT_ROOT, "data", "job_hunter.db"))
 
 @contextmanager
 def get_db_connection(timeout: float = 30.0, row_factory=None):
@@ -265,12 +268,19 @@ async def unreject_job(request: UnrejectRequest, background_tasks: BackgroundTas
 
             if row:
                 row_id = row["rowid"]
+                # 🌟 守卫（2026-10-09 双端撕裂事故对齐飞书卡片行为）：召回复评**进行中**的岗位
+                # 拒绝桌面端并发放行——两路同时改状态/推送会双烧 token 并造成双端撕裂。
+                # 「召回待初评」但不在评中（复评失败/进程重启的残留）则放行：这是用户解除
+                # 死锁的合法出口，否则残留岗位所有流转动作都被封死（岗哨1 R1 P1-2）。
+                if job_action_service.is_job_recalling(row_id):
+                    raise HTTPException(status_code=409, detail="该岗位正在飞书召回复评中，请等待复评完成后再操作")
                 cursor.execute('''
                     UPDATE raw_jobs
                     SET process_status = '待推送至飞书', reject_reason = NULL
                     WHERE rowid = ?
                 ''', (row_id,))
                 conn.commit()
+                job_action_service.record_action_audit("desktop", "recall", f"raw_{row_id}", job_action_service.format_job_label(row["company_name"], row["job_title"]), "success")
                 print(f"🔓 [Processor] SQLite 已放行岗位 rowid={row_id}, 【{row['company_name']} - {row['job_title']}】", flush=True)
             elif request.job_link:
                 cursor.execute('''
@@ -279,6 +289,7 @@ async def unreject_job(request: UnrejectRequest, background_tasks: BackgroundTas
                     WHERE job_link = ?
                 ''', (request.job_link.strip(),))
                 conn.commit()
+                job_action_service.record_action_audit("desktop", "recall", request.job_link[:64], "", "success")
                 print(f"🔓 [Processor] SQLite 依据链接放行岗位: {request.job_link}", flush=True)
             else:
                 raise HTTPException(status_code=400, detail="未提供有效的 job_id 或 job_link")
@@ -309,24 +320,69 @@ async def get_trash_bin_count():
 async def confirm_reject(request: UnrejectRequest):
     """确认岗位被正确淘汰，从回收站彻底归档"""
     try:
-        with get_db_connection(timeout=30.0) as conn:
+        with get_db_connection(timeout=30.0, row_factory=sqlite3.Row) as conn:
             cursor = conn.cursor()
 
+            # 🌟 守卫（2026-10-09 双端撕裂事故）：召回待初评/待推送/已同步的岗位是活跃态，
+            # 不允许从回收站归档覆盖（与飞书卡片确认淘汰的逐条守卫同语义）。
+            target_rowids: list[int] = []
             if request.job_id:
                 try:
-                    row_id_val = int(str(request.job_id).replace("raw_", ""))
-                    cursor.execute("UPDATE raw_jobs SET process_status = '已确认淘汰' WHERE rowid = ?", (row_id_val,))
+                    target_rowids.append(int(str(request.job_id).replace("raw_", "")))
                 except Exception:
                     pass
-
             if request.job_link:
-                cursor.execute("UPDATE raw_jobs SET process_status = '已确认淘汰' WHERE job_link = ?", (request.job_link.strip(),))
+                for r in cursor.execute(
+                    "SELECT rowid FROM raw_jobs WHERE job_link = ?", (request.job_link.strip(),)
+                ).fetchall():
+                    if r["rowid"] not in target_rowids:
+                        target_rowids.append(r["rowid"])
 
+            if not target_rowids:
+                return {"status": "success", "message": "未匹配到需归档的岗位"}
+
+            ph = ",".join("?" for _ in target_rowids)
+            # 🌟 活跃态校验与飞书卡片归档守卫同语义:非淘汰态(NULL/空串=待清洗、清洗中、待推送含旧
+            # 变体、已同步、待投递等)一律 409 拒绝覆盖;「召回待初评」由集合判据单独放行——
+            # 复评进行中(key∈_recall_evaluating)拦,失败残留态允许归档(用户处置出口,R1 P1-2)。
+            rows = cursor.execute(
+                f"SELECT rowid, process_status FROM raw_jobs WHERE rowid IN ({ph})",
+                target_rowids,
+            ).fetchall()
+            from app.core import process_status as _ps
+            blocked = []
+            recall_pending = []
+            for r in rows:
+                st = (r["process_status"] or "").strip()
+                if st == _ps.RECALL_PENDING_EVAL:
+                    recall_pending.append(r["rowid"])
+                elif not _ps.is_rejected(st):
+                    # 空串/NULL(刚入库待清洗)与一切流转态都拦——只有确认淘汰态才放行归档
+                    blocked.append(f"row{r['rowid']}({st or '空,待清洗'})")
+            if blocked:
+                raise HTTPException(status_code=409, detail=f"岗位不在淘汰队列，拒绝归档覆盖：{'、'.join(blocked[:3])}")
+
+            from app.services.job_action_service import is_job_recalling
+            in_eval = [rid for rid in recall_pending if is_job_recalling(rid)]
+            if in_eval:
+                raise HTTPException(status_code=409, detail="岗位正在飞书召回复评中，请等待复评完成后再归档")
+
+            cursor.execute(f"UPDATE raw_jobs SET process_status = ? WHERE rowid IN ({ph})", [_ps.REJECT_CONFIRMED, *target_rowids])
             conn.commit()
 
+        for rid in target_rowids:
+            job_action_service.record_action_audit("desktop", "reject", f"raw_{rid}", "", "success")
         return {"status": "success", "message": "已确认淘汰"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/action-audit")
+async def get_action_audit(limit: int = Query(default=50, ge=1, le=200)):
+    """动作审计查询:最近 N 条召回/归档/放行记录(来源端/动作/对象/结果/时间)。"""
+    return {"status": "success", "data": job_action_service.list_action_audits(limit=limit)}
+
 
 @router.post("/empty-trash")
 async def empty_trash():
@@ -420,6 +476,29 @@ async def _run_xhs_vision_cleaner(task_id: str):
                 await task_queues[task_id].put('data: {"type": "end"}\n\n')
             schedule_task_cleanup(task_id, delay_seconds=300)
 
+def _reclaim_in_progress_jobs_sync() -> int:
+    """崩溃善后（同步体，R2 P2：SQLite 阻塞调用由 to_thread 包装）：把「清洗中」
+    行级锁岗位即时退回「已存入数据」；with 连接保证异常时不泄漏。失败返回 0。"""
+    try:
+        import sqlite3 as _sq
+        with _sq.connect(DB_PATH, timeout=30.0) as _conn:
+            _cur = _conn.cursor()
+            _cur.execute("UPDATE raw_jobs SET process_status = '已存入数据', reject_reason = NULL WHERE process_status = '清洗中'")
+            _reclaimed = _cur.rowcount
+            _conn.commit()
+            return _reclaimed
+    except Exception as _e:
+        print(f"⚠️ [Processor善后] 崩溃退回失败（下次任务自愈兜底）: {_e}")
+        return 0
+
+
+async def _reclaim_in_progress_jobs() -> int:
+    """崩溃善后入口（日志下沉至此，调用端一行）。返回退回条数。"""
+    reclaimed = await asyncio.to_thread(_reclaim_in_progress_jobs_sync)
+    if reclaimed > 0:
+        print(f"🔄 [Processor善后] 崩溃退回：{reclaimed} 条「清洗中」岗位已恢复为「已存入数据」")
+    return reclaimed
+
 async def _run_global_pipeline(task_id: str, limit: int):
     async with _global_clean_lock:
         try:
@@ -453,6 +532,9 @@ async def _run_global_pipeline(task_id: str, limit: int):
                 err_data = json.dumps({"type": "error", "message": f"全局清洗管道崩溃: {str(e)}"}, ensure_ascii=False)
                 await task_queues[task_id].put(f"data: {err_data}\n\n")
         finally:
+            # 2026-10-07 修岗位数量"丢失"（用户实测 29→19）：崩溃即时退回「清洗中」，
+            # 不再等下一次任务的自愈回收（详 _reclaim_in_progress_jobs）
+            await _reclaim_in_progress_jobs()
             from app.tasks.state import schedule_task_cleanup, task_queues
             if task_id in task_queues:
                 await task_queues[task_id].put('data: {"type": "end"}\n\n')
@@ -493,6 +575,8 @@ async def _run_hard_filter_pipeline(task_id: str, limit: int):
                 err_data = json.dumps({"type": "error", "message": f"硬规则初筛崩溃: {str(e)}"}, ensure_ascii=False)
                 await task_queues[task_id].put(f"data: {err_data}\n\n")
         finally:
+            # 崩溃即时退回「清洗中」→「已存入数据」（与 _run_global_pipeline 同款，2026-10-07）
+            await _reclaim_in_progress_jobs()
             from app.tasks.state import schedule_task_cleanup, task_queues
             if task_id in task_queues:
                 await task_queues[task_id].put('data: {"type": "end"}\n\n')

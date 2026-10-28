@@ -12,16 +12,23 @@ import sqlite3
 import time
 from contextlib import closing
 
+# JOBHUNTER_DB_PATH 显式覆盖（M1 子项②）：未设 env 保持 backend/data 锚点原样
+from app.core.db_paths import job_hunter_db_path, writable_path
 from app.pipeline import get_scrape_config
 
-DB_PATH = os.path.join(
+DB_PATH = job_hunter_db_path(os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "data",
     "job_hunter.db",
-)
-AUTOPILOT_DB = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+))
+# M2 收口：JOBHUNTER_DATA_DIR 注入时落 <DATA_DIR>/autopilot.db（AUTOPILOT_DB_PATH 铁律优先）
+AUTOPILOT_DB = writable_path(
+    os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "autopilot.db",
+    ),
     "autopilot.db",
+    env_var="AUTOPILOT_DB_PATH",
 )
 _PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),

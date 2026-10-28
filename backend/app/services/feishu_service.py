@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 from typing import Any
 
@@ -15,6 +16,8 @@ from app.core.feishu_utils import (
 )
 from app.core.testing_guard import is_testing_env, log_feishu_mock_intercept
 from app.core.utils import is_greeting_supported_platform, normalize_platform_code
+
+logger = logging.getLogger("feishu_service")
 
 
 # 🌟 2. 环境变量/常量配置
@@ -589,6 +592,66 @@ def get_new_leads_from_feishu(platform: str = ""):
         return []
 
 
+def get_delivery_result_jobs():
+    """拉取投递结果岗位（跟进状态=已投递/投递失败），供战报「自动投递详情」卡片按任务 record_ids 精确过滤。
+
+    单选字段的 is 过滤每条 condition 只能带 1 个值（与 get_pending_review 同款纪律），
+    两个状态各发一次请求后在内存合并；失败岗位的【自动投递失败日志】字段是失败原因权威来源。
+    """
+    token = get_tenant_access_token()
+    if not token:
+        return []
+
+    url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{settings.FEISHU_APP_TOKEN}/tables/{settings.FEISHU_TABLE_ID_JOBS}/records/search"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    jobs: list[dict[str, Any]] = []
+    for status_word in ("已投递", "投递失败"):
+        # while has_more 全量翻页（R1 审查 P1：单页 100 条截断会让新投递记录永远拉不到）
+        page_token = None
+        page_count = 0
+        max_pages = 10  # 100/页 × 10 页 = 1000 条，远超单表投递态合理量级，防御死循环
+        while page_count < max_pages:
+            page_count += 1
+            payload = {
+                "filter": {
+                    "conjunction": "and",
+                    "conditions": [{"field_name": "跟进状态", "operator": "is", "value": [status_word]}],
+                },
+                "page_size": 100,
+            }
+            if page_token:
+                payload["page_token"] = page_token
+            try:
+                response = safe_feishu_request("POST", url, headers=headers, json=payload)
+                data = response.json()
+                if data.get("code") != 0:
+                    logger.error(f"[get_delivery_result_jobs] 拉取投递结果({status_word})失败: {data.get('msg')}")
+                    break
+                for record in data.get("data", {}).get("items", []):
+                    fields = record.get("fields", {})
+                    jobs.append({
+                        "record_id": record.get("record_id"),
+                        "platform": extract_feishu_text(fields.get("招聘平台", "")) or "未知渠道",
+                        "company": extract_feishu_text(fields.get("公司名称", "")) or "未知公司",
+                        "job_title": extract_feishu_text(fields.get("岗位名称", "")) or "未知岗位",
+                        "follow_status": extract_feishu_text(fields.get("跟进状态", "")) or status_word,
+                        "fail_log": extract_feishu_text(fields.get("自动投递失败日志", "")),
+                    })
+                if not data.get("data", {}).get("has_more", False):
+                    break
+                page_token = data.get("data", {}).get("page_token")
+                if not page_token:
+                    break
+            except Exception as e:
+                logger.error(f"[get_delivery_result_jobs] 拉取投递结果({status_word})异常: {e}")
+                break
+        else:
+            # while 条件自然耗尽（非 break）= 翻满上限仍有更多：显式告警防静默截断
+            logger.warning(f"[get_delivery_result_jobs] 状态「{status_word}」达到翻页上限 {max_pages} 页，可能存在截断")
+    return jobs
+
+
 def get_pending_review_jobs_from_feishu(max_pages: int = 3):
     """获取处于【简历人工复核】、【已完成初步评估】或【待投递】状态的待审批岗位，并提取物料就绪状态与公司规模。
 
@@ -1036,8 +1099,21 @@ def mark_job_delivery_failed(job_id: str, error: str) -> bool:
                 _recent_failed_writes.pop(k, None)
 
         is_quota = is_quota_exhausted_error(err_text)
-        if is_quota:
-            print(f"ℹ️ [mark_job_delivery_failed] 检测到 51job 附件日配额限制(720721)，保留飞书「待投递」门牌以便次日跨天自愈，仅回写失败日志: {clean_id}")
+        # 🌟 环境类失败自愈豁免（2026-10-08）：transient/unknown 且未达重试上限的失败
+        # 保留「待投递」门牌（与配额分支同款），使波次自动重试/L1 分诊真正可达；
+        # persistent 或已达上限才写「投递失败」出队。判定异常保守出队。
+        keep_pending = is_quota
+        if not keep_pending:
+            try:
+                from app.automation.failure_triage import should_retry_delivery
+                keep_pending = should_retry_delivery(err_text, clean_id)
+            except Exception as triage_e:
+                print(f"⚠️ [mark_job_delivery_failed] 分诊判据异常（按出队处理）: {triage_e}")
+        if keep_pending:
+            if is_quota:
+                print(f"ℹ️ [mark_job_delivery_failed] 检测到 51job 附件日配额限制(720721)，保留飞书「待投递」门牌以便次日跨天自愈，仅回写失败日志: {clean_id}")
+            else:
+                print(f"ℹ️ [mark_job_delivery_failed] 暂时性故障未达自动重试上限，保留飞书「待投递」门牌以便下轮波次自愈重试，仅回写失败日志: {clean_id}")
             fields_to_update = {
                 "自动投递失败日志": err_text
             }
@@ -1051,8 +1127,8 @@ def mark_job_delivery_failed(job_id: str, error: str) -> bool:
         ok = update_feishu_record(clean_id, fields_to_update)
         if ok:
             _recent_failed_writes[clean_id] = now
-            if is_quota:
-                print(f"✅ [mark_job_delivery_failed] 成功回写 51job 配额日志 (保持待投递): {clean_id}")
+            if keep_pending:
+                print(f"✅ [mark_job_delivery_failed] 已回写失败日志（门牌保持「待投递」，等待自愈重试）: {clean_id}")
             else:
                 print(f"✅ [mark_job_delivery_failed] 成功写入飞书「投递失败」: {clean_id}")
         else:

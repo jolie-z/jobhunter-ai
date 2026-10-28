@@ -25,10 +25,12 @@ from job_processor import job_dedup
 
 logger = logging.getLogger(__name__)
 
-RAW_DB_PATH = os.path.join(
+from app.core.db_paths import job_hunter_db_path  # noqa: E402
+
+RAW_DB_PATH = job_hunter_db_path(os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "data", "job_hunter.db"
-)
+))
 
 # 人工放行白名单（record_id 列表）。放在 data/ 下与其它运行时数据同目录。
 _OVERRIDES_PATH = Path(RAW_DB_PATH).parent / "dedup_overrides.json"

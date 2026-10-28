@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, useCallback } from "react"
 import { ChevronLeft, ChevronRight } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
 import type { JobData } from "@/types/job"
@@ -19,6 +19,7 @@ import { GreetingConfigGateModal } from "@/components/dashboard/greeting-config-
 import { BatchApproveGateModal } from "@/components/dashboard/batch-approve-gate-modal"
 import { AiRerunConfirmModal } from "@/components/dashboard/ai-rerun-confirm-modal"
 import { useBatchActions } from "@/hooks/use-batch-actions"
+import { API_BASE } from "@/lib/api"
 
 /* 对外 Props 契约 */
 interface JobListViewProps {
@@ -78,6 +79,25 @@ export function JobListView({
   const scaleFilter = useJobFilterStore((s) => s.scaleFilter)
   const setScaleFilter = useJobFilterStore((s) => s.setScaleFilter)
   const platformFilter = useJobFilterStore((s) => s.platformFilter)
+  const customRewriteFilter = useJobFilterStore((s) => s.customRewriteFilter)
+  const setCustomRewriteFilter = useJobFilterStore((s) => s.setCustomRewriteFilter)
+
+  // 🌟 已自定义 skill 改写的岗位集合（产物台账，进列表拉一次 + 岗位刷新时同步）
+  const [customRewriteIds, setCustomRewriteIds] = useState<Set<string>>(new Set())
+  const fetchCustomRewriteIds = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/strategy/custom_rewrite_jobs`)
+      const json = await res.json().catch(() => null)
+      if (res.ok && json?.status === "success" && Array.isArray(json.data)) {
+        setCustomRewriteIds(new Set(json.data.map((x: { job_record_id: string }) => String(x.job_record_id))))
+      }
+    } catch {
+      // 静默失败：筛选维度退化为「全部」语义
+    }
+  }, [])
+  useEffect(() => {
+    fetchCustomRewriteIds()
+  }, [fetchCustomRewriteIds, onRefreshJobs])
   const setPlatformFilter = useJobFilterStore((s) => s.setPlatformFilter)
   const pageSize = useJobFilterStore((s) => s.pageSize)
   const setPageSize = useJobFilterStore((s) => s.setPageSize)
@@ -156,6 +176,18 @@ export function JobListView({
       else if (scoreFilter === "D-F") matchesScore = grade === "D" || grade === "F"
       else if (scoreFilter === "未评估") matchesScore = !grade
 
+      let matchesCustom = true
+      if (customRewriteFilter !== "全部") {
+        // job.id 形如「平台-recXXX」，剥出 record_id 与产物台账求交（兼容历史混合口径目录名）
+        const recId =
+          String(job.id || "")
+            .split("-")
+            .reverse()
+            .find((p) => p.startsWith("rec")) || ""
+        const isCustom = customRewriteIds.has(recId)
+        matchesCustom = customRewriteFilter === "已自定义改写" ? isCustom : !isCustom
+      }
+
       return (
         matchesSearch &&
         matchesStatus &&
@@ -163,7 +195,8 @@ export function JobListView({
         matchesEdu &&
         matchesExp &&
         matchesScale &&
-        matchesPlatform
+        matchesPlatform &&
+        matchesCustom
       )
     })
   }, [
@@ -175,6 +208,8 @@ export function JobListView({
     scaleFilter,
     platformFilter,
     scoreFilter,
+    customRewriteFilter,
+    customRewriteIds,
   ])
 
   // 🌟 排序逻辑：支持按时间（默认后端抓取时间）或按评级（有评级的优先）
@@ -324,6 +359,8 @@ export function JobListView({
         onScaleFilterChange={setScaleFilter}
         platformFilter={platformFilter}
         onPlatformFilterChange={setPlatformFilter}
+        customRewriteFilter={customRewriteFilter}
+        onCustomRewriteFilterChange={setCustomRewriteFilter}
         dynamicStatuses={dynamicStatuses}
         filteredCount={sortedJobs.length}
         globalTaskStatus={globalTaskStatus}

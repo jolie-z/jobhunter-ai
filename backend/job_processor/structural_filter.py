@@ -3,7 +3,9 @@ import os
 import re
 import sqlite3
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "job_hunter.db")
+from app.core.db_paths import job_hunter_db_path
+
+DB_PATH = job_hunter_db_path(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "job_hunter.db"))
 
 
 def load_active_strategy():

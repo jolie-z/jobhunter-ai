@@ -67,12 +67,14 @@ if _BACKEND_DIR not in sys.path:
 
 from app.services.feishu_service import update_feishu_record, get_jobs_to_deliver
 from app.core.feishu_utils import download_feishu_file
+from app.core.db_paths import writable_path
 from app.core.utils import is_valid_greeting
 
 # ==========================================
 # 全局常量
 # ==========================================
-TEMP_DIR = os.path.join(_PROJECT_ROOT, "temp_resumes")
+# db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
+TEMP_DIR = writable_path(os.path.join(_PROJECT_ROOT, "temp_resumes"), "temp_resumes")
 ZHILIAN_HOME_URL = "https://www.zhaopin.com/"
 
 # ==========================================
@@ -471,6 +473,30 @@ def _upload_resume_once(page, local_pdf_path, pdf_name="我的简历", is_mass=F
 # ==========================================
 # 岗位投递
 # ==========================================
+def _detect_dead_job_page(tab) -> str:
+    """岗位失效页探测（2026-10-11 泰索斯事故根治）。
+
+    关键事实：智联失效页的「该职位已失效」横幅是**图片**（ic-offline.png），
+    DOM 文本中出现次数为 0——纯文本关键词匹配从原理上不可能命中。
+    判据双轨：DOM 签名优先（失效横幅图片 class / 失效态容器），文本关键词兜底。
+    命中返回描述（供 [下架] 错误信息），未命中返回空串。
+    """
+    try:
+        if tab.ele('css:.summary-planes__invalid-text', timeout=1):
+            return "失效页横幅图片（ic-offline）"
+        if tab.ele('css:.summary-planes__info.invalid', timeout=1):
+            return "失效态容器（summary-planes__info.invalid）"
+    except Exception:
+        pass
+    for dead_kw in ['职位已失效', '职位已下架', '已停止招聘', '该职位已关闭']:
+        try:
+            if tab.ele(f'text:{dead_kw}', timeout=1):
+                return f"页面提示文本「{dead_kw}」"
+        except Exception:
+            pass
+    return ""
+
+
 def _classify_main_buttons(button_texts) -> str:
     """主操作区按钮状态分类（纯函数，便于单测）：
     - deliverable: 存在「立即投递/申请职位」，说明尚未完成投递，可执行附件投递
@@ -493,7 +519,9 @@ def _is_delivered_button_state(button_texts) -> bool:
 def _save_failure_shot(tab, tag: str):
     """失败现场截图留痕（DOM 改版/弹窗拦截时肉眼可回溯），落盘 zhilian_failure_shots/。"""
     try:
-        shot_dir = os.path.join(_BACKEND_DIR, "zhilian_failure_shots")
+        shot_dir = str(writable_path(
+            os.path.join(_BACKEND_DIR, "zhilian_failure_shots"), "zhilian_failure_shots"
+        ))
         os.makedirs(shot_dir, exist_ok=True)
         safe_tag = re.sub(r'[\/\\:\*\?"<>\|\s]+', "_", (tag or "shot").strip())[:60] or "shot"
         path = os.path.join(shot_dir, f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_tag}.png")
@@ -572,18 +600,16 @@ def _deliver_to_job(
     btn_state = _classify_main_buttons(main_texts)
 
     if btn_state == "unknown":
-        # 仅当主操作区无按钮时才做全页失效关键词判定（岗位失效页没有操作区），
-        # 避免侧栏卡片上的失效文案把当前岗位误判为已下架
-        for dead_kw in ['职位已失效', '职位已下架', '已停止招聘', '该职位已关闭']:
-            try:
-                if tab.ele(f'text:{dead_kw}', timeout=1):
-                    err = f"[下架] 岗位已失效（页面提示：{dead_kw}）"
-                    print(f"   ❌ {err}")
-                    tab.close()
-                    return False, False, err
-            except Exception:
-                pass
-        err = f"[状态] 主操作区未定位到投递按钮（现有按钮: {main_texts or '无'}），可能页面改版或渲染异常"
+        # 仅当主操作区无按钮时才做失效判定（岗位失效页没有操作区），
+        # 避免侧栏卡片上的失效文案把当前岗位误判为已下架。
+        # 双轨判据（2026-10-11 泰索斯事故）：失效横幅是图片，DOM 签名必须先行。
+        dead_hint = _detect_dead_job_page(tab)
+        if dead_hint:
+            err = f"[下架] 岗位已失效（{dead_hint}）"
+            print(f"   ❌ {err}")
+            tab.close()
+            return False, False, err
+        err = f"[状态] 主操作区未定位到投递按钮（现有按钮: {main_texts or '无'}），可能页面改版或渲染异常；若页面含失效横幅图片（ic-offline）则实为岗位下架，请人工核对"
         print(f"   ❌ {err}")
         _save_failure_shot(tab, f"nobutton_{company}_{job_title}")
         tab.close()
@@ -1154,6 +1180,34 @@ def deliver_job(job_data) -> bool:
             print(f"🛑 [智联] 简历上传前检测到岗位 {record_id} 已被用户终止，立即退出")
             _log_failure("[用户主动终止] 在指挥中心手动终止投递流程")
             return False
+
+        # 2.7 岗位死活前置探测（2026-10-11 泰索斯事故：死岗位走完了附件删旧传新才在
+        # 岗位页发现已下架——在线附件槽位被无用腾挪）。死链直接标「已下架」返回，
+        # 不再进行任何附件槽位操作。
+        job_url = job_data.get("job_url", "")
+        if job_url:
+            if job_url.startswith("http://"):
+                job_url = "https://" + job_url[7:]
+            try:
+                page.get(job_url)
+                time.sleep(3)
+                dead_hint = _detect_dead_job_page(page)
+            except Exception as probe_err:
+                logger.warning(f"岗位死活前置探测异常（继续正常投递）: {probe_err}")
+                dead_hint = ""
+            if dead_hint:
+                err = f"[下架] 岗位已失效（{dead_hint}）"
+                print(f"   💀 {err}，提前终止并标记已下架")
+                _log_failure(err)
+                try:
+                    update_feishu_record(record_id, {"跟进状态": "已下架"})
+                except Exception as mark_err:
+                    logger.warning(f"死链标记已下架失败 {record_id}: {mark_err}")
+                return False
+
+            # 探测后回到附件后台页继续正常流程
+            page.get("https://i.zhaopin.com/resume")
+            time.sleep(2)
 
         # 3. 检查/上传附件简历至后台（若仅重试补发打招呼，跳过后台上传）
         backend_resume_count = 0

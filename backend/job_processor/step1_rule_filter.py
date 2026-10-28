@@ -5,7 +5,10 @@ import os
 import datetime
 import asyncio
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "job_hunter.db")
+# 统一走 db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
+from app.core.db_paths import job_hunter_db_path
+
+DB_PATH = job_hunter_db_path(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "job_hunter.db"))
 
 # 🌟 全局清洗互斥锁：确保全系统（调试面板、全自动链路、定时调度）同时只有 1 个清洗流水线在跑，杜绝并发自愈冲突
 GLOBAL_CLEAN_LOCK = asyncio.Lock()
@@ -56,8 +59,11 @@ def load_active_strategy():
         conn.close()
 
         if not row:
-            print("⚠️ 未找到激活的求职策略，将使用空策略兜底")
-            return None
+            # 2026-10-07：兜底必须是空 dict 而非 None——注释语义即"空策略兜底"，
+            # 但 None 会让本文件全部 3 个调用点（Tier1 硬过滤/Tier2 AI 侦察/完整流水线）
+            # 对 None 调 .get() 崩溃（Windows 新装系统无策略行时用户实测必现）
+            print("⚠️ 未找到激活的求职策略，将使用空策略兜底（全部规则放行）")
+            return {}
 
         config = {
             "min_salary_k": row[0],
@@ -86,7 +92,7 @@ def load_active_strategy():
         return config
     except Exception as e:
         print(f"❌ 读取策略数据库失败: {e}")
-        return None
+        return {}
 
 # 🌟 别名兼容（解决单跑微控与流水线调用的命名一致性）
 _get_active_strategy = load_active_strategy
@@ -644,7 +650,7 @@ async def _async_run_hard_filter_only(sse_task_id=None, limit=None):
             target_links = [r[0] for r in cursor.fetchall()]
 
             print(f"🧹 [单跑硬规则] 执行 Tier 1 绝对硬指标清洗 - 本轮锁定 {len(target_links)} 条...")
-            await push_sse_event(sse_task_id, {"type": "phase_progress", "phase": "hard_clean", "current": 0, "total": len(target_links) if target_links else 1})
+            await push_sse_event(sse_task_id, {"type": "phase_progress", "phase": "hard_clean", "current": 0, "total": len(target_links)})
             await push_sse_message(sse_task_id, f"开始执行 Tier 1: 绝对硬指标清洗 (本轮锁定 {len(target_links)} 条，0 Token消耗)")
 
             if target_links:
@@ -660,8 +666,8 @@ async def _async_run_hard_filter_only(sse_task_id=None, limit=None):
             await push_sse_event(sse_task_id, {
                 "type": "phase_progress", 
                 "phase": "hard_clean", 
-                "current": len(target_links) if target_links else 1, 
-                "total": len(target_links) if target_links else 1,
+                "current": len(target_links), 
+                "total": len(target_links),
                 "passed": passed_count,
                 "rejected": rejected_count
             })
@@ -781,8 +787,13 @@ async def _async_run_pipeline(sse_task_id=None, limit=None, min_rowid=0, platfor
 
             scope_desc = f"平台={canonical_platform}" if canonical_platform else "全平台"
             print(f"🧹 [联合清洗] 执行数据清洗 (Tier 1 硬性规则) - 范围: {scope_desc}, 本轮处理 {len(target_links)} 条...")
-            await push_sse_event(sse_task_id, {"type": "phase_progress", "phase": "hard_clean", "current": 0, "total": len(target_links) if target_links else 1})
+            await push_sse_event(sse_task_id, {"type": "phase_progress", "phase": "hard_clean", "current": 0, "total": len(target_links)})
             await push_sse_message(sse_task_id, f"开始执行 Tier 1: 绝对硬指标清洗 (范围: {scope_desc}，本轮锁定 {len(target_links)} 条)")
+            if not target_links:
+                # 2026-10-07 透明化：本轮 0 条锁定（待清洗池空）时向用户说明——
+                # AI 侦察阶段接下来处理的是存量「待AI初筛」遗留，避免用户误读为
+                # "跳过硬清洗直接 AI"（阶段顺序未变，是本轮无新岗位）
+                await push_sse_message(sse_task_id, "ℹ️ 本轮「已存入数据」池为空，硬规则阶段无岗位可清洗；若后续 AI 侦察有处理数量，均为上一轮遗留的「待AI初筛」存量岗位。")
 
             if target_links:
                 _run_tier1_hard_filter(cursor, conn, strategy, target_links)
@@ -797,8 +808,8 @@ async def _async_run_pipeline(sse_task_id=None, limit=None, min_rowid=0, platfor
             await push_sse_event(sse_task_id, {
                 "type": "phase_progress", 
                 "phase": "hard_clean", 
-                "current": len(target_links) if target_links else 1, 
-                "total": len(target_links) if target_links else 1,
+                "current": len(target_links), 
+                "total": len(target_links),
                 "passed": tier1_passed,
                 "rejected": tier1_rejected
             })

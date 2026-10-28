@@ -15,6 +15,9 @@ from openai import OpenAI
 
 # 🌟 修复为基于新架构的引入
 from app.core.config import settings
+
+# JOBHUNTER_DB_PATH 主库覆盖阀门（M1 子项②）
+from app.core.db_paths import job_hunter_db_path
 from app.core.llm_tracker import make_tracked_client
 from app.services.feishu_service import (
     send_feishu_card,
@@ -29,7 +32,8 @@ PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-DB_PATH = os.path.join(PROJECT_ROOT, "data", "job_hunter.db")
+# JOBHUNTER_DB_PATH 显式覆盖：未设 env 保持 backend/data 锚点原样
+DB_PATH = job_hunter_db_path(os.path.join(PROJECT_ROOT, "data", "job_hunter.db"))
 
 _client = None
 _client_sig = None

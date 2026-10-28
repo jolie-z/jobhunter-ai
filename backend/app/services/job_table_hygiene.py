@@ -276,7 +276,9 @@ def _liveness_script():
 
 def _sqlite_db_path() -> str:
     from pathlib import Path
-    return str(Path(__file__).resolve().parents[2] / "data" / "job_hunter.db")
+
+    from app.core.db_paths import job_hunter_db_path
+    return str(job_hunter_db_path(Path(__file__).resolve().parents[2] / "data" / "job_hunter.db"))
 
 
 def _mark_sqlite_dead(record_id: str) -> int:
@@ -533,9 +535,8 @@ async def review_duplicate_suspects() -> dict[str, Any]:
 
 async def _llm_verdicts(suspects: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
     """一次 LLM 调用批量给复核意见。返回 {record_id: {verdict, reason}}。"""
-    from langchain_openai import ChatOpenAI
-
     from app.core.config import settings
+    from app.core.llm_langchain import GovernedChatOpenAI
     from common.config import _cfg
 
     lines = []
@@ -552,11 +553,12 @@ async def _llm_verdicts(suspects: list[dict[str, Any]]) -> dict[str, dict[str, s
         "拿不准 → verdict=真重复（保守，避免重复评估烧 token）。"
         '只输出 JSON 数组，不要其他文字：[{"record_id":"...","verdict":"真重复或建议放行","reason":"30字内理由"}]'
     )
-    model = ChatOpenAI(
+    model = GovernedChatOpenAI(
         model=settings.OPENAI_MODEL or "mimo-v2.5-pro",
         api_key=_cfg("OPENAI_API_KEY", "LLM_API_KEY", "api_key", json_key="OPENAI_API_KEY"),
         base_url=_cfg("OPENAI_BASE_URL", "LLM_BASE_URL", "base_url", json_key="OPENAI_BASE_URL"),
-        temperature=0, timeout=120, max_retries=2,
+        temperature=0, timeout=120, max_retries=2,  # TODO(Phase1): SDK max_retries 归零收敛至统一策略层
+        gate_caller="job_table_hygiene",
     )
     resp = await model.ainvoke([
         {"role": "system", "content": system},

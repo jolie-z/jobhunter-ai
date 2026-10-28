@@ -193,41 +193,39 @@ export function ResumeModulesRenderer({
           }
 
           if (modKey === "additional") {
-            const additionalValue = resumeData?.additional?.technicalSkills?.join('\n') || "";
-            const additionalOnChange = (val: string) => updateAdditional({ technicalSkills: val.split('\n') });
-            // 技能概述：解析阶段承接的散文/描述性文字（七项修复#2），独立编辑不与技能清单混淆
-            const overviewValue = resumeData?.additional?.skillOverview || "";
-            const overviewOnChange = (val: string) => updateAdditional({ skillOverview: val });
+            // 2026-10-08 用户裁决：技能清单（technicalSkills 词条罗列）与技能概述内容重复，整体移除。
+            // 对齐 v2 编辑器与打印组件的原文保真单框模式：skillOverview 优先展示与编辑；
+            // 旧数据无 overview 字段时回退 technicalSkills 词表（行为不变）。
+            // 判定用「字段是否为 string」而非内容非空——否则清空输入框会翻转模式、词表幽灵回填。
+            const hasOverview = typeof resumeData?.additional?.skillOverview === "string"
+            const skillsText = hasOverview
+              ? (resumeData?.additional?.skillOverview || "")
+              : (resumeData?.additional?.technicalSkills?.join('\n') || "")
+            const writeSkills = (val: string) => {
+              if (hasOverview) updateAdditional({ skillOverview: val })
+              else updateAdditional({ technicalSkills: val.split('\n') })
+            }
             return (
               <div key={modKey} {...confirmWrapProps(modKey)}>
               <ModuleCard key={modKey} id={anchorId} title={title} icon={<Wrench className="h-4 w-4" />} headerTools={pendingBadge(modKey)} {...commonProps}>
                 <div className="flex flex-col gap-3">
-                  <div>
+                  {hasOverview && (
                     <div className="mb-1 text-[11px] font-medium text-muted-foreground">技能概述（描述性文字）</div>
-                    <MarkdownEditor
-                      value={overviewValue}
-                      onChange={overviewOnChange}
-                      placeholder="技能概述（描述性文字，可选；简历上传时自动保留于此）"
-                      minHeight="min-h-[60px]"
-                    />
-                  </div>
-                  <div>
-                    <div className="mb-1 text-[11px] font-medium text-muted-foreground">技能清单</div>
-                    <MarkdownEditor
-                      value={additionalValue}
-                      onChange={additionalOnChange}
-                      placeholder="专业技能，支持 Markdown"
-                      minHeight="min-h-[120px]"
-                    />
-                  </div>
-                  {renderSyncButtons(modKey, title, additionalValue, additionalOnChange)}
+                  )}
+                  <MarkdownEditor
+                    value={skillsText}
+                    onChange={writeSkills}
+                    placeholder={hasOverview ? "技能概述（描述性文字，可选；简历上传时自动保留于此）" : "专业技能，支持 Markdown"}
+                    minHeight="min-h-[120px]"
+                  />
+                  {renderSyncButtons(modKey, title, skillsText, writeSkills)}
                   {activeSyncModuleId === modKey && (
                     <AiModuleSyncInline
                       moduleTitle={title}
-                      currentContent={additionalValue}
+                      currentContent={skillsText}
                       experiencesContext={context}
                       onAccept={(newContent) => {
-                        updateAdditional({ technicalSkills: newContent.split('\n') })
+                        writeSkills(newContent)
                         setActiveSyncModuleId(null)
                       }}
                       onCancel={() => setActiveSyncModuleId(null)}

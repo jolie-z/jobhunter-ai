@@ -252,8 +252,8 @@ def test_save_data_rejects_empty_and_backs_up(monkeypatch, tmp_path):
     from resume_editor.platforms.browser_common import save_fields_json
 
     test_file = tmp_path / "51job_fields.json"
+    # 落盘与快照目录都跟随 OUTPUT_PATH 的所在目录（读/写锚点拆分后 collector 不再持有 DATA_DIR）
     monkeypatch.setattr("resume_editor.platforms.job51_collector.OUTPUT_PATH", str(test_file))
-    monkeypatch.setattr("resume_editor.platforms.job51_collector.DATA_DIR", str(tmp_path))
 
     # 1. 空数据（全空模块）在首次写入时即被拒绝
     empty_data = {

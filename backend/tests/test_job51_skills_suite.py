@@ -18,7 +18,7 @@ import pytest
 from resume_editor.agent_mapper import (
     _load_job51_it_skills_index,
     _map_51job_skills,
-    DATA_DIR,
+    DICT_DIR,
 )
 from resume_editor.platforms.job51_write_back import (
     _strip_add_item,
@@ -35,7 +35,7 @@ class TestJob51SkillsOfficialDictionary:
 
     def test_official_skills_json_structure(self):
         """测试 51job_skills.json 数据结构严格对齐官网 5 大类 81 项技能"""
-        p = os.path.join(DATA_DIR, "51job_skills.json")
+        p = os.path.join(DICT_DIR, "51job_skills.json")
         assert os.path.exists(p), "51job_skills.json 必须存在"
         with open(p, "r", encoding="utf-8") as f:
             categories = json.load(f)
@@ -63,7 +63,7 @@ class TestJob51SkillsOfficialDictionary:
 
     def test_official_it_skills_json_no_language(self):
         """测试 51job_it_skills.json 已经剔除 2200 语言类"""
-        p = os.path.join(DATA_DIR, "51job_it_skills.json")
+        p = os.path.join(DICT_DIR, "51job_it_skills.json")
         with open(p, "r", encoding="utf-8") as f:
             categories = json.load(f)
         codes = [c.get("code") for c in categories]

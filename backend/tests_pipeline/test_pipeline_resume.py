@@ -181,7 +181,7 @@ def test_midgraph_resume_rebinds_card_and_delivers(patched_feishu, monkeypatch):
 
     async def fake_launch(**kw):
         launches.append(kw)
-        return {"outcome": "stopped", "status": "简历人工复核", "grade": "A"}
+        return {"outcome": "stopped", "error": "", "status": "简历人工复核", "grade": "A"}
 
     monkeypatch.setattr(full_auto, "run_single_job_pipeline_async", fake_launch)
 
@@ -224,7 +224,7 @@ def test_resume_skips_delivery_when_materials_already_sent(patched_feishu, monke
     from app.automation import full_auto
 
     async def fake_launch(**kw):
-        return {"outcome": "stopped", "status": "简历人工复核"}
+        return {"outcome": "stopped", "error": "", "status": "简历人工复核"}
 
     monkeypatch.setattr(full_auto, "run_single_job_pipeline_async", fake_launch)
 
@@ -263,7 +263,7 @@ def test_fresh_run_registers_during_and_cleans_after(patched_feishu, monkeypatch
         seen["resume_kwarg"] = kw.get("resume")
         seen["chat_id"] = (reg.get(kw["record_id"]) or {}).get("chat_id")
         seen["card_msg_id"] = (reg.get(kw["record_id"]) or {}).get("card_msg_id")
-        return {"outcome": "stopped", "status": "简历人工复核"}
+        return {"outcome": "stopped", "error": "", "status": "简历人工复核"}
 
     monkeypatch.setattr(full_auto, "run_single_job_pipeline_async", fake_launch)
 
@@ -337,7 +337,7 @@ def test_launch_pipeline_card_contains_actual_company_and_job(patched_feishu, mo
     from app.automation import full_auto
 
     async def fake_launch(**kw):
-        return {"outcome": "stopped", "status": "简历人工复核"}
+        return {"outcome": "stopped", "error": "", "status": "简历人工复核"}
 
     monkeypatch.setattr(full_auto, "run_single_job_pipeline_async", fake_launch)
 

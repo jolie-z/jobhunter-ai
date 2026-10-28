@@ -3,6 +3,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Building2, ArrowLeft, FileText } from "lucide-react"
 import { JobArchiveColumn } from "../job-archive-column"
 import type { JobData } from "@/types/job"
+import { INTERVIEW_STATUS_HINT } from "@/lib/interview-status"
 
 interface CampSidebarProps {
   interviewJobs: JobData[]
@@ -31,6 +32,13 @@ export function CampSidebar({
             </h2>
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar">
+            {interviewJobs.length === 0 && (
+              <div className="p-4 text-xs text-slate-500 bg-slate-50 rounded-lg leading-relaxed">
+                暂无待战岗位。将岗位跟进状态设为
+                <span className="font-medium text-slate-700"> {INTERVIEW_STATUS_HINT} </span>
+                即可进入本列表备战。
+              </div>
+            )}
             {interviewJobs.map((job) => (
               <Card 
                 key={job.id} 

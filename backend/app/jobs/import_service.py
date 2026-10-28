@@ -9,6 +9,7 @@ from typing import Any
 
 from app.core.cache import JobCache
 from app.core.config import PROJECT_ROOT, settings
+from app.core.db_paths import job_hunter_db_path
 from app.core.feishu_client import feishu_client
 from app.core.feishu_utils import extract_feishu_text
 from app.jobs.import_parser import (
@@ -163,7 +164,7 @@ def _sync_to_raw_jobs(fields: dict[str, Any], record_id: str) -> None:
         return
     svc = sys.modules.get("app.jobs.service")
     proj_root = getattr(svc, "PROJECT_ROOT", PROJECT_ROOT) if svc else PROJECT_ROOT
-    db_path = os.path.join(proj_root, "data", "job_hunter.db")
+    db_path = str(job_hunter_db_path(os.path.join(proj_root, "data", "job_hunter.db")))
     if not os.path.exists(db_path):
         logger.warning(f"⚠️ [极速录入] 未找到 SQLite 数据库: {db_path}")
         return
@@ -257,10 +258,10 @@ def ensure_raw_jobs_indices(conn: sqlite3.Connection | None = None, db_path: str
             pass
         return
 
-    path = db_path or os.path.join(
+    path = db_path or str(job_hunter_db_path(os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
         "data", "job_hunter.db"
-    )
+    )))
     if not os.path.exists(path):
         return
     try:

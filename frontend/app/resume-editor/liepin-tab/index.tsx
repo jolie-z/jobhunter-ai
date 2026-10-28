@@ -176,7 +176,6 @@ export function LiepinTab(props: LiepinTabProps) {
   return (
     <LiepinCtx.Provider value={s}>
       {/* ========== 主渲染 ========== */}
-  return (
     <LiepinReportWarningsContext.Provider value={report?.warnings}>
     <div className="flex gap-6 items-start">
       {/* 左侧导航栏 - 简历目录 */}

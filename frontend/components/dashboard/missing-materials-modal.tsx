@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog"
 import { AlertCircle, Edit3, Zap, Loader2, ArrowRight } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { getApiBase } from "@/lib/api"
 import type { JobData } from "@/types/job"
 
 interface MissingMaterialsModalProps {
@@ -45,7 +46,7 @@ export function MissingMaterialsModal({
     setIsHealing(true)
     setErrorMsg(null)
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/automation/auto-heal-and-approve", {
+      const res = await fetch(`${getApiBase()}/api/automation/auto-heal-and-approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ record_id: job.id }),

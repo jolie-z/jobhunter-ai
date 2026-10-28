@@ -31,6 +31,57 @@ logger.setLevel(logging.INFO)
 # 服务端同口径拒绝任意字符串，防止脏 type 直接入库污染评估链路
 PREFERENCE_TYPE_WHITELIST = {"核心加分", "职业愿景", "自动化阈值"}
 
+# upsert 首条策略时的默认名称（R1 P2：提取常量）
+DEFAULT_STRATEGY_NAME = "默认策略"
+
+# 2026-10-06：Tier2 AI 侦察兵内置示例规则（新装系统 ai_scout_rules 为空时回填展示，不落库）。
+# 选材口径：通用红线（用工形式/岗位性质/作息），不含个人行业偏好；desc 为"关键词判定
+# 边界+近义词+伪表述"三段式范例，供用户照此格式增删改。来源=开发机实测调优过的规则库。
+DEFAULT_AI_SCOUT_EXAMPLES: list[dict[str, str]] = [
+    {
+        "keyword": "单休",
+        "condition": "never",
+        "desc": "“单休”在招聘JD中通常指每周固定工作六天、休息一天的制度。近义词包括：单休制、一周一休、每周一天休息。不符合的伪表述：如轮休、调休或名义上单休但实际无固定休息日、工时超标的情况。大小周、单休、5天半工作制、每周工作6天、单双休、月休4+1天、月休4天、月休6天均为单休描述",
+    },
+    {
+        "keyword": "外包",
+        "condition": "never",
+        "desc": "关键特征：指非本公司直接雇佣的用工形式，如劳务派遣、项目外包、驻场服务、外派至甲方等。近义词包括“派遣”“驻场”“人力外包”“项目外派”。\n伪表述：公司内部岗位描述中包含“与XX公司合作”但未明确非直接雇佣关系，或虽提及“外包”但属于公司内部团队名称（如“XX外包部”），或是与外包团队合作，此类情况不符合。",
+    },
+    {
+        "keyword": "销售",
+        "condition": "never",
+        "desc": "销售指的是岗位性质是销售，如岗位title/JD表述里包含：销售、客户代表、电销、BD、客户经理、客户成功经理、拓展市场、电话回访、电话销售、网销、面销、销售顾问、产品销售等描述均表示该岗位可能是个销售性质的岗位",
+    },
+    {
+        "keyword": "实习",
+        "condition": "never",
+        "desc": "“实习”在招聘JD中通常指面向在校生或应届生的短期实践岗位，相关表述包括“实习岗位”“实习生”“实习期”等。\n近义/扩展表述：兼职实习、带薪实习、实习培训生。\n不符合的伪表述：\n1. 要求“有实习经历”但未明确招聘实习岗位；\n2. “实习证明”“实习经验”等仅作为经验要求而非岗位类型；\n3. “无实习要求”或“实习非必须”等否定性描述。",
+    },
+    {
+        "keyword": "兼职",
+        "condition": "never",
+        "desc": "“兼职”通常指非全职、非固定雇佣形式，包括短期合同、按小时计酬、项目制等。相关表述：临时工、小时工、弹性工作、非全日制。不符合的情况：招聘JD中实际要求全职工作时间，或将实习、志愿者等非典型雇佣关系包装为“兼职”。",
+    },
+]
+
+# 2026-10-06：AI 初评「求职偏好与核心加分项」内置示例（job_preferences 表空时回填展示，
+# 不落库）。选材口径：通用 AI 技术岗加分项范例，展示"类型+一条具体可判定的规则"格式。
+DEFAULT_PREFERENCE_EXAMPLES: list[dict[str, Any]] = [
+    {
+        "type": "核心加分",
+        "rule": "核心技术栈：深度应用大语言模型（LLM）、智能体架构（Agent/LangGraph）、RAG（检索增强生成）、工作流自动化平台（Dify/Coze/n8n）等；具备 Python + SQL 数据处理能力的岗位优先。",
+    },
+    {
+        "type": "核心加分",
+        "rule": "角色与自主权：提供“从 0 到 1 端到端交付”机会、允许独立负责完整模块、注重数据驱动与业务指标（如转化率、留存）的岗位优先。",
+    },
+    {
+        "type": "核心加分",
+        "rule": "理想薪资范围落在目标区间内（按自身定位填写，如 12K-25K）即视为匹配信号。",
+    },
+]
+
 CONTENT_TYPE_JSON = "application/json"
 # 原文快照两字段（自动建字段，见 resume_snapshot_service.ensure_resume_snapshot_fields）
 RESUME_SNAPSHOT_FIELD_ID = "原件快照ID"
@@ -256,8 +307,9 @@ def _invalidate_active_resume_meta_cache() -> None:
 
 
 def get_db_path() -> str:
+    from app.core.db_paths import job_hunter_db_path
     backend_dir = Path(__file__).resolve().parent.parent.parent
-    return str(backend_dir / "data" / "job_hunter.db")
+    return str(job_hunter_db_path(backend_dir / "data" / "job_hunter.db"))
 
 
 def _fetch_active_strategy_sync() -> ActiveStrategyResponse | None:
@@ -279,6 +331,9 @@ def _fetch_active_strategy_sync() -> ActiveStrategyResponse | None:
         if len(row) > 7 and row[7]:
             ai_rules = row[7]
 
+        # 真实语义（空即空）：示例规则禁止在此回填——本函数是核心生效策略读取口，
+        # 回填会让自动化清洗/初筛把示例当真实红线执行（R1 P1 修正：示例注入已上移
+        # 至 rules_router /active 端点的展示层）
         return ActiveStrategyResponse(
             min_salary_k=row[0],
             max_salary_k=row[1],
@@ -299,6 +354,36 @@ async def get_active_strategy() -> ActiveStrategyResponse:
     result = await asyncio.to_thread(_fetch_active_strategy_sync)
     if not result:
         raise HTTPException(status_code=404, detail="No active strategy found")
+    return result
+
+
+async def get_active_strategy_or_default() -> "ActiveStrategyResponse":
+    """前端配置面板专用（R1 P2：默认兜底装配收口至 service 层）。
+
+    无 active 行时返回"未配置"默认对象（数值 0/空数组 → 前端显示未配置态）
+    + 内置示例侦察兵规则；自动化清洗/初筛不经过此函数（它们走 get_active_strategy
+    的真实语义，空即空），示例不会被当真实红线执行。
+    """
+    try:
+        result = await asyncio.to_thread(_fetch_active_strategy_sync)
+    except HTTPException as e:
+        if e.status_code != 404:
+            raise
+        result = None
+    if result is None:
+        result = ActiveStrategyResponse(
+            min_salary_k=0,
+            max_salary_k=0,
+            experience_years_max=0,
+            exclude_education=[],
+            allowed_cities=[],
+            safe_phrases=[],
+            keyword_rules=[],
+        )
+    if not result.ai_scout_rules:
+        # 空规则统一收口：真实空配置与新建默认对象在此回填示例（展示层）
+        result.ai_scout_rules = [dict(r) for r in DEFAULT_AI_SCOUT_EXAMPLES]
+        result.ai_scout_rules_is_example = True
     return result
 
 
@@ -325,6 +410,30 @@ def _update_active_strategy_sync(data: UpdateStrategyRequest) -> None:
                 json.dumps(data.ai_scout_rules, ensure_ascii=False),
             ),
         )
+        # 2026-10-07 修保存静默丢失：新装系统 job_strategies 无行时 UPDATE 影响 0 行，
+        # 此前仍返回"策略更新成功"→ 前端保存后再打开依旧空配置（Windows 真机实测）。
+        # 改为 upsert：UPDATE 未命中任何行时 INSERT 首条 active 策略。
+        if cursor.rowcount == 0:
+            cursor.execute(
+                """
+                INSERT INTO job_strategies (
+                    strategy_name, is_active, min_salary_k, max_salary_k, experience_years_max,
+                    exclude_education, allowed_cities, safe_phrases, keyword_rules, ai_scout_rules
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    DEFAULT_STRATEGY_NAME,
+                    data.min_salary_k,
+                    data.max_salary_k,
+                    data.experience_years_max,
+                    json.dumps(data.exclude_education, ensure_ascii=False),
+                    json.dumps(data.allowed_cities, ensure_ascii=False),
+                    json.dumps(data.safe_phrases, ensure_ascii=False),
+                    json.dumps(data.keyword_rules, ensure_ascii=False),
+                    json.dumps(data.ai_scout_rules, ensure_ascii=False),
+                ),
+            )
+            logger.info("[策略] job_strategies 为空，已 INSERT 首条 active 策略（此前静默丢失）")
         conn.commit()
     finally:
         conn.close()
@@ -481,6 +590,19 @@ async def get_preferences_service() -> list[dict[str, Any]]:
             "rule": r["rule"],
             "status": r["status"],
         })
+    # 2026-10-07 修回填条件过窄：此前"formatted 全空"才回填——但表里常见仅一条
+    # 「自动化阈值」行（评估配置保存即写入），会被 bonus 过滤后前端仍见 0 条且无示例。
+    # 改为"无 核心加分/职业愿景 条目"即回填（仅展示层，不落库；is_example 供前端
+    # 显示提示条，用户增删改后按其真实配置展示）
+    if not any(f["type"] in ("核心加分", "职业愿景") for f in formatted):
+        for i, ex in enumerate(DEFAULT_PREFERENCE_EXAMPLES):
+            formatted.append({
+                "record_id": f"__example_{i + 1}",
+                "type": ex["type"],
+                "rule": ex["rule"],
+                "status": "启用",
+                "is_example": True,
+            })
     return formatted
 
 

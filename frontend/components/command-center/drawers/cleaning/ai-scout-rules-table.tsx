@@ -20,9 +20,11 @@ export interface AIScoutRule {
 interface AIScoutRulesTableProps {
   rules: AIScoutRule[]
   onChange: (rules: AIScoutRule[]) => void
+  // 2026-10-06：当前规则为后端回填的内置示例（空配置时），顶部显示提示条引导用户照格式增删
+  isExample?: boolean
 }
 
-export function AIScoutRulesTable({ rules, onChange }: AIScoutRulesTableProps) {
+export function AIScoutRulesTable({ rules, onChange, isExample = false }: AIScoutRulesTableProps) {
   const [predictingIdx, setPredictingIdx] = useState<number | null>(null)
 
   // 稳定 key 池：与 rules 下标一一对应，删除行时同步 splice，保证删除中间行后其余行 key 不变（避免用 idx 作 key 导致错位）
@@ -81,6 +83,11 @@ export function AIScoutRulesTable({ rules, onChange }: AIScoutRulesTableProps) {
 
   return (
     <div className="rounded-2xl border border-border/70 bg-card/60 p-4 shadow-xs backdrop-blur-xs space-y-3.5">
+      {isExample && rules.length > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+          当前展示的是内置示例规则（帮你参考格式：关键词 + 判定标准/伪表述排除）。可直接修改或删除，点「保存清洗规则」后即以你的配置为准。
+        </div>
+      )}
       {/* 极简顶栏 */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">

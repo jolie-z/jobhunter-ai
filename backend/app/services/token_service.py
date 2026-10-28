@@ -4,9 +4,11 @@ import os
 import sqlite3
 import uuid
 
+from app.core.db_paths import job_hunter_db_path
+
 logger = logging.getLogger("token_service")
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "job_hunter.db")
+DB_PATH = job_hunter_db_path(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "job_hunter.db"))
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS token_log (

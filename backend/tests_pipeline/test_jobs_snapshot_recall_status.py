@@ -64,18 +64,34 @@ class TestSqliteProcessStatusMapping:
         assert m["sub_status"] is None
         assert m["last_action_desc"] == "待投递"
 
-    def test_unknown_falls_to_eval_queued_not_bare_running(self):
-        """未知未来值兜底必须是评估排队（带 sub_status），绝不裸 running。"""
+    def test_unknown_falls_to_rejected_with_alert(self):
+        """2026-10-09 事故锁定：未知未来值兜底必须 rejected+告警文案，绝不伪装成活跃流转态
+        （旧兜底 running+ai_eval_queued 曾把飞书归档的「已淘汰」岗位画成「评估中」幽灵卡）。"""
         m = _map_sqlite_process_status("某个未来新增状态")
-        assert m["status"] == "running"
-        assert m["sub_status"] == "ai_eval_queued"
+        assert m["status"] == "rejected"
+        assert m["sub_status"] is None
+        assert "未知状态" in m["last_action_desc"] and "请反馈开发者" in m["last_action_desc"]
 
-    def test_none_and_empty_fall_to_unknown_branch(self):
-        """process_status 为 NULL/空串（表无 NOT NULL 约束，真实可达）必须走未知兜底而非抛异常。"""
-        for bad in (None, ""):
+    def test_none_and_empty_fall_to_scraped_default(self):
+        """process_status 为 NULL/空串（import_service 自建表无默认值，真实可达）不抛异常，
+        且按建表默认「已存入数据」语义呈现（不误画成淘汰）。"""
+        for bad in (None, "", "  "):
             m = _map_sqlite_process_status(bad)
-            assert m["status"] == "running"
-            assert m["sub_status"] == "ai_eval_queued"
+            assert m["status"] == "scraped"
+            assert m["sub_status"] is None
+
+    def test_legacy_archived_status_maps_rejected(self):
+        """飞书卡片归档存量旧词「已淘汰」必须映射 rejected（2026-10-09 事故直接根因）。"""
+        m = _map_sqlite_process_status("已淘汰")
+        assert m["status"] == "rejected"
+        assert "已确认淘汰" in m["last_action_desc"]
+
+    def test_active_intermediate_statuses_keep_running(self):
+        """清洗管道活跃中间态显式映射 running（不再依赖兜底）。"""
+        for st in ("清洗中", "待AI初筛", "待AI清洗", "待推送飞书"):
+            m = _map_sqlite_process_status(st)
+            assert m["status"] == "running", st
+            assert m["sub_status"] == "ai_eval_queued", st
 
 
 @contextmanager

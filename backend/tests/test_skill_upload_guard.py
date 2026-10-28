@@ -122,10 +122,11 @@ class _FakeMeta:
 
 
 class _FakeManager:
-    """SKILLS_DIR 指向 tmp_path 的假 manager：端点内 get_skill_manager 全部命中它"""
+    """SKILLS_DIR/CUSTOM_SKILLS_DIR 指向 tmp_path 的假 manager：端点内 get_skill_manager 全部命中它"""
 
     def __init__(self, skills_dir: Path):
         self.SKILLS_DIR = skills_dir
+        self.CUSTOM_SKILLS_DIR = skills_dir
         self.skills = {}
         self.loaded_contents = {}
         self.reference_maps = {}

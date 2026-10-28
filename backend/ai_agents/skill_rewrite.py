@@ -3,11 +3,15 @@ import re
 import time
 import json
 import logging
-from typing import Tuple, Dict, List, Optional
+from typing import Tuple, Dict, List, Optional, Callable, Any
 from app.core.config import settings
-from app.core.llm_client import get_openai_client
+from app.core.llm_client import chat_create_no_thinking, get_openai_client
 
 logger = logging.getLogger("skill_rewrite")
+
+# 改写输出上限（2026-10-23 工单：原 8192 被推理模型思考+正文合计撞顶，产物在
+# 第三段工作经历中途截断、残缺内容清空了飞书项目经历/教育背景）。32768 网关已验证接受。
+_REWRITE_MAX_TOKENS = 32768
 
 
 def truth_boundary_check(text: str) -> Tuple[str, List[Dict]]:
@@ -38,7 +42,7 @@ def truth_boundary_check(text: str) -> Tuple[str, List[Dict]]:
             for m in matches:
                 downgrades.append({
                     "original": m.group(),
-                    "replaced": safe,
+                    "replaced": m.expand(safe),
                     "reason": rule.get("reason", ""),
                     "severity": rule.get("severity", "low"),
                 })
@@ -51,9 +55,20 @@ def truth_boundary_check(text: str) -> Tuple[str, List[Dict]]:
     return text, downgrades
 
 
+def diagnosis_has_content(diagnosis_dict: dict | None) -> bool:
+    """诊断字典是否有实质内容：任一值去空白后非空（None/空串/纯空白均视为无）。
+
+    Prompt 注入判定与 SSE 阶段文案共用此口径：两处一旦分叉，就会出现
+    「文案说未读到诊断、Prompt 却被兜底 JSON dump 注入一坨空白」的自相矛盾。
+    """
+    if not diagnosis_dict:
+        return False
+    return any(bool(str(v or "").strip()) for v in diagnosis_dict.values())
+
+
 def format_diagnosis_context(diagnosis_dict: dict) -> str:
     """将诊断字典格式化为对大模型极具可读性的避坑与高杠杆指导文档"""
-    if not diagnosis_dict or not any(bool(v) for v in diagnosis_dict.values()):
+    if not diagnosis_has_content(diagnosis_dict):
         return ""
     
     sections = []
@@ -149,10 +164,26 @@ def run_skill_based_rewrite(
     diagnosis_dict: dict,
     job_name: str = "",
     skill_id: str = "",
-    include_diagnosis: bool = True
+    include_diagnosis: bool = True,
+    on_event: Optional[Callable[[str, Dict[str, Any]], None]] = None
 ) -> Tuple[str, Dict]:
+    """官方单文件剧本（非多文件技能包）的标准 Prompt 重构引擎。
+
+    on_event: 可选 SSE 事件回调 (event_type, data)。本路径是一次性大模型调用，
+    此前零埋点导致前端「Skill Agent 实时作战推演看板」全程静止（2026-10-09 用户报修）；
+    现按阶段边界补发事件，让看板在单轮模式下也有真实进度可看。
+    回调异常一律吞掉——埋点永不阻断改写主流程。
+    """
+    def _emit(event_type: str, payload: Optional[dict] = None):
+        if on_event:
+            try:
+                on_event(event_type, payload or {})
+            except Exception as e:
+                logger.warning(f"on_event 回调异常（忽略）: {e}")
+
     print(f"🚀 [Skill Executor] 启动基于 Skill 的简历重构引擎，岗位: {job_name} | Skill ID: {skill_id or 'default'} | 带入诊断: {include_diagnosis}")
-    
+    _emit("agent_start", {"engine": "official", "message": f"📜 标准剧本引擎启动（岗位: {job_name or '未指定'}）"})
+
     system_prompt = ""
     if skill_id:
         try:
@@ -161,6 +192,7 @@ def run_skill_based_rewrite(
             system_prompt = manager.get_skill_content(skill_id) or ""
             if system_prompt:
                 print(f"📜 [Skill Executor] 成功加载动态技能: {skill_id}")
+                _emit("step_start", {"step": 1, "max_turns": 4, "message": f"📜 已装载改写剧本: {skill_id}"})
         except Exception as e:
             logger.warning(f"⚠️ 加载动态技能 {skill_id} 失败，将回退默认技能: {e}")
 
@@ -169,6 +201,7 @@ def run_skill_based_rewrite(
         try:
             with open(skill_file_path, "r", encoding="utf-8") as f:
                 system_prompt = f.read()
+            _emit("step_start", {"step": 1, "max_turns": 4, "message": "📜 已装载官方改写剧本 (resume_rewrite)"})
         except FileNotFoundError:
             return f"❌ 找不到简历重构策略文件: {skill_file_path}", {}
 
@@ -182,10 +215,13 @@ def run_skill_based_rewrite(
 
     logger.info(f"🧩 [白盒化追踪] System Prompt 组装完成 (长度: {len(final_system_prompt)} 字符), User Prompt (长度: {len(user_prompt)} 字符)")
     print(f"\n🧩 [白盒化追踪] 装配完成: System Prompt ({len(final_system_prompt)} chars) + User Context ({len(user_prompt)} chars)")
+    _emit("thinking", {"message": f"🧩 提示词装配完成（System {len(final_system_prompt)} 字 + 上下文 {len(user_prompt)} 字）"})
 
     client = get_openai_client()
     if not client:
         return "❌ AI 服务未配置 (api_key)", {}
+
+    _emit("step_start", {"step": 2, "max_turns": 4, "message": "🧠 大模型单轮深度推演中（官方剧本模式），请耐心等待…"})
 
     _empty_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     try:
@@ -193,21 +229,35 @@ def run_skill_based_rewrite(
         logger.info(f"⏳ [白盒化追踪] 正在向大模型 ({model_name}) 发起简历定制请求...")
         print(f"⏳ [白盒化追踪] 正在向大模型 ({model_name}) 发起简历定制请求，请稍候...")
         start_time = time.time()
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": final_system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.3,
-            max_tokens=8192
-        )
+
+        # 推理模型关思考（结构化改写任务无思考增益，且思考烧输出预算）——
+        # 公共入口见 app/core/llm_client.chat_create_no_thinking（含网关拒参降级）
+        def _do_create(**extra):
+            return chat_create_no_thinking(
+                client,
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": final_system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.3,
+                # 2026-10-23 工单：8192 上限曾被推理模型「思考计入输出预算」撞顶——
+                # 带画像+诊断注入的长输入下思考+正文超限，正文在第三段工作经历中途被
+                # 拦腰截断，残缺内容一路写回飞书清空了项目经历/教育背景。提额至 32768
+                #（网关已验证接受），并叠加关思考双保险。
+                max_tokens=_REWRITE_MAX_TOKENS,
+                **extra,
+            )
+
+        response = _do_create()
         elapsed = time.time() - start_time
-        
-        choice_msg = response.choices[0].message
+
+        choice = response.choices[0] if getattr(response, "choices", None) else None
+        choice_msg = getattr(choice, "message", None)
         raw_content = (getattr(choice_msg, "content", "") or "").strip()
         reasoning_content = (getattr(choice_msg, "reasoning_content", "") or "").strip()
-        
+        finish_reason = (getattr(choice, "finish_reason", "") or "").strip()
+
         # 兼容 reasoning 模型将内容输出在 reasoning_content 的情况
         final_md = raw_content
         if not final_md and reasoning_content:
@@ -216,11 +266,19 @@ def run_skill_based_rewrite(
 
         logger.info(f"✅ [白盒化追踪] 大模型响应完成，耗时: {elapsed:.2f}s，生成内容长度: {len(final_md)} 字符")
         print(f"✅ [白盒化追踪] 大模型响应完成，耗时: {elapsed:.2f}s，生成内容长度: {len(final_md)} 字符")
+        _emit("thinking", {"message": f"✅ 大模型响应完成（耗时 {elapsed:.0f}s，生成 {len(final_md)} 字），正在萃取定稿正文…"})
 
         if not final_md:
             logger.error("❌ [Skill Executor] 大模型返回空内容！")
-            return "❌ 简历定制失败：大模型响应为空（可能因参考资料过长或网络超时），请再次重试。", _empty_usage
-        
+            reason = "（输出被截断，finish_reason=length，疑似输出预算被思考耗尽）" if finish_reason == "length" else ""
+            return f"❌ 简历定制失败：大模型响应为空{reason}，请再次重试。", _empty_usage
+
+        # 截断显式失败（2026-10-23 工单根治项）：length 意味着正文不完整——残缺简历
+        # 绝不进入提取/解析/写回链路（下游 skill_agent_router 对 ❌ 前缀错误串已有拒绝落盘闸）
+        if finish_reason == "length":
+            logger.error(f"❌ [Skill Executor] 输出触顶截断（finish_reason=length），生成 {len(final_md)} 字符，拒绝使用残缺内容")
+            return "❌ 简历定制失败：输出被截断（finish_reason=length，输出预算被耗尽），已拒绝使用残缺内容，请重试。", _empty_usage
+
         # 提取 <THINKING> 标签（用于白盒化展示在 Python 终端）
         thinking_match = re.search(r"<THINKING>\s*(.*?)\s*</THINKING>", final_md, re.DOTALL | re.IGNORECASE)
         if thinking_match:
@@ -229,12 +287,25 @@ def run_skill_based_rewrite(
             print("\033[96m🧠 [Agent 深度思考白盒日志]\033[0m")
             print("\033[90m" + thinking_content + "\033[0m")
             print("\033[96m" + "="*60 + "\033[0m\n")
-            
+
+        # 思考块无条件从正文剔除（含只有开标签未闭合的截断形态）——
+        # 任何路径都不允许 <THINKING> 混入简历正文流转到解析与落盘
+        final_md = re.sub(r"<THINKING>.*?(?:</THINKING>|$)", "", final_md, flags=re.DOTALL | re.IGNORECASE).strip()
+        if not final_md:
+            logger.error("❌ [Skill Executor] 剔除思考块后正文为空（输出仅含思考或标签不合规），拒绝使用")
+            return "❌ 简历定制失败：剔除思考块后正文为空（输出仅含思考或标签不合规），请重试。", _empty_usage
+
         # 提取 <FINAL_RESUME> 标签内部的文本作为返回内容
         match = re.search(r"<FINAL_RESUME>\s*(.*?)\s*</FINAL_RESUME>", final_md, re.DOTALL | re.IGNORECASE)
         if match:
             final_md = match.group(1).strip()
+        elif re.search(r"<FINAL_RESUME>", final_md, re.IGNORECASE):
+            # 有开标签无闭合 = 定稿没写完（截断/异常输出的铁证）——显式失败，
+            # 不再把含半截内容的全文当正文（2026-10-23 工单根治项）
+            logger.error("❌ [Skill Executor] <FINAL_RESUME> 定稿标签未闭合（疑似输出被截断），拒绝使用残缺内容")
+            return "❌ 简历定制失败：定稿标签 <FINAL_RESUME> 未闭合（输出疑似被截断），已拒绝使用残缺内容，请重试。", _empty_usage
         else:
+            # 模型未按剧本用标签、直接输出 Markdown：走旧兜底（此时思考块已剔除，安全）
             if final_md.startswith("```markdown"):
                 final_md = final_md[11:]
             elif final_md.startswith("```"):
@@ -249,6 +320,7 @@ def run_skill_based_rewrite(
             print(f"\033[93m🛡️ [Truth Boundary] 安全阀触发 {len(downgrades)} 处降级\033[0m")
             for d in downgrades:
                 print(f"\033[90m   '{d['original']}' → '{d['replaced']}' ({d['reason']})\033[0m")
+        _emit("tool_call", {"tool": "truth_boundary_check", "message": f"🛡️ Truth Boundary 安全阀校验完成（降级 {len(downgrades)} 处）"})
 
         # ── 证据强度标签清理（确保输出简历无 [稳] [需补证] 尾缀） ──
         final_md = re.sub(r'\s*\[(?:稳|需补证|补证后可用)\]', '', final_md)
@@ -268,6 +340,18 @@ def run_skill_based_rewrite(
             "cached_tokens": cached,
             "bullet_confidence": confidence_summary,
         } if usage else _empty_usage
+        # 单轮路径的 token 上抛（与 runner 逐轮 usage 同款事件契约）。必须位于 usage_dict
+        # 赋值之后——挪回响应刚返回处会 NameError 并被下方 except 静默吞掉，事件永不发出
+        try:
+            _emit("usage", {
+                "prompt_tokens": int(usage_dict.get("prompt_tokens", 0) or 0),
+                "completion_tokens": int(usage_dict.get("completion_tokens", 0) or 0),
+                "total_tokens": int(usage_dict.get("total_tokens", 0) or 0),
+                "cached_tokens": int(usage_dict.get("cached_tokens", 0) or 0),
+                "message": f"🪙 Token 消耗 {usage_dict.get('total_tokens', 0)}",
+            })
+        except Exception:
+            pass
         
         pt = usage_dict.get("prompt_tokens", 0)
         ct = usage_dict.get("completion_tokens", 0)

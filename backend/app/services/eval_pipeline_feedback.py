@@ -216,7 +216,8 @@ async def _run_pipeline_with_feedback(
         )
         res = res if isinstance(res, dict) else {}
         outcome = (res.get("outcome") or "").strip()
-        # outcome=stopped/waiting 时 error 字段装的是「跟进状态」文案（如 简历人工复核），不是失败
+        # graph_runner 正常终点的收尾跟进状态在 status 键（error 字段只装真错误，恒空）；
+        # 旧版把状态文案装 error，这里保留兜底读法兼容历史返回
         status = (res.get("status") or "").strip() or (res.get("error") or "").strip() or "物料已产出"
 
         if outcome == "failed":

@@ -12,6 +12,9 @@ class ActiveStrategyResponse(BaseModel):
     safe_phrases: list[str]
     keyword_rules: list[Any]
     ai_scout_rules: list[Any] = []
+    # 2026-10-06：ai_scout_rules 为空时由后端回填内置示例规则（仅展示层，不落库），
+    # 前端据此显示"示例"提示条；用户保存后按其真实配置展示
+    ai_scout_rules_is_example: bool = False
 
 class SaveConfigRequest(BaseModel):
     table_type: str  # "resume"

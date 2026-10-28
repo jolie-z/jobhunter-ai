@@ -143,7 +143,20 @@ def launch_platform_session_endpoint(body: LaunchPlatformBody):
     except Exception as e:
         logger.error(f"❌ [PLATFORM_SESSIONS] 唤起浏览器失败: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"唤起浏览器失败: {e}")
-    return {"code": 0, "data": res, "msg": f"已唤起 {config.display_name} 浏览器"}
+
+    # 猎聘唤起后补注入（2026-10-09）：把用户「手动拉起+登录」动作系统化——profile 未登录时
+    # 自动注入本地 cookie 文件并回写，JSON 新鲜时唤起即已登录；失效则提示扫码。
+    login_note = ""
+    if config.name == "liepin":
+        try:
+            import liepin_session
+            logged_in = liepin_session.inject_cookies_if_needed()
+            login_note = "，已自动恢复登录态" if logged_in else "，本地 Cookie 已失效请在窗口内扫码登录"
+            logger.info(f"🍪 [PLATFORM_SESSIONS] 猎聘唤起后注入完成: logged_in={logged_in}")
+        except Exception as inj_e:
+            logger.warning(f"[PLATFORM_SESSIONS] 猎聘唤起后注入异常（不影响唤起）: {inj_e}")
+
+    return {"code": 0, "data": res, "msg": f"已唤起 {config.display_name} 浏览器{login_note}"}
 
 
 @router.post("/platform-sessions/close-all")
@@ -151,8 +164,11 @@ def close_all_platform_sessions_endpoint():
     """安全关闭所有已拉起的爬虫 Edge 浏览器，释放内存"""
     logger.info("🛑 [PLATFORM_SESSIONS] 收到安全关闭所有爬虫浏览器请求")
     from app.session.browser import close_all_edges
+    from app.session.preflight import clear_platform_ready_cache
 
     count = close_all_edges()
+    # 投递预检的成功 TTL 缓存随关闭一并失效（不清则最长 300s 内守卫被缓存穿透）
+    clear_platform_ready_cache()
     logger.info(f"✅ [PLATFORM_SESSIONS] 成功关闭 {count} 个浏览器进程")
     return {"code": 0, "data": {"closed_count": count}, "msg": f"已关闭 {count} 个浏览器进程"}
 
@@ -257,7 +273,7 @@ async def suggest_keywords():
 {resume_text[:6000]}
 
 A级岗位画像：
-{jd_report[:3000]}"""
+{jd_report}"""
     r = await asyncio.to_thread(
         client.chat.completions.create,
         model=settings.OPENAI_MODEL,

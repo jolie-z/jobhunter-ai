@@ -167,15 +167,9 @@ async def _deliver_approved_worker_inner(thread_ids: list[str]):
 
             raw_plat = (_txt(fields.get("招聘平台", "")) or "").lower()
 
-            if "boss" in raw_plat:
-                plat_key = "boss"
-            elif "智联" in raw_plat or "zhilian" in raw_plat:
-                plat_key = "zhilian"
-            elif "猎聘" in raw_plat or "liepin" in raw_plat:
-                plat_key = "liepin"
-            elif "51" in raw_plat or "前程" in raw_plat or "job51" in raw_plat:
-                plat_key = "51job"
-            else:
+            from app.session.registry import platform_display_to_key
+            plat_key = platform_display_to_key(raw_plat)
+            if plat_key not in ("boss", "zhilian", "liepin", "51job"):
                 plat_key = "other"
 
             if plat_key not in allowed_platforms:
@@ -204,6 +198,34 @@ async def _deliver_approved_worker_inner(thread_ids: list[str]):
         except Exception as e:
             logger.warning(f"⚠️ [投递编排] 预拉取岗位 {t_id} 元数据异常: {e}")
             by_platform["other"]["mass"].append({"t_id": t_id, "platform": "other", "is_custom": False, "grade": "C", "company": "", "title": "", "fields": {}})
+
+    # 批次级投递预检（2026-10-08）：浏览器探活/僵尸自愈/拉起 + 登录态判定；
+    # 未通过平台整批跳过——岗位保留「待投递」门牌，仅在失败日志记 [环境] 原因，下轮自然重试。
+    # 预检整体 try/except：预检自身故障绝不阻断投递（退回原流程）。
+    # pytest 环境跳过：单测无真实浏览器，探活会误拉起 Edge（下方防风控 sleep 的 PYTEST 门同款先例）。
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        try:
+            from app.session.preflight import ensure_delivery_platforms_ready
+            need_plats = [p for p in PLATFORM_ORDER[:4] if by_platform[p]["custom"] or by_platform[p]["mass"]]
+            if need_plats:
+                ready_map = await ensure_delivery_platforms_ready(need_plats)
+                from app.services.feishu_service import update_feishu_record
+                for p in need_plats:
+                    if ready_map.get(p, False):
+                        continue
+                    skipped_items = by_platform[p]["custom"] + by_platform[p]["mass"]
+                    logger.warning(f"⛔ [手动批量投递] {p} 浏览器/登录态预检未通过，{len(skipped_items)} 个岗位保留「待投递」，本次跳过")
+                    for it in skipped_items:
+                        try:
+                            await asyncio.to_thread(
+                                update_feishu_record, it["t_id"],
+                                {"自动投递失败日志": f"[环境] {p} 浏览器/登录态预检未通过，手动批量投递跳过"},
+                            )
+                        except Exception as fe:
+                            logger.warning(f"[手动批量投递] 回写跳过日志异常 ({it['t_id']}): {fe}")
+                    by_platform[p] = {"custom": [], "mass": []}
+        except Exception as pre_e:
+            logger.warning(f"[手动批量投递] 批次预检异常（不阻断投递，按原流程继续）: {pre_e}")
 
     # 🌟 海投物料保鲜：手动批量同样发射前统一重刷海投母本物料（渲染一次、复用全批）
     all_mass_items = [it for plat in PLATFORM_ORDER for it in by_platform[plat]["mass"]]

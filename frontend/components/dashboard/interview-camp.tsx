@@ -20,14 +20,13 @@ import { useInterviewIntel } from "../../hooks/use-interview-intel"
 import { useQuestionBank } from "../../hooks/use-question-bank"
 import { useInterviewVoice } from "../../hooks/use-interview-voice"
 import { useJobDetail } from "../../hooks/use-job-detail"
+import { isInterviewFollowStatus } from "@/lib/interview-status"
 
 export function InterviewCamp({ jobs }: { jobs: JobData[] }) {
   // 🌟 必须 memo：若每次渲染都生成新数组，下方 activeJob 的 useMemo 会跟着每次重算，
   // 导致 useInterviewVoice 的同步 effect 无限触发（Maximum update depth exceeded + 输入被回退）
   const interviewJobs = useMemo(() => (
-    jobs ? jobs.filter(j =>
-      ["待面试","一面", "二面", "三面", "Offer", "已下发Offer"].includes(j.followStatus?.trim() || "")
-    ) : []
+    jobs ? jobs.filter(j => isInterviewFollowStatus(j.followStatus)) : []
   ), [jobs])
 
   const [activeJobId, setActiveJobId] = useState(interviewJobs[0]?.id || "")

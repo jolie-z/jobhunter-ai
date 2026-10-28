@@ -6,8 +6,12 @@ import asyncio
 import os
 import sqlite3
 
+# JOBHUNTER_DB_PATH 主库覆盖阀门（M1 子项②）
+from app.core.db_paths import job_hunter_db_path
+
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DB_PATH = os.path.join(PROJECT_ROOT, "data", "job_hunter.db")
+# 显式覆盖时统一指向同一文件；未设 env 保持 backend/data 锚点原样
+DB_PATH = job_hunter_db_path(os.path.join(PROJECT_ROOT, "data", "job_hunter.db"))
 
 
 async def _scraping_completion_monitor(

@@ -1,7 +1,9 @@
-import os
 import json
+import math
+import os
 import threading
 from pathlib import Path
+from typing import Any
 from dotenv import load_dotenv
 
 # 1. 暴力清除进程环境变量（最彻底的防代理方式）
@@ -14,18 +16,39 @@ env_path = root_dir / '.env'
 load_dotenv(dotenv_path=env_path)
 
 # 3. settings.json 路径（图形化配置界面写入此文件）
-SETTINGS_JSON_PATH = Path(__file__).resolve().parent / "data" / "settings.json"
+# db_paths 阀门：dev 态逐字保持 common/data 锚点，打包态落 JOBHUNTER_DATA_DIR/common（与 app 层 settings.json 区分）
+from app.core.db_paths import writable_path
+
+SETTINGS_JSON_PATH = writable_path(
+    Path(__file__).resolve().parent / "data" / "settings.json", "common/settings.json"
+)
+
+
+# settings.json mtime 缓存（热控语义不变：文件一变 mtime 即变，读取立即可见；
+# 仅省去高频调用方每次 open+json.load 的重复解析——LLM 闸门每次发送要读多轮开关）
+_settings_cache: dict = {"mtime_ns": None, "data": {}}
 
 
 def _load_settings_json() -> dict:
-    """从 settings.json 动态读取配置，失败时返回空字典。"""
+    """从 settings.json 动态读取配置，失败时返回空字典（返回副本，防调用方就地篡改缓存）。"""
     try:
         if SETTINGS_JSON_PATH.exists():
+            mtime_ns = SETTINGS_JSON_PATH.stat().st_mtime_ns
+            if _settings_cache["mtime_ns"] == mtime_ns:
+                return _settings_cache["data"].copy()
             with open(SETTINGS_JSON_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            _settings_cache["mtime_ns"] = mtime_ns
+            _settings_cache["data"] = data
+            return data.copy()
     except Exception:
         pass
     return {}
+
+
+def get_setting(key: str, default: Any = None) -> Any:
+    """从 settings.json 动态读取指定配置项（页面配置优先源）。"""
+    return _load_settings_json().get(key, default)
 
 
 def _cfg(*env_keys: str, json_key: str = None):
@@ -76,54 +99,153 @@ TAVILY_API_KEY = _cfg("TAVILY_API_KEY", json_key="TAVILY_API_KEY")
 
 # ==================== 🌟 动态客户端 Getter（每次调用均重读 settings.json）====================
 
-def get_safe_httpx_client():
+# LLM HTTP 超时（秒）。写死 180s 的旧值是按 42s 级快模型定的线，2026-10-13 画像事故
+# （glm-5.3-flash 等慢思考模型单次 175~193s 必撞线，9 连发超时锁死生成锁 37 分钟）后
+# 改为可配置 + 默认 360s——BYO 模型是产品功能，软件不假设用户带的模型都能在 180s 内完成。
+DEFAULT_LLM_TIMEOUT_SECONDS = 360.0
+
+
+def get_llm_timeout_seconds() -> float:
+    """LLM HTTP 超时（秒）。读 LLM_TIMEOUT_SECONDS（settings.json / .env 均可），
+    缺失/非法/非正数一律回落默认——配置解析绝不抛错（缺失即放行的仓库红线同源）。"""
+    raw = _cfg("LLM_TIMEOUT_SECONDS", json_key="LLM_TIMEOUT_SECONDS")
+    if isinstance(raw, bool):  # JSON 误配 true/false：float(True)=1.0s 会激进超时
+        return DEFAULT_LLM_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+        if value > 0 and math.isfinite(value):
+            return value
+    except (TypeError, ValueError):
+        pass
+    return DEFAULT_LLM_TIMEOUT_SECONDS
+
+
+def get_safe_httpx_client(timeout: float | None = None):
     import httpx
     return httpx.Client(
         proxy=None,           # 🌟 适配新版 httpx 的单数形式
         trust_env=False,      # 🌟 告诉 httpx 不要去读系统代理环境变量
-        timeout=180.0
+        timeout=timeout if timeout is not None else get_llm_timeout_seconds(),
     )
 
-# 客户端连接复用缓存：指纹 (api_key, base_url, caller, max_retries) -> 包装后的 TrackedClient。
-# 原先每次调用新建 OpenAI 客户端，每轮 LLM 调用都重付 TCP+TLS 握手（2026-09-23 慢因修复）。
+
+def get_safe_async_httpx_client(timeout: float | None = None):
+    """返回用于异步 AsyncOpenAI 的安全 httpx.AsyncClient（同步对齐，禁用代理变量污染）。"""
+    import httpx
+    return httpx.AsyncClient(
+        proxy=None,
+        trust_env=False,
+        timeout=timeout if timeout is not None else get_llm_timeout_seconds(),
+    )
+
+# 默认各调用模块配置的重试次数（纯数据常量字典，GLM2-P1-2 规范：common/config 绝不反向 import llm_retry）
+# 注意：重试次数 N 意味着总共执行 N + 1 次尝试。
+DEFAULT_CALLER_MAX_RETRIES: dict[str, int] = {
+    "jd_report": 0,       # 自带外层 3 次业务重试循环，底层单发消灭嵌套放大
+    "grill": 1,           # 经历拷问交互链路
+    "agent_map": 2,       # 在线简历映射（总共尝试 3 次）
+    "diagnostics": 1,     # 故障诊断
+    "llm_client": 3,      # 通用客户端
+}
+
+
+def _is_retry_policy_enabled_data() -> bool:
+    """纯数据判定重试策略是否启用（GLM2-P1-4: settings.json > 环境变量 > 默认 True；与 app.core.llm_retry.is_llm_retry_policy_enabled 严格对齐）。"""
+    try:
+        val = get_setting("LLM_RETRY_POLICY_ENABLED")
+        if val is not None:
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, (int, float)):
+                return bool(val)
+            if isinstance(val, str):
+                return val.strip().lower() in ("true", "1", "yes", "on")
+    except Exception:
+        pass
+    env_val = os.getenv("LLM_RETRY_POLICY_ENABLED")
+    if env_val is not None:
+        return env_val.strip().lower() in ("true", "1", "yes", "on")
+    return True
+
+
+# 客户端连接复用缓存：指纹 (api_key, base_url, caller, max_retries, timeout, policy_on) -> 包装后的 TrackedClient。
 _openai_client_cache: dict = {}
 _openai_client_lock = threading.Lock()
 _OPENAI_CLIENT_CACHE_MAX = 32
 
+_async_openai_client_cache: dict = {}
+_async_openai_client_lock = threading.Lock()
 
-def get_openai_client(caller: str = "", max_retries: int = 3):
+
+def get_openai_client(caller: str = "", max_retries: int | None = None, timeout: float | None = None):
     """返回使用最新配置的 OpenAI 客户端（动态读取，感知 settings.json 变更）。
-    自动包装 token 追踪代理，所有调用方的 LLM 消耗均会被记录。
+    自动包装 token 追踪与统一治理代理，所有调用方的 LLM 消耗均会被记录与治理。
 
-    按 (key, url, caller, max_retries) 指纹缓存复用连接池；配置变更时指纹失配自动重建。
-    caller 进指纹是为保留 TrackedClient 的按模块埋点语义（全仓约 18 个 caller 标签，
-    容量 32 内 FIFO 淘汰极少触发；每个池为少量 keep-alive 空闲连接，资源开销远小于
-    每次调用重付 TCP+TLS 握手）。淘汰不显式 close：避免在锁内做阻塞 I/O，旧连接由 GC 回收。
-    max_retries 默认维持全局 3 次（后台批量链路的韧性不变）；交互类调用方
-    （grill/排版/联动）显式传 1——SDK 仅对 408/429/5xx 重试，180s 超时 × 3 次重试
-    会把单次失败放大到 12 分钟级挂死（实测排版单模块已 59s）。
+    按 (key, url, caller, configured_retries, timeout, policy_on) 指纹缓存复用连接池；配置变更时指纹失配自动重建。
+    策略开启时底层 SDK max_retries=0（重试由统一策略层接管，杜绝隐式重试放大器）；
+    configured_retries 挂载在 raw_client._configured_max_retries 供策略层单向读取。
     """
     from openai import OpenAI
     from app.core.llm_tracker import make_tracked_client
 
     key = _cfg("OPENAI_API_KEY", "LLM_API_KEY", "api_key", json_key="OPENAI_API_KEY")
     url = _cfg("OPENAI_BASE_URL", "LLM_BASE_URL", "base_url", json_key="OPENAI_BASE_URL")
-    fingerprint = (key, url, caller, max_retries)
+    timeout_val = timeout if timeout is not None else get_llm_timeout_seconds()
+
+    configured_retries = max_retries if max_retries is not None else DEFAULT_CALLER_MAX_RETRIES.get(caller, 2)
+    policy_enabled = _is_retry_policy_enabled_data()
+    sdk_retries = 0 if policy_enabled else configured_retries
+
+    fingerprint = (key, url, caller, configured_retries, timeout_val, policy_enabled)
     with _openai_client_lock:
         cached = _openai_client_cache.get(fingerprint)
         if cached is None:
             raw_client = OpenAI(
                 api_key=key,
                 base_url=url,
-                http_client=get_safe_httpx_client(),
-                max_retries=max_retries
+                http_client=get_safe_httpx_client(timeout_val),
+                max_retries=sdk_retries,
+                timeout=timeout_val,
             )
-            cached = make_tracked_client(raw_client, caller=caller)
+            raw_client._configured_max_retries = configured_retries
+            cached = make_tracked_client(raw_client, caller=caller, client_for_policy=raw_client)
             if len(_openai_client_cache) >= _OPENAI_CLIENT_CACHE_MAX:
-                # FIFO 淘汰最旧指纹（dict 保序）；不显式 close——避免在锁内做阻塞 I/O，
-                # 旧连接由 GC 回收
                 _openai_client_cache.pop(next(iter(_openai_client_cache)))
             _openai_client_cache[fingerprint] = cached
+        return cached
+
+
+def get_async_openai_client(caller: str = "", max_retries: int | None = None, timeout: float | None = None):
+    """返回使用最新配置的 AsyncOpenAI 客户端（动态读取，感知 settings.json 变更）。
+    自动包装异步 token 追踪与统一治理代理。
+    """
+    from openai import AsyncOpenAI
+    from app.core.llm_tracker import make_tracked_client
+
+    key = _cfg("OPENAI_API_KEY", "LLM_API_KEY", "api_key", json_key="OPENAI_API_KEY")
+    url = _cfg("OPENAI_BASE_URL", "LLM_BASE_URL", "base_url", json_key="OPENAI_BASE_URL")
+    timeout_val = timeout if timeout is not None else get_llm_timeout_seconds()
+
+    configured_retries = max_retries if max_retries is not None else DEFAULT_CALLER_MAX_RETRIES.get(caller, 2)
+    policy_enabled = _is_retry_policy_enabled_data()
+    sdk_retries = 0 if policy_enabled else configured_retries
+
+    fingerprint = (key, url, caller, configured_retries, timeout_val, policy_enabled)
+    with _async_openai_client_lock:
+        cached = _async_openai_client_cache.get(fingerprint)
+        if cached is None:
+            raw_client = AsyncOpenAI(
+                api_key=key,
+                base_url=url,
+                http_client=get_safe_async_httpx_client(timeout_val),
+                max_retries=sdk_retries,
+                timeout=timeout_val,
+            )
+            raw_client._configured_max_retries = configured_retries
+            cached = make_tracked_client(raw_client, caller=caller, client_for_policy=raw_client)
+            if len(_async_openai_client_cache) >= _OPENAI_CLIENT_CACHE_MAX:
+                _async_openai_client_cache.pop(next(iter(_async_openai_client_cache)))
+            _async_openai_client_cache[fingerprint] = cached
         return cached
 
 

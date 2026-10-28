@@ -23,6 +23,9 @@ from pathlib import Path
 
 from app.core.config import settings
 
+# M2 收口：JOBHUNTER_DATA_DIR 注入时落用户数据目录
+from app.core.db_paths import writable_path
+
 logger = logging.getLogger("session_manager")
 
 # ==========================================
@@ -30,7 +33,8 @@ logger = logging.getLogger("session_manager")
 # ==========================================
 SESSION_TIMEOUT_MINUTES = getattr(settings, "SESSION_TIMEOUT_MINUTES", 30)
 # 默认绝对路径：backend/data/sessions.db，防止启动目录漂移在根目录新建多余的 data/sessions.db
-SESSION_DB_PATH = str(Path(__file__).resolve().parents[2] / "data" / "sessions.db")
+# M2 收口：JOBHUNTER_DATA_DIR 注入时落用户数据目录
+SESSION_DB_PATH = str(writable_path(Path(__file__).resolve().parents[2] / "data" / "sessions.db", "sessions.db"))
 
 # ==========================================
 # 数据结构

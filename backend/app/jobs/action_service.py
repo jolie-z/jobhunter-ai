@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -322,6 +323,23 @@ async def save_transcript_action(payload: SaveTranscriptRequest) -> dict[str, An
 from app.jobs.schemas import SaveManualResumeRequest  # noqa: E402
 
 
+def normalize_resume_json_field(text):
+    """统一「AI改写JSON」字段的序列化形态（2026-10-11 排查：编辑区保存=紧凑串、
+    工作区保存/导出预存=indent-2，同字段两套字节格式，用户对表时困惑 7440≠6070）。
+    入参支持 dict（同进程内存对象，免 dump/load 往返）或 str；合法 JSON 统一转
+    indent=2（飞书单元格人类可读优先）；v1 markdown 等非 JSON 原样。
+    """
+    if isinstance(text, dict):
+        return json.dumps(text, ensure_ascii=False, indent=2)
+    t = (text or "").strip()
+    if not t.startswith("{"):
+        return text or ""
+    try:
+        return json.dumps(json.loads(t), ensure_ascii=False, indent=2)
+    except (ValueError, TypeError):
+        return text or ""
+
+
 async def save_manual_resume_action(payload: SaveManualResumeRequest) -> dict[str, Any]:
     pure_record_id = extract_record_id(payload.job_id)
     from app.core.feishu_client import feishu_client
@@ -341,7 +359,7 @@ async def save_manual_resume_action(payload: SaveManualResumeRequest) -> dict[st
         except Exception as e:
             logger.warning(f"获取岗位当前跟进状态异常(fail-safe): {e}")
 
-    fields_to_update: dict[str, Any] = {"AI改写JSON": payload.resume_text}
+    fields_to_update: dict[str, Any] = {"AI改写JSON": normalize_resume_json_field(payload.resume_text)}
     if is_terminal_or_post_delivery_status(cur_status):
         logger.info(f"🛡️ [save_manual_resume_action] 岗位 {pure_record_id} 当前处于已投递/终态({cur_status})，仅保存简历内容，不倒流跟进状态")
     else:

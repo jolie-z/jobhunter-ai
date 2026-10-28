@@ -22,6 +22,8 @@ import {
   CheckCircle,
 } from "lucide-react"
 import type { AuditReport } from "../skill-selector"
+import { SkillScanCard } from "./skill-scan-card"
+import { invalidateSkillsMetaCache, type SkillScanReport } from "@/hooks/use-skill-rewrite"
 
 
 interface SkillUploadDialogProps {
@@ -67,7 +69,9 @@ export function SkillUploadDialog({
   const [githubImporting, setGithubImporting] = useState(false)
 
   const [auditReport, setAuditReport] = useState<AuditReport | null>(null)
+  const [scanReport, setScanReport] = useState<SkillScanReport | null>(null)
   const [lastImportedSkill, setLastImportedSkill] = useState<string | null>(null)
+  // 成功后按钮持续置灰（不自动复位）；用户更换文件/链接/名称即视为新的待导入输入，重新点亮
   const [importSuccess, setImportSuccess] = useState(false)
   const [uploadSuccess, setUploadSuccess] = useState(false)
 
@@ -75,6 +79,7 @@ export function SkillUploadDialog({
 
   const resetState = () => {
     setAuditReport(null)
+    setScanReport(null)
     setUploadFile(null)
     setUploadFiles(null)
     setUploadName("")
@@ -90,6 +95,7 @@ export function SkillUploadDialog({
     setUploading(true)
     setUploadSuccess(false)
     setAuditReport(null)
+    setScanReport(null)
     try {
       const buildForm = (force: boolean) => {
         const formData = new FormData()
@@ -136,10 +142,11 @@ export function SkillUploadDialog({
       if (data.success) {
         setUploadSuccess(true)
         setAuditReport(data.audit_report)
+        setScanReport(data.scan ?? null)
         const finalName = data.skill?.name || uploadName.trim() || "新技能"
+        invalidateSkillsMetaCache()
         setLastImportedSkill(finalName)
         await onSuccess(data.skill?.id)
-        setTimeout(() => setUploadSuccess(false), 5000)
       } else {
         alert(`❌ 上传失败：${data.detail || data.error}`)
       }
@@ -156,6 +163,7 @@ export function SkillUploadDialog({
     setGithubImporting(true)
     setImportSuccess(false)
     setAuditReport(null)
+    setScanReport(null)
     try {
       const doSend = async (force: boolean) => {
         let res = await fetch(`${API_BASE}/api/resume-editor/skills/import-github`, {
@@ -193,10 +201,11 @@ export function SkillUploadDialog({
       if (data.success) {
         setImportSuccess(true)
         setAuditReport(data.audit_report)
+        setScanReport(data.scan ?? null)
         const finalName = data.skill?.name || githubName.trim() || "GitHub 技能包"
+        invalidateSkillsMetaCache()
         setLastImportedSkill(finalName)
         await onSuccess(data.skill?.id)
-        setTimeout(() => setImportSuccess(false), 5000)
       } else {
         alert(`❌ GitHub 导入失败：${data.detail || data.error}`)
       }
@@ -272,6 +281,8 @@ export function SkillUploadDialog({
           </div>
         )}
 
+        <SkillScanCard scan={scanReport} />
+
         {importTab === "local" ? (
           <div className="space-y-3 py-1">
             <div className="space-y-1.5">
@@ -285,6 +296,7 @@ export function SkillUploadDialog({
                     const f = e.target.files?.[0] || null
                     setUploadFile(f)
                     setUploadFiles(null)
+                    if (f) setUploadSuccess(false)
                     if (f && !uploadName) {
                       setUploadName(f.name.replace(/\.(md|zip)$/i, ""))
                     }
@@ -296,7 +308,11 @@ export function SkillUploadDialog({
                   variant="outline"
                   size="sm"
                   className="flex-1 h-9 text-xs border-dashed hover:border-indigo-400 hover:bg-indigo-50/40"
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => {
+                    // 浏览器对同一路径文件不重复触发 change；先清 value 才能重选同一文件重新点亮按钮
+                    if (fileInputRef.current) fileInputRef.current.value = ""
+                    fileInputRef.current?.click()
+                  }}
                 >
                   <FolderArchive className="size-3.5 mr-1.5 text-indigo-500" />
                   {uploadFile ? uploadFile.name : "选择 .md / .zip 文件"}

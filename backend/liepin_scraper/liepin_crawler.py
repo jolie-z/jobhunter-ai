@@ -13,6 +13,7 @@
 import json
 import os
 import subprocess
+import sys
 import time
 import random
 import sqlite3
@@ -29,8 +30,17 @@ from DrissionPage import ChromiumPage, ChromiumOptions
 # ==========================================
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.dirname(CURRENT_DIR)
-DB_PATH = os.path.join(PARENT_DIR, 'data', 'job_hunter.db')
-COOKIE_FILE = os.path.join(CURRENT_DIR, 'liepin_cookies.json')
+# 双身份导入引导（对齐 boss_collector 先例）：脚本独立运行时也能 import backend 根的 app.*
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
+from app.core.db_paths import job_hunter_db_path, writable_path  # noqa: E402
+from app.core.utils import collapse_blank_lines  # noqa: E402
+from app.session.registry import get_liepin_cookie_file  # noqa: E402
+
+# db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
+DB_PATH = job_hunter_db_path(os.path.join(PARENT_DIR, 'data', 'job_hunter.db'))
+# cookie 文件单一口径（与 liepin_session / 预检同源；打包态落 Roaming，程序目录旧文件自动迁移）
+COOKIE_FILE = get_liepin_cookie_file()
 
 # 🌟 更新后的猎聘城市代码映射表 (结合了链接提取规律与原有数据)
 LIEPIN_CITY_MAP = {
@@ -158,7 +168,10 @@ def clean_job_description(raw_desc):
     for marker in end_markers:
         if marker in raw_desc:
             raw_desc = raw_desc.split(marker)[0]
-    return ' '.join(raw_desc.split()).strip()
+    # 2026-10-07 排版修复：旧写法 ' '.join(split()) 把换行全部压成空格 → 岗位详情
+    # 前端渲染成一团（51job/智联保留 \n 所以正常，用户真机对比实证）。改为保留
+    # 段落结构：行内空白压缩、连续空行折叠为 1 个空行作段间距、去首尾空行
+    return collapse_blank_lines(raw_desc.splitlines())
 
 def _extract_address_from_tab(tab, is_headhunter):
     """辅助函数：精准提取职位地址"""
@@ -290,7 +303,7 @@ def _setup_chromium_browser():
     print(f"🛡️  [固定端口] DrissionPage 调试端口: 9226")
 
     # 🌟 2. 设置物理隔离的用户数据目录 (防止与日常 Chrome / Edge 进程抢 Profile 锁)
-    profile_path = os.path.join(project_root, 'data', 'profiles', 'liepin')
+    profile_path = str(writable_path(os.path.join(project_root, 'data', 'profiles', 'liepin'), "profiles/liepin"))
     os.makedirs(profile_path, exist_ok=True)
     co.set_user_data_path(profile_path)
     print(f"🛡️  [Profile 物理隔离] 用户数据目录: {profile_path}")
@@ -334,10 +347,41 @@ def _setup_chromium_browser():
                 print(f"🍪 本地 Cookie 注入成功，猎聘登录态已恢复")
             else:
                 print(f"⚠️ 本地 Cookie 文件已失效，需要扫码登录（本次爬取将以未登录态进行）")
+                _alert_login_source_invalid("本地 Cookie 文件已失效")
         except Exception as e:
             print(f"⚠️ 读取/注入猎聘 Cookie 异常: {e}")
+    else:
+        print("⚠️ 未找到本地 Cookie 备份文件（本次爬取将以未登录态进行）")
+        _alert_login_source_invalid("本地 Cookie 备份文件缺失")
 
     return page
+
+
+def _alert_login_source_invalid(reason: str) -> None:
+    """登录源失效早暴露（2026-10-09）：抓取降级游客态是刻意设计（猎聘搜索免登录），
+    但必须当场告知用户「投递前要扫码」，否则投递阶段必失败才被发现。
+    发送失败静默——告警绝不阻断抓取。"""
+    try:
+        import asyncio
+        import threading
+        from app.automation.pipeline_report import send_pipeline_report
+        text = (
+            f"🚨 猎聘登录源告警：{reason}\n"
+            "本轮抓取以游客态继续（猎聘搜索免登录，不影响抓取）；\n"
+            "请在指挥中心会话条「唤起猎聘浏览器」扫码登录，否则投递阶段将失败。"
+        )
+        # CR R1 P1：asyncio.run 在已有 running loop 的上下文会抛 RuntimeError 被吞掉、
+        # 告警静默丢失——先探测，有 loop 则委托独立线程自起 loop 发送。
+        try:
+            asyncio.get_running_loop()
+            threading.Thread(
+                target=lambda: asyncio.run(send_pipeline_report(text)), daemon=True,
+            ).start()
+        except RuntimeError:
+            asyncio.run(send_pipeline_report(text))
+        print("   📣 登录源失效已推送飞书告警")
+    except Exception as e:
+        print(f"   ⚠️ 登录源告警发送失败（不影响抓取）: {e}")
 
 def _check_login_status(page) -> bool:
     """校验猎聘登录态：访问 c.liepin.com，若保持在 c.liepin.com 则登录态有效"""
@@ -598,6 +642,15 @@ def start_auto_collector(target_page, keyword=None, city=None, salary=None, targ
                 print("💤 任务切换，休眠 60 秒...")
                 time.sleep(60)
     finally:
+        # 退出前 cookie 保全（2026-10-08）：登录实证有效才回写——猎聘抓取免登录，
+        # 访客态 cookie 绝不能覆盖 liepin_cookies.json 里的有效凭证；判据用 cookie
+        # 键实证而非 URL 判定（此时页面可能停在搜索结果页，URL 判定不可靠）
+        try:
+            from app.session.health_checker import check_liepin_login_evidence
+            if check_liepin_login_evidence():
+                _self_heal_cookie_file(page)
+        except Exception as heal_e:
+            print(f"   ⚠️ 退出前 cookie 保全失败（不影响抓取结果）: {heal_e}")
         page.quit()
         print("\n🏁 本次全自动页面抓取指令已全部执行完毕！程序退出。")
 

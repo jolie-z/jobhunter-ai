@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.api.routes import processor
+from app.services import job_action_service as jas
 
 client = TestClient(app)
 
@@ -122,3 +123,41 @@ async def test_run_unreject_and_evaluate_triggers_pipeline(tmp_path, monkeypatch
                 raw_rowid=None,
                 pipeline_task_id="pipeline_test_abc"
             )
+
+
+def test_unreject_blocked_while_recall_evaluating(tmp_path):
+    """岗哨1 R2 P2:unreject 的召回互斥守卫直接断言——复评进行中(key 在 _recall_evaluating)
+    返回 409 拒绝;残留态(key 不在集合)放行,不受「召回待初评」状态牵连(死锁解除语义)。"""
+    db_file = str(tmp_path / "test_unreject_guard.db")
+    with sqlite3.connect(db_file) as conn:
+        conn.execute("""
+            CREATE TABLE raw_jobs (
+                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform TEXT, job_title TEXT, company_name TEXT, city TEXT, salary TEXT,
+                job_link TEXT, process_status TEXT, reject_reason TEXT, feishu_record_id TEXT
+            )
+        """)
+        conn.execute("""
+            INSERT INTO raw_jobs (rowid, platform, job_title, company_name, job_link, process_status)
+            VALUES (301, 'zhilian', '守卫测试岗', '守卫公司', 'https://zhaopin.com/job/301', '召回待初评')
+        """)
+        conn.commit()
+
+    with patch.object(processor, "DB_PATH", db_file):
+        from app.services import report_card_actions as rca
+        # 场景1:复评进行中 → 409
+        jas.register_recall_start("raw_301")
+        try:
+            res = client.post("/api/v1/processor/unreject", json={"job_id": "raw_301"})
+            assert res.status_code == 409
+            assert "召回复评中" in res.json()["detail"]
+        finally:
+            jas.register_recall_end("raw_301")
+
+        # 场景2:残留态(集合已清) → 放行,状态正常流转
+        with patch("app.api.routes.processor._run_unreject_and_evaluate", new_callable=AsyncMock):
+            res = client.post("/api/v1/processor/unreject", json={"job_id": "raw_301"})
+            assert res.status_code == 200
+            with sqlite3.connect(db_file) as conn:
+                st = conn.execute("SELECT process_status FROM raw_jobs WHERE rowid = 301").fetchone()[0]
+            assert st == "待推送至飞书"

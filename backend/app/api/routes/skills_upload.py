@@ -51,10 +51,37 @@ class GitHubImportRequest(BaseModel):
     force: bool = False  # 覆盖确认后的重发标记
 
 
+def _build_skill_scan_payload(skill_id: str) -> dict:
+    """上传后扫描：产物数量/类型、是否含简历、token 预估（仅技能包，不含 JD/简历）。"""
+    from ai_agents.skills.skill_contract import (
+        contract_summary,
+        estimate_skill_run,
+        get_skill_contract,
+    )
+    from ai_agents.skills.skill_loader import get_skill_manager
+
+    manager = get_skill_manager()
+    contract = get_skill_contract(skill_id)
+    estimate = estimate_skill_run(
+        skill_id=skill_id,
+        contract=contract,
+        main_content=manager.loaded_contents.get(skill_id, ""),
+        reference_map=manager.reference_maps.get(skill_id, {}),
+    )
+    return {
+        "contract": contract,
+        "summary": contract_summary(contract),
+        "estimated_tokens": estimate,
+        "estimate_scope": "history_full_run" if estimate.get("source") == "history" else "skill_only",
+        "warnings": contract.get("warnings", []),
+    }
+
+
 def _persist_sanitized_package(package: SanitizedSkillPackage, custom_name: str | None = None) -> Path:
     """将经过安全校验的技能包写入技能目录，并保存自定义显示名称"""
     manager = get_skill_manager()
-    skills_base = manager.SKILLS_DIR
+    # 自定义技能只落用户可写根（打包态为用户数据目录），绝不写进随包分发的内置技能目录
+    skills_base = manager.CUSTOM_SKILLS_DIR
     skills_base.mkdir(parents=True, exist_ok=True)
 
     # 规范技能 ID 前缀
@@ -146,10 +173,10 @@ def _persist_sanitized_package(package: SanitizedSkillPackage, custom_name: str 
 def enforce_upload_guards(sanitized_pkg: SanitizedSkillPackage, force: bool) -> None:
     """上传防护共用入口：conflict 命中且非 force 抛 409；quota 命中一律抛 400（force 不豁免）。"""
     manager = get_skill_manager()
-    conflict_msg = check_upload_conflict(manager.SKILLS_DIR, sanitized_pkg.skill_id, sanitized_pkg.main_file_content)
+    conflict_msg = check_upload_conflict(manager.CUSTOM_SKILLS_DIR, sanitized_pkg.skill_id, sanitized_pkg.main_file_content)
     if conflict_msg and not force:
         raise HTTPException(status_code=409, detail=conflict_msg)
-    quota_msg = check_upload_quota(manager.SKILLS_DIR, sanitized_pkg.skill_id)
+    quota_msg = check_upload_quota(manager.CUSTOM_SKILLS_DIR, sanitized_pkg.skill_id)
     if quota_msg:
         raise HTTPException(status_code=400, detail=quota_msg)
 
@@ -242,6 +269,7 @@ async def upload_custom_skill(
                 "is_package": sanitized_pkg.references is not None and len(sanitized_pkg.references) > 0,
                 "references_count": len(sanitized_pkg.references)
             },
+            "scan": _build_skill_scan_payload(registered_meta.id) if registered_meta else None,
             "audit_report": {
                 "main_entry": sanitized_pkg.main_file_name,
                 "references_count": len(sanitized_pkg.references),
@@ -360,6 +388,7 @@ async def import_github_skill(payload: GitHubImportRequest = Body(...)):
                 "is_package": True,
                 "references_count": len(sanitized_pkg.references)
             },
+            "scan": _build_skill_scan_payload(registered_meta.id) if registered_meta else None,
             "audit_report": {
                 "source": f"{owner}/{repo}",
                 "main_entry": sanitized_pkg.main_file_name,

@@ -11,12 +11,14 @@ async def test_snapshot_section4_defensive_triage_stopped_pipeline(monkeypatch):
     from app.services import feishu_service
 
     # Mock runtime: 停机状态
+    from datetime import datetime as _dt
+    fresh_time = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
     monkeypatch.setattr(_rs, "current_runtime", lambda: {
         "started": True,
         "running": False,
         "task_id": "pipeline_test_123",
         "start_rowid": 100,
-        "record_ids": ["rec_a", "rec_c", "rec_ef", "rec_incomplete", "rec_waiting_normal"],
+        "record_ids": ["rec_a", "rec_c", "rec_ef", "rec_incomplete", "rec_queue_fresh", "rec_waiting_normal"],
     })
     monkeypatch.setattr(_rs, "get_dismissed_job_ids", lambda: set())
     monkeypatch.setattr(_rs, "get_retrying_job_ids", lambda: set())
@@ -60,6 +62,17 @@ async def test_snapshot_section4_defensive_triage_stopped_pipeline(monkeypatch):
                 "岗位名称": "中断岗位",
                 "公司名称": "某半成品公司",
                 "跟进状态": "",
+                "抓取时间": "2020-01-01 08:00:00",  # 陈旧抓取时间：长时间无评级 = 真半成品
+                # 无评级
+            }
+        },
+        "rec_queue_fresh": {
+            "fields": {
+                "岗位名称": "排队岗位",
+                "公司名称": "某新入库公司",
+                "跟进状态": "",
+                # 抓取时间走运行时动态注入（见下方 monkeypatch now），模拟刚入库还没轮到评估
+                "抓取时间": fresh_time,  # 刚入库：评估排队宽容窗内
                 # 无评级
             }
         },
@@ -89,11 +102,11 @@ async def test_snapshot_section4_defensive_triage_stopped_pipeline(monkeypatch):
     assert jobs["rec_a"]["node"] == "manual_review_node"
     assert jobs["rec_a"]["last_action_desc"] == "已生成定制简历，待细审放行"
 
-    # 2. rec_c: C级海投完工，停机时安全归入 waiting（待审批把关，零外发误投风险）
+    # 2. rec_c: C级海投完工，停机时安全归入 waiting（免审轨道，文案中性不制造假审批观感）
     assert "rec_c" in jobs
     assert jobs["rec_c"]["status"] == "waiting"
     assert jobs["rec_c"]["node"] == "manual_review_node"
-    assert jobs["rec_c"]["last_action_desc"] == "海投话术已装配，待人工审批"
+    assert jobs["rec_c"]["last_action_desc"] == "评估完成，海投物料装配中，过安检后自动进待投递"
 
     # 3. rec_ef: F级初评淘汰，停机时准确分流至 rejected_auto
     assert "rec_ef" in jobs
@@ -101,11 +114,19 @@ async def test_snapshot_section4_defensive_triage_stopped_pipeline(monkeypatch):
     assert jobs["rec_ef"]["node"] == "clean_rule_rejected"
     assert jobs["rec_ef"]["last_action_desc"] == "初评未达门槛，已自动淘汰"
 
-    # 4. rec_incomplete: 停机但未出评级的半成品，安全归入 error，绝不流向发射池
+    # 4. rec_incomplete: 停机+陈旧抓取时间+未出评级 = 本轮评估没跑到它——
+    #    归 waiting 中性可见（岗哨1 R1 P1：不再标 error 打进执行失败 tab，真故障也不被静默，
+    #    待审批 tab 持续可见且描述直说），绝不流向发射池
     assert "rec_incomplete" in jobs
-    assert jobs["rec_incomplete"]["status"] == "error"
-    assert jobs["rec_incomplete"]["node"] == "error"
-    assert jobs["rec_incomplete"]["last_action_desc"] == "流水线已停机，评估未完成"
+    assert jobs["rec_incomplete"]["status"] == "waiting"
+    assert jobs["rec_incomplete"]["node"] == "evaluate_node"
+    assert jobs["rec_incomplete"]["last_action_desc"] == "本轮评估未完成，建议在详情页重新评估"
+
+    # 4.5 rec_queue_fresh: 停机+刚入库（抓取时间在宽容窗内）+未出评级 = 排队评估，不再误报失败
+    assert "rec_queue_fresh" in jobs
+    assert jobs["rec_queue_fresh"]["status"] == "waiting"
+    assert jobs["rec_queue_fresh"]["node"] == "evaluate_node"
+    assert jobs["rec_queue_fresh"]["last_action_desc"] == "已入库，评估排队中"
 
     # 5. rec_waiting_normal: 显式具备「简历人工复核」，正常归入 waiting
     assert "rec_waiting_normal" in jobs
@@ -303,6 +324,70 @@ async def test_graph_runner_manual_review_breakpoint_timeout_protection(monkeypa
     # 验证在 5s 超时后正常捕获 warning 退出，且总耗时约 5s（绝不阻塞 10s）
     assert res["outcome"] == "waiting"
     assert 4.5 <= elapsed < 7.0
+
+@pytest.mark.asyncio
+async def test_graph_runner_fallback_ready_to_deliver_outcome(monkeypatch):
+    """2026-10-09 三 tab 之谜：海投轨过安检停在「待投递」是正常终点——
+    outcome 单列 ready_to_deliver、error 恒空，状态文案放 status 键，不再伪装成错误/提前终止"""
+    from app.automation import graph_runner
+    from app.automation.pipeline_report import OUTCOME_READY_TO_DELIVER
+
+    mock_snapshot = MagicMock()
+    mock_snapshot.next = ()  # 图已正常 END，未停在断点
+    mock_snapshot.values = {"grade": "C", "status": "待投递"}
+
+    async def empty_async_gen(*args, **kwargs):
+        if False:
+            yield {}
+
+    mock_pipeline_app = MagicMock()
+    mock_pipeline_app.astream = empty_async_gen
+    mock_pipeline_app.aget_state = AsyncMock(return_value=mock_snapshot)
+
+    from app.automation import scheduler
+    monkeypatch.setattr(scheduler, "pipeline_app", mock_pipeline_app)
+
+    res = await graph_runner._run_single_job_graph(
+        {"job_id": "rec_ready_1", "job_name": "海投岗", "company_name": "测试", "platform": "boss", "stop_at_review": True},
+        {"configurable": {"thread_id": "rec_ready_1"}},
+        "test_task_ready",
+    )
+
+    assert res["outcome"] == OUTCOME_READY_TO_DELIVER
+    assert res["error"] == ""
+    assert res["status"] == "待投递"
+
+
+@pytest.mark.asyncio
+async def test_graph_runner_fallback_stopped_carries_status_not_error(monkeypatch):
+    """非待投递的正常终点（如停在已完成初评）：outcome 仍为 stopped，但状态文案进 status 键，error 恒空"""
+    from app.automation import graph_runner
+
+    mock_snapshot = MagicMock()
+    mock_snapshot.next = ()
+    mock_snapshot.values = {"grade": "D", "status": "已完成初步评估"}
+
+    async def empty_async_gen(*args, **kwargs):
+        if False:
+            yield {}
+
+    mock_pipeline_app = MagicMock()
+    mock_pipeline_app.astream = empty_async_gen
+    mock_pipeline_app.aget_state = AsyncMock(return_value=mock_snapshot)
+
+    from app.automation import scheduler
+    monkeypatch.setattr(scheduler, "pipeline_app", mock_pipeline_app)
+
+    res = await graph_runner._run_single_job_graph(
+        {"job_id": "rec_stopped_1", "job_name": "DF岗", "company_name": "测试", "platform": "51job", "stop_at_review": True},
+        {"configurable": {"thread_id": "rec_stopped_1"}},
+        "test_task_stopped",
+    )
+
+    assert res["outcome"] == "stopped"
+    assert res["error"] == ""
+    assert res["status"] == "已完成初步评估"
+
 
 @pytest.mark.asyncio
 async def test_snapshot_section4_clean_reject_gate_branch(monkeypatch):

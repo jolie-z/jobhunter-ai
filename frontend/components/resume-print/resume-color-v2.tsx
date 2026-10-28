@@ -252,16 +252,18 @@ export const ResumeColorV2: React.FC<ResumeColorV2Props> = ({ data }) => {
 
       case 'additional':
         if (!additional) return null;
-        const { technicalSkills = [], languages = [], certificationsTraining = [] } = additional;
-        const hasContent = technicalSkills.length > 0 || languages.length > 0 || certificationsTraining.length > 0;
+        // 2026-10-06 原文保真：skillOverview（「分类：技能清单」整行原文）优先；旧数据回退词表
+        const { skillOverview = '', technicalSkills = [], languages = [], certificationsTraining = [] } = additional;
+        const overviewText = (skillOverview || '').trim();
+        const hasContent = !!overviewText || technicalSkills.length > 0 || languages.length > 0 || certificationsTraining.length > 0;
         if (!hasContent) return null;
         return (
           <div key={modKey} className={baseStyles['resume-section']}>
             <h3 className={styles.sectionTitle}>{title}</h3>
             <div className={`text-justify ${styles.markdown} ${baseStyles['resume-text-sm']}`}>
-              {technicalSkills.length > 0 && (
+              {(!!overviewText || technicalSkills.length > 0) && (
                 <ReactMarkdown components={{ p: ({ node, ...props }) => <span className="block" {...props} /> }}>
-                  {stripConfidenceTags(technicalSkills.join('\n'))}
+                  {stripConfidenceTags(overviewText || technicalSkills.join('\n'))}
                 </ReactMarkdown>
               )}
               {languages.length > 0 && (

@@ -45,6 +45,7 @@ from app.strategy.config_service import (  # noqa: E402
     delete_strategy_service,
     get_active_resume_text_async,
     get_active_strategy,
+    get_active_strategy_or_default,
     get_all_strategy_configs,
     get_db_path,
     get_preferences_service,
@@ -75,6 +76,7 @@ from app.strategy.grill_service import (  # noqa: E402
 from app.strategy.jd_report_service import (  # noqa: E402
     generate_jd_report_service,
     get_global_jd_report,
+    get_global_jd_report_with_meta,
     update_global_jd_report,
 )
 
@@ -99,6 +101,7 @@ __all__ = [
     "get_db_path",
     "_fetch_active_strategy_sync",
     "get_active_strategy",
+    "get_active_strategy_or_default",
     "_update_active_strategy_sync",
     "update_active_strategy_in_db",
     "get_active_resume_text_async",
@@ -119,6 +122,7 @@ __all__ = [
     "predict_keyword_desc_service",
     "generate_jd_report_service",
     "get_global_jd_report",
+    "get_global_jd_report_with_meta",
     "update_global_jd_report",
     "_parse_json_safely",
     "ats_align_experience_service",

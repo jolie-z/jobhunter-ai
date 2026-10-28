@@ -130,3 +130,44 @@ async def delete_single_artifact_api(job_id: str, skill_id: str, filename: str):
     except Exception as e:
         logger.exception(f"delete_single_artifact_api error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/custom_rewrite_jobs")
+def list_custom_rewrite_jobs_api():
+    """列出执行过「自定义 skill 改写」的岗位（skill_id != 官方 resume_rewrite）。
+
+    数据源=产物台账（skill_runs/<job>/<skill>/meta.json，worker 落盘即存在，零额外状态）。
+    供主页筛选「已自定义改写」用：前端拿 record_id 集合与岗位列表求交。
+    同步 def：纯文件系统 IO，FastAPI 自动投入线程池，不阻塞事件循环（R1 P2）。
+    """
+    import json as _json
+
+    from ai_agents.skills.skill_dirs import SKILLS_RUNS_DIR
+
+    items: list[dict] = []
+    try:
+        if SKILLS_RUNS_DIR.exists():
+            for job_dir in SKILLS_RUNS_DIR.iterdir():
+                if not job_dir.is_dir():
+                    continue
+                for skill_dir in job_dir.iterdir():
+                    if not skill_dir.is_dir() or skill_dir.name == "resume_rewrite":
+                        continue
+                    meta_path = skill_dir / "meta.json"
+                    executed_at = ""
+                    if meta_path.exists():
+                        try:
+                            meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+                            executed_at = str(meta.get("executed_at") or "")
+                        except Exception:
+                            pass
+                    items.append({
+                        "job_record_id": job_dir.name,
+                        "skill_id": skill_dir.name,
+                        "executed_at": executed_at,
+                    })
+    except Exception as e:
+        logger.warning(f"[custom_rewrite_jobs] 扫描产物台账失败: {e}")
+    items.sort(key=lambda x: x.get("executed_at") or "", reverse=True)
+    logger.info(f"[custom_rewrite_jobs] 扫描产物台账完成：自定义改写岗位 {len(items)} 个")
+    return {"status": "success", "data": items, "total": len(items)}

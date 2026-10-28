@@ -87,6 +87,8 @@ interface FilterBarProps {
   onScaleFilterChange: (v: string) => void
   platformFilter: string
   onPlatformFilterChange: (v: string) => void
+  customRewriteFilter: string
+  onCustomRewriteFilterChange: (v: string) => void
   dynamicStatuses: string[]
   filteredCount: number
   globalTaskStatus: "idle" | "running" | "completed" | "interrupted"
@@ -114,6 +116,8 @@ export function FilterBar({
   onScaleFilterChange,
   platformFilter,
   onPlatformFilterChange,
+  customRewriteFilter,
+  onCustomRewriteFilterChange,
   dynamicStatuses,
   filteredCount,
   globalTaskStatus,
@@ -231,6 +235,16 @@ export function FilterBar({
             { label: "BOSS直聘", value: "BOSS直聘" },
             { label: "小红书", value: "小红书" },
             { label: "其他平台", value: "其他" },
+          ]}
+        />
+        <FilterSelect
+          label="Skill改写"
+          width="w-32"
+          value={customRewriteFilter}
+          onChange={onCustomRewriteFilterChange}
+          options={[
+            { label: "已自定义改写", value: "已自定义改写" },
+            { label: "未自定义改写", value: "未自定义改写" },
           ]}
         />
 

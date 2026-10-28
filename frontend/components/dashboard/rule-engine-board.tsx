@@ -49,6 +49,9 @@ export function RuleEngineBoard({ onSaveSuccess }: RuleEngineBoardProps) {
 
   // 新增 Stage 2 LLM 配置字段
   const [aiScoutRules, setAiScoutRules] = useState<AIScoutRule[]>([]);
+  // 后端回填的内置示例标记（防落库：保存时未修改示例则落空数组）
+  const [scoutIsExample, setScoutIsExample] = useState(false);
+  const [exampleSnapshot, setExampleSnapshot] = useState<AIScoutRule[]>([]);
   const [predictingIdx, setPredictingIdx] = useState<number | null>(null);
 
   const [newEdu, setNewEdu] = useState("");
@@ -94,6 +97,9 @@ export function RuleEngineBoard({ onSaveSuccess }: RuleEngineBoardProps) {
 
         // 新增状态同步
         setAiScoutRules(data.ai_scout_rules || []);
+        // 后端回填的内置示例标记：保存时未修改示例则落空数组，防示例被当真实配置入库
+        setScoutIsExample(Boolean(data.ai_scout_rules_is_example));
+        setExampleSnapshot(Array.isArray(data.ai_scout_rules) ? JSON.parse(JSON.stringify(data.ai_scout_rules)) : []);
       }
     } catch (e) {
       console.error(e);
@@ -125,7 +131,11 @@ export function RuleEngineBoard({ onSaveSuccess }: RuleEngineBoardProps) {
           allowed_cities: cities,
           safe_phrases: safePhrases,
           keyword_rules: rawKeywordRules,
-          ai_scout_rules: aiScoutRules,
+          // 示例防落库：当前展示的是后端回填示例（库里本为空），用户未改动时保存空数组
+          ai_scout_rules:
+            scoutIsExample && JSON.stringify(aiScoutRules) === JSON.stringify(exampleSnapshot)
+              ? []
+              : aiScoutRules,
         }),
       });
       const result = await res.json();

@@ -29,14 +29,20 @@ import sys
 import time
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_BACKEND_DIR = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
+# DO NOT MOVE: 本脚本独立拉起时 sys.path[0] 只有 platforms/，必须先插 backend 根，
+# 下一行 from resume_editor.paths import 才能成立（禁止改成裸 import paths）
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+from resume_editor.paths import DATA_DIR, fields_path, writeback_path  # noqa: E402,F401
+
 sys.path.insert(0, _SCRIPT_DIR)
 from browser_common import connect_page, get_platform_port
 
 PORT = get_platform_port("51job")
 RESUME_URL = "https://www.51job.com/resume/center"
-DATA_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "data")
-SNAPSHOT_PATH = os.path.join(DATA_DIR, "51job_writeback.json")
-FIELDS_PATH = os.path.join(DATA_DIR, "51job_fields.json")
+SNAPSHOT_PATH = writeback_path("51job")   # 用户数据：打包态落用户数据目录
+FIELDS_PATH = fields_path("51job")
 
 # 可回写模块（顺序即前端勾选顺序）
 ALL_MODULES = ["basic_info", "self_introduction", "intentions", "works", "projects",

@@ -38,6 +38,8 @@ export interface JobData {
   secondQaReport: string
   platform: string
   role: string
+  /** 本地瞬态：skill 改写完成回调的写入时间戳（详情合并防旧快照回滚的防护窗标记，不上传） */
+  _localRewriteAt?: number
   publishDate: string
   preliminaryScore: number
   bonusWords: string

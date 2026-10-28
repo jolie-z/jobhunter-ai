@@ -12,9 +12,12 @@ import sqlite3
 import threading
 from pathlib import Path
 
+# JOBHUNTER_DB_PATH > JOBHUNTER_DATA_DIR > 历史锚点（M1 阀门 + M2 收口）
+from app.core.db_paths import job_hunter_db_path
+
 logger = logging.getLogger(__name__)
 
-_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "job_hunter.db"
+_DB_PATH = job_hunter_db_path(Path(__file__).resolve().parents[2] / "data" / "job_hunter.db")
 _lock = threading.Lock()
 
 _runtime: dict[str, object] = {

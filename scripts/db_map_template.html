@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JobHunter · 数据模型全景（SQLite Relationship Map）</title>
+<script src="./scripts/db_map_assets/vis-network.min.js"></script>
+<style>
+  /* ------------------------------------------------------------------
+     设计系统：与落地页同源的暖黑基调（勿改回冷色 zinc 系）
+     ------------------------------------------------------------------ */
+  :root {
+    --bg: #14120b;
+    --panel: #1b1913;
+    --panel-2: #201e18;
+    --border: rgba(237, 236, 236, 0.08);
+    --border-strong: rgba(237, 236, 236, 0.16);
+    --text: #edecec;
+    --text-2: #a1a1aa;
+    --text-3: #71717a;
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Helvetica Neue", sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; color-scheme: dark; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+  code, .mono { font-family: var(--mono); }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(237,236,236,0.12); border-radius: 999px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(237,236,236,0.2); }
+
+  /* ------------------------------ 顶栏 ------------------------------ */
+  .site-header {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(20, 18, 11, 0.82);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--border);
+  }
+  .header-inner {
+    max-width: 1440px; margin: 0 auto;
+    padding: 14px 24px 10px;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .brand svg { width: 24px; height: 24px; color: var(--text); flex-shrink: 0; }
+  .brand-name { font-size: 15px; font-weight: 600; letter-spacing: 0.01em; }
+  .brand-sub { font-size: 12px; color: var(--text-3); margin-left: 8px; }
+  .header-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .stat-chip {
+    font-family: var(--mono); font-size: 11.5px; color: var(--text-2);
+    border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px;
+    white-space: nowrap;
+  }
+  .stat-chip b { color: var(--text); font-weight: 600; }
+  .gen-chip {
+    font-size: 11.5px; color: var(--text-2);
+    border: 1px dashed var(--border-strong); border-radius: 999px; padding: 4px 10px;
+    white-space: nowrap;
+  }
+
+  /* ------------------------------ 页签 ------------------------------ */
+  .tabs {
+    max-width: 1440px; margin: 0 auto; padding: 0 24px;
+    display: flex; gap: 4px; overflow-x: auto;
+  }
+  .tab {
+    appearance: none; background: none; border: none; cursor: pointer;
+    color: var(--text-2); font-size: 13.5px; font-weight: 500; font-family: var(--sans);
+    padding: 10px 14px 12px; border-bottom: 2px solid transparent;
+    white-space: nowrap; transition: color 0.15s ease;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); border-bottom-color: var(--text); }
+
+  main { max-width: 1440px; margin: 0 auto; padding: 20px 24px 32px; }
+  .pane { display: none; }
+  .pane.active { display: block; }
+
+  /* --------------------------- 面板一：关系图 --------------------------- */
+  .graph-layout {
+    display: grid; grid-template-columns: minmax(0, 1fr) 372px;
+    gap: 16px; align-items: stretch;
+    height: calc(100vh - 168px); min-height: 560px;
+  }
+  .graph-canvas {
+    position: relative; overflow: hidden;
+    border: 1px solid var(--border); border-radius: 16px; background: var(--panel);
+    background-image: radial-gradient(rgba(237,236,236,0.055) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  /* 画布从工具栏下方开始，fit() 时节点不会被工具栏/图例遮住 */
+  #network { position: absolute; left: 0; right: 0; bottom: 0; top: 72px; }
+  .graph-toolbar {
+    position: absolute; top: 12px; left: 12px; right: 12px; z-index: 10;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    pointer-events: none;
+  }
+  .graph-toolbar > * { pointer-events: auto; }
+  .tool-btn {
+    appearance: none; cursor: pointer; font-family: var(--sans);
+    font-size: 12.5px; color: var(--text-2);
+    background: rgba(27, 25, 19, 0.9); border: 1px solid var(--border-strong);
+    border-radius: 999px; padding: 6px 13px;
+    transition: color 0.15s ease, border-color 0.15s ease;
+  }
+  .tool-btn:hover { color: var(--text); border-color: rgba(237,236,236,0.3); }
+  .tool-btn.on { color: var(--text); }
+  .graph-legend {
+    margin-left: auto; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: rgba(27, 25, 19, 0.9); border: 1px solid var(--border);
+    border-radius: 999px; padding: 6px 14px;
+    font-size: 11.5px; color: var(--text-2);
+  }
+  .legend-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .legend-line { width: 18px; height: 0; border-top: 2px solid rgba(237,236,236,0.45); flex-shrink: 0; }
+  .legend-line.flow { border-top-style: dashed; border-top-width: 1.5px; border-top-color: rgba(237,236,236,0.3); }
+
+  .graph-sidebar {
+    border: 1px solid var(--border); border-radius: 16px; background: var(--panel);
+    padding: 18px; overflow-y: auto; min-height: 0;
+  }
+  .sb-db-chip {
+    display: inline-block; font-family: var(--mono); font-size: 11px;
+    color: var(--text-2); border: 1px solid var(--border-strong);
+    border-radius: 6px; padding: 2px 7px; margin-bottom: 10px;
+  }
+  .sb-name { font-family: var(--mono); font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
+  .sb-domain { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; color: var(--text-2); }
+  .sb-domain .legend-dot { width: 7px; height: 7px; }
+  .sb-desc { margin-top: 12px; font-size: 13px; line-height: 1.75; color: var(--text-2); }
+  .sb-rows { margin-top: 12px; font-family: var(--mono); font-size: 11.5px; color: var(--text-3); }
+  .sb-section {
+    margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border);
+    font-size: 11px; font-weight: 600; color: var(--text-3);
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .col-row {
+    display: grid; grid-template-columns: minmax(0, auto) minmax(0, 62px) 1fr;
+    gap: 4px 8px; align-items: baseline; padding: 6px 0;
+    border-bottom: 1px solid rgba(237,236,236,0.05);
+  }
+  .col-row:last-child { border-bottom: none; }
+  .col-name { font-family: var(--mono); font-size: 12px; color: var(--text); word-break: break-all; }
+  .col-name.pk::after { content: " ·PK"; color: #a855f7; font-size: 10px; }
+  .col-type { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); text-align: right; }
+  .col-desc { grid-column: 1 / -1; font-size: 11.5px; line-height: 1.55; color: var(--text-3); }
+  .rel-item {
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 9px 11px; margin-top: 8px; background: var(--panel-2);
+  }
+  .rel-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+  .rel-kind {
+    flex-shrink: 0; font-size: 10px; font-weight: 600; border-radius: 5px; padding: 1px 6px;
+    color: #edecec; background: rgba(237,236,236,0.14);
+  }
+  .rel-item.is-flow .rel-kind { color: var(--text-2); background: rgba(237,236,236,0.06); border: 1px dashed var(--border-strong); }
+  .rel-path { font-family: var(--mono); font-size: 11px; color: var(--text-2); word-break: break-all; }
+  .rel-item p { margin-top: 5px; font-size: 11.5px; line-height: 1.6; color: var(--text-3); }
+  .sb-empty { margin-top: 8px; font-size: 12px; color: var(--text-3); }
+
+  /* --------------------------- 面板二：数据字典 --------------------------- */
+  .search-filter-box {
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 18px;
+  }
+  .search-input-wrap { position: relative; flex: 1 1 260px; max-width: 420px; }
+  .search-input-wrap .search-icon {
+    position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+    font-size: 13px; color: var(--text-3); pointer-events: none;
+  }
+  .search-input {
+    width: 100%; background: var(--panel); border: 1px solid var(--border-strong);
+    border-radius: 10px; color: var(--text); font-size: 13px; font-family: var(--sans);
+    padding: 9px 12px 9px 34px; outline: none;
+    transition: border-color 0.15s ease;
+  }
+  .search-input::placeholder { color: var(--text-3); }
+  .search-input:focus { border-color: rgba(237,236,236,0.35); }
+  .db-filter-group { display: flex; gap: 6px; flex-wrap: wrap; }
+  .filter-btn {
+    appearance: none; cursor: pointer; font-family: var(--mono); font-size: 12px;
+    color: var(--text-2); background: transparent;
+    border: 1px solid var(--border-strong); border-radius: 999px; padding: 6px 12px;
+    transition: all 0.15s ease;
+  }
+  .filter-btn:hover { color: var(--text); }
+  .filter-btn.active { color: #14120b; background: var(--text); border-color: var(--text); font-weight: 600; }
+
+  .db-group { margin-bottom: 28px; }
+  .db-group.is-hidden { display: none; }
+  .db-group-head {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding-bottom: 10px; margin-bottom: 12px; border-bottom: 1px solid var(--border);
+  }
+  .db-group-head h3 { font-family: var(--mono); font-size: 15px; font-weight: 600; }
+  .db-path { font-family: var(--mono); font-size: 11.5px; color: var(--text-3); }
+  .db-count { margin-left: auto; font-size: 11.5px; color: var(--text-3); }
+  .table-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+  .table-card {
+    border: 1px solid var(--border); border-radius: 14px; background: var(--panel);
+    padding: 15px 16px; display: flex; flex-direction: column;
+  }
+  .table-card.is-hidden { display: none; }
+  .tc-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .tc-head h4 { font-family: var(--mono); font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+  .tc-chip {
+    font-family: var(--mono); font-size: 10.5px; color: var(--text-2);
+    border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px;
+  }
+  .t-domain { display: flex; align-items: center; gap: 5px; margin-top: 7px; font-size: 11px; color: var(--text-3); }
+  .t-domain .legend-dot { width: 6px; height: 6px; }
+  .t-desc { margin-top: 9px; font-size: 12.5px; line-height: 1.7; color: var(--text-2); }
+  .col-table { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 4px; }
+  .idx-note {
+    margin-top: auto; padding-top: 10px; font-family: var(--mono);
+    font-size: 10.5px; color: var(--text-3); line-height: 1.7; word-break: break-all;
+  }
+
+  /* --------------------------- 面板三/四：流程与血缘 --------------------------- */
+  .stack { display: flex; flex-direction: column; gap: 14px; max-width: 1080px; margin: 0 auto; }
+  .step-card, .lineage-card {
+    border: 1px solid var(--border); border-radius: 16px; background: var(--panel);
+    padding: 20px 22px;
+  }
+  .step-head { display: flex; gap: 14px; align-items: flex-start; }
+  .step-num {
+    flex-shrink: 0; width: 30px; height: 30px; border-radius: 9px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 13px; font-weight: 600;
+    color: var(--text); border: 1px solid var(--border-strong);
+  }
+  .step-head h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+  .step-head .step-sub { margin-top: 3px; font-size: 12px; color: var(--text-3); }
+  .step-body { margin: 13px 0 0; font-size: 13px; line-height: 1.9; color: var(--text-2); }
+  .step-body code, .lineage-card p code, .lineage-card li code {
+    font-family: var(--mono); font-size: 12px; color: var(--text);
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 5px; padding: 1px 5px;
+  }
+  .step-flow {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px;
+    padding-top: 14px; border-top: 1px solid var(--border);
+  }
+  .node {
+    font-family: var(--mono); font-size: 11.5px; color: var(--text-2);
+    border: 1px solid var(--border-strong); border-radius: 8px; padding: 5px 10px;
+    white-space: nowrap;
+  }
+  .node.hot { color: var(--hot, var(--text)); border-color: color-mix(in srgb, var(--hot, var(--text)) 55%, transparent); }
+  .arr { color: var(--text-3); font-style: normal; font-size: 12px; }
+
+  .lineage-card h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+  .lineage-card > p { margin-top: 10px; font-size: 13.5px; line-height: 1.85; color: var(--text-2); }
+  .why-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-top: 16px; }
+  .why-item { border: 1px solid var(--border); border-radius: 12px; background: var(--panel-2); padding: 14px; }
+  .why-item h4 { font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--hot, var(--text)); margin-bottom: 7px; }
+  .why-item p { font-size: 12px; line-height: 1.75; color: var(--text-2); }
+  .code-block {
+    margin-top: 14px; border: 1px solid var(--border); border-radius: 12px;
+    background: var(--panel-2); padding: 16px 18px;
+    font-family: var(--mono); font-size: 12px; line-height: 1.95;
+    color: var(--text-2); overflow-x: auto; white-space: pre-wrap; word-break: break-all;
+  }
+  .code-block b { color: var(--text); font-weight: 600; }
+  .c-cyan { color: #38bdf8; } .c-purple { color: #a855f7; } .c-emerald { color: #10b981; }
+  .c-amber { color: #f59e0b; } .c-rose { color: #f43f5e; } .c-yellow { color: #eab308; } .c-cyan2 { color: #06b6d4; }
+  .c-text-3 { color: var(--text-3); }
+
+  /* ------------------------------ 页脚 ------------------------------ */
+  .site-footer {
+    max-width: 1440px; margin: 0 auto; padding: 0 24px 36px;
+    font-size: 12px; color: var(--text-3); line-height: 1.8;
+  }
+  .site-footer code {
+    font-family: var(--mono); font-size: 11px; color: var(--text-2);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px;
+  }
+
+  /* ------------------------------ 响应式 ------------------------------ */
+  @media (max-width: 1024px) {
+    .graph-layout { grid-template-columns: 1fr; height: auto; }
+    .graph-canvas { height: 62vh; min-height: 420px; }
+    #network { top: 104px; }
+    .graph-sidebar { max-height: 460px; }
+  }
+  @media (max-width: 640px) {
+    .header-inner { padding: 12px 16px 8px; }
+    .tabs, main, .site-footer { padding-left: 16px; padding-right: 16px; }
+    .brand-sub { display: none; }
+    .graph-canvas { height: 52vh; }
+    #network { top: 56px; }
+    .graph-legend { display: none; }
+    .table-cards { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <div class="brand">
+      <svg viewBox="0 0 1200 1200" aria-hidden="true" focusable="false">
+        <g fill="none" stroke="currentColor" stroke-width="58">
+          <ellipse cx="600" cy="600" rx="505" ry="191" />
+          <ellipse cx="600" cy="600" rx="505" ry="191" transform="rotate(60 600 600)" />
+          <ellipse cx="600" cy="600" rx="505" ry="191" transform="rotate(-60 600 600)" />
+        </g>
+        <g fill="currentColor">
+          <circle cx="600" cy="600" r="100" />
+          <circle cx="600" cy="283" r="42" />
+          <circle cx="142" cy="681" r="42" />
+          <circle cx="1058" cy="681" r="42" />
+        </g>
+      </svg>
+      <span class="brand-name">JobHunter</span>
+      <span class="brand-sub">数据模型全景 · SQLite Relationship Map</span>
+    </div>
+    <div class="header-meta" id="header-stats"></div>
+  </div>
+  <nav class="tabs">
+    <button class="tab active" onclick="switchTab(this, 'graph')">动态关系图</button>
+    <button class="tab" onclick="switchTab(this, 'dictionary')">数据字典</button>
+    <button class="tab" onclick="switchTab(this, 'pipeline')">业务数据流</button>
+    <button class="tab" onclick="switchTab(this, 'lineage')">跨库与契约键</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ==================== 面板一：交互关系图 ==================== -->
+  <section id="pane-graph" class="pane active">
+    <div class="graph-layout">
+      <div class="graph-canvas">
+        <div class="graph-toolbar">
+          <button class="tool-btn" onclick="resetGraphView()">重置视角</button>
+          <button class="tool-btn" onclick="zoomGraph(1.25)">放大</button>
+          <button class="tool-btn" onclick="zoomGraph(0.8)">缩小</button>
+          <button class="tool-btn on" id="physics-btn" onclick="togglePhysics()">冻结布局</button>
+          <div class="graph-legend" id="graph-legend"></div>
+        </div>
+        <div id="network"></div>
+      </div>
+      <aside class="graph-sidebar" id="graph-sidebar">
+        <span class="sb-db-chip" id="sb-db">—</span>
+        <h3 class="sb-name" id="sb-name">—</h3>
+        <div class="sb-domain"><span class="legend-dot" id="sb-dot"></span><span id="sb-domain">—</span></div>
+        <p class="sb-desc" id="sb-desc"></p>
+        <p class="sb-rows" id="sb-rows"></p>
+        <div class="sb-section">字段清单</div>
+        <div id="sb-columns"></div>
+        <div class="sb-section">关系关联</div>
+        <div id="sb-relations"></div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ==================== 面板二：数据字典 ==================== -->
+  <section id="pane-dictionary" class="pane">
+    <div class="search-filter-box">
+      <div class="search-input-wrap">
+        <span class="search-icon">⌕</span>
+        <input type="text" id="table-search" class="search-input"
+               placeholder="搜索表名、字段名或描述…" oninput="filterTables()">
+      </div>
+      <div class="db-filter-group" id="db-filter"></div>
+    </div>
+    <div id="dictionary-root"></div>
+  </section>
+
+  <!-- ==================== 面板三：业务数据流 ==================== -->
+  <section id="pane-pipeline" class="pane">
+    <div class="stack">
+
+      <article class="step-card">
+        <div class="step-head">
+          <span class="step-num">1</span>
+          <div>
+            <h3>多源招聘平台自动化采集与增量断点续爬</h3>
+            <p class="step-sub">Boss直聘 / 猎聘 / 51job / 智联招聘爬虫按关键词、城市矩阵定时运行，断点记录与去重入库</p>
+          </div>
+        </div>
+        <p class="step-body">
+          爬虫驱动层读取 <code>pipeline_scrape_config</code> 提取目标关键词与平台开关，为每个组合在
+          <code>scrape_sessions</code> 维护当前爬取页码（<code>last_page</code>）与预测总量。51job
+          专属采集器同步更新 <code>collect_progress_51job</code>。抓取到的岗位清洗后批量写入
+          <code>raw_jobs</code>，主键 <code>job_link</code> 确保全网 URL 级硬去重，初始状态置为「已存入数据」。
+        </p>
+        <div class="step-flow">
+          <span class="node">pipeline_scrape_config</span><i class="arr">→</i>
+          <span class="node">scrape_sessions</span><i class="arr">→</i>
+          <span class="node">collect_progress_51job</span><i class="arr">→</i>
+          <span class="node hot" style="--hot:#a855f7">raw_jobs ·批量写入</span>
+        </div>
+      </article>
+
+      <article class="step-card">
+        <div class="step-head">
+          <span class="step-num">2</span>
+          <div>
+            <h3>规则门槛初筛与大语言模型（LLM）8 维多因子深度评估</h3>
+            <p class="step-sub">从硬性门槛排查到深度意向评估，计算综合得分、A/B/C/D 等级，并统计模型 Token 成本</p>
+          </div>
+        </div>
+        <p class="step-body">
+          求职策略配置 <code>job_strategies</code>（薪资下限、学历、工作年限、否决词）与
+          <code>job_preferences</code>（企业黑名单）先进行本地零开销快速硬过滤；通过初筛的岗位送入 LLM
+          评估引擎，结合 <code>evaluation_weights</code>（8 大维度权重）生成匹配度评分与详细评语。调用过程中产生的
+          Token 消耗与人民币成本写入 <code>token_log</code>，依据 <code>custom_model_pricing</code>
+          进行多模型阶梯计费。打分完成后 <code>raw_jobs.process_status</code> 流转为「已进行打分」。
+        </p>
+        <div class="step-flow">
+          <span class="node">job_strategies</span>
+          <span class="node">job_preferences</span><i class="arr">→</i>
+          <span class="node">evaluation_weights</span><i class="arr">→</i>
+          <span class="node">LLM 打分引擎</span><i class="arr">→</i>
+          <span class="node">token_log ·计费审计</span><i class="arr">→</i>
+          <span class="node hot" style="--hot:#a855f7">raw_jobs.process_status ·状态流转</span>
+        </div>
+      </article>
+
+      <article class="step-card">
+        <div class="step-head">
+          <span class="step-num">3</span>
+          <div>
+            <h3>飞书多维表格双向实时同步与老板放行门禁</h3>
+            <p class="step-sub">打分结果推送至飞书 Bitable 看板；人工在飞书群/卡片上一键放行，进入双保险审批池</p>
+          </div>
+        </div>
+        <p class="step-body">
+          新打分岗位通过 OpenAPI 同步至飞书多维表格，获得全局唯一 <code>feishu_record_id</code>，并反写回
+          <code>raw_jobs.feishu_record_id</code>。老板在飞书卡片或前端界面点击放行后，系统在
+          <code>boss_approvals</code> 插入记录，确保只有经过决策确认的岗位才能进入投递队列，杜绝误投劣质岗位。
+        </p>
+        <div class="step-flow">
+          <span class="node hot" style="--hot:#a855f7">raw_jobs.feishu_record_id</span><i class="arr">→</i>
+          <span class="node">飞书多维表格 Bitable</span><i class="arr">→</i>
+          <span class="node hot" style="--hot:#f59e0b">boss_approvals ·放行门禁</span>
+        </div>
+      </article>
+
+      <article class="step-card">
+        <div class="step-head">
+          <span class="step-num">4</span>
+          <div>
+            <h3>Autopilot 待发射暂存池与平台定时波次海投</h3>
+            <p class="step-sub">自动调度海投队列，支持个性化招呼语定制、并发控制与平台熔断保护</p>
+          </div>
+        </div>
+        <p class="step-body">
+          符合自动投递等级（如 A/B 级）且已放行的岗位登记入 <code>pending_delivery_pool</code>。无人值守守护进程
+          <code>autopilot.db</code> 按 <code>automation_configs</code> 设定的 Cron 定时（如工作日 09:30）批量起飞，驱动招聘平台执行投递；投递完毕后写入
+          <code>automation_logs</code>，并在 <code>action_audit</code> 中留下操作审计，同时更新
+          <code>platform_status</code> 平台冷却时间，防止频繁触发风控。投递完成后更新
+          <code>raw_jobs.process_status</code> 为「已投递」。
+        </p>
+        <div class="step-flow">
+          <span class="node hot" style="--hot:#f59e0b">automation_configs</span><i class="arr">→</i>
+          <span class="node hot" style="--hot:#f59e0b">pending_delivery_pool</span><i class="arr">→</i>
+          <span class="node">投递执行器</span><i class="arr">→</i>
+          <span class="node">platform_status ·冷却风控</span><i class="arr">→</i>
+          <span class="node">automation_logs + action_audit</span>
+        </div>
+      </article>
+
+      <article class="step-card">
+        <div class="step-head">
+          <span class="step-num">5</span>
+          <div>
+            <h3>目标考核追踪、每日智能战报与社媒口碑舆情增强</h3>
+            <p class="step-sub">对照每日/每周求职 KPI 计算达成率，结合小红书口碑分析，自动生成多维报表</p>
+          </div>
+        </div>
+        <p class="step-body">
+          定时任务比对 <code>job_goals</code> 设定的日投递、日抓取、周面试指标，汇总 <code>raw_jobs</code> 与
+          <code>action_audit</code> 产出分析数据；结合 <code>xhs_raw_posts</code>
+          抓取的目标企业真实员工爆料与加班舆情，汇总为结构化战报存入 <code>system_reports</code>，并推送到用户的飞书工作群。
+        </p>
+        <div class="step-flow">
+          <span class="node">raw_jobs + action_audit</span><i class="arr">→</i>
+          <span class="node">job_goals ·KPI 考核</span>
+          <span class="node">+ xhs_raw_posts ·舆情</span><i class="arr">→</i>
+          <span class="node hot" style="--hot:#f43f5e">system_reports ·战报归档</span>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ==================== 面板四：跨库与契约键 ==================== -->
+  <section id="pane-lineage" class="pane">
+    <div class="stack">
+
+      <div class="lineage-card">
+        <h3>为什么项目拆分为多个 SQLite 数据库文件？</h3>
+        <p>
+          SQLite 默认具有数据库级别的写锁（Write Lock）。若将主业务查询、后台长时间运行的爬虫抓取、定时海投任务，以及 AI Agent
+          的高频状态持久化全部塞进同一个 <code>job_hunter.db</code>，极易在投递或爬虫写入时发生
+          <code>sqlite3.OperationalError: database is locked</code>。为此，架构上严格践行「领域读写隔离与独立持久化」原则：
+        </p>
+        <div class="why-grid">
+          <div class="why-item" style="--hot:#a855f7">
+            <h4>1 · job_hunter.db（业务主库）</h4>
+            <p>承担核心岗位的生命周期流转、AI 打分评级、策略配置与审计流水。由 FastAPI 主服务独占主要写路由。</p>
+          </div>
+          <div class="why-item" style="--hot:#f59e0b">
+            <h4>2 · autopilot.db（海投调度库）</h4>
+            <p>专供后台定时 Cron 任务、桌面端侧车进程（Sidecar）与海投波次独占。即使海投进程阻塞或崩溃，也完全不影响主库查询。</p>
+          </div>
+          <div class="why-item" style="--hot:#38bdf8">
+            <h4>3 · langgraph_checkpoints.db（Agent 记忆库）</h4>
+            <p>LangGraph 状态机执行复杂决策与多工具调用时，每次状态通道写入都伴随大量二进制 BLOB。独立拆库保障主业务不受大对象膨胀影响。</p>
+          </div>
+          <div class="why-item" style="--hot:#10b981">
+            <h4>4 · sessions.db（会话管理库）</h4>
+            <p>轻量存储用户人机交互上下文与会话路由，支持会话快速清理与生命周期控制。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="lineage-card">
+        <h3>跨库隐式外键：三根全局契约键（Contract Keys）</h3>
+        <p>
+          SQLite 不支持跨文件的物理外键约束（Foreign Key across databases），代码层通过三根「全局契约键」实现强一致的逻辑绑定——
+          左侧关系图中的实线均为真实数据关联，虚线为业务流叙事。
+        </p>
+        <div class="code-block"><span class="c-cyan"># 契约键 1 · feishu_record_id —— 全局最核心的岗位业务主键</span>
+[job_hunter.db] <b>raw_jobs.feishu_record_id</b> ('recXXXX…')
+    ▲
+    ├──► [autopilot.db] <b>boss_approvals.record_id</b>（老板放行确认主键）
+    ├──► [autopilot.db] <b>pending_delivery_pool.record_id</b>（海投待发射池主键）
+    └──► [job_hunter.db] <b>action_audit.target_id</b>（操作审计追踪标识）
+
+<span class="c-purple"># 契约键 2 · task_id —— 流水线与自动化批次唯一 UUID</span>
+[job_hunter.db] <b>pipeline_latest_run.task_id</b> ('pipeline_XXXXXXXX')
+    ▲
+    ├──► [autopilot.db] <b>pending_delivery_pool.task_id</b>（入池批次归属）
+    ├──► [autopilot.db] <b>automation_logs.task_id</b>（波次运行日志索引）
+    └──► [job_hunter.db] <b>agent_task_handles.task_id</b>（进程令牌租约映射）
+
+<span class="c-emerald"># 契约键 3 · job_link —— 全网抓取物理去重键</span>
+[job_hunter.db] <b>raw_jobs.job_link</b> ('https://www.zhipin.com/job_detail/…')
+    ▲
+    └──► [job_hunter.db] <b>token_log.job_id</b>（单岗位评估消耗审计）</div>
+      </div>
+
+      <div class="lineage-card">
+        <h3>高并发稳定性配置（Concurrency &amp; WAL）</h3>
+        <p>在 <code>app/core/db_bootstrap.py</code> 与 <code>app/automation/db.py</code> 启动引导代码中，显式执行以下配置：</p>
+        <div class="code-block"><span class="c-text-3">-- 1. 开启 WAL 预写式日志（读写互不阻塞，读并发性能提升数倍）</span>
+<span class="c-cyan">PRAGMA journal_mode = WAL;</span>
+
+<span class="c-text-3">-- 2. 长繁忙重试超时（防止突发密集写冲突）</span>
+<span class="c-cyan">sqlite3.connect(path, timeout=30.0);</span>
+
+<span class="c-text-3">-- 3. 自动化同步触发器（raw_jobs 状态变更时自动维护 updated_at）</span>
+<span class="c-cyan">CREATE TRIGGER trg_raw_jobs_status_updated AFTER UPDATE OF process_status ON raw_jobs
+FOR EACH ROW BEGIN UPDATE raw_jobs SET updated_at = datetime('now', 'localtime') WHERE rowid = OLD.rowid; END;</span></div>
+      </div>
+
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <p id="footer-note"></p>
+</footer>
+
+<script>
+  const DB_DATA = __DB_DATA__;
+  const RELATIONSHIPS = __RELATIONSHIPS__;
+  const DOMAIN_COLORS = __DOMAIN_COLORS__;
+  const STATS = __STATS__;
+  const IS_PUBLIC = __IS_PUBLIC__;
+  const GENERATED_AT = "__GENERATED_AT__";
+
+  const FALLBACK_COLORS = ["#94a3b8", "#22d3ee", "#c084fc", "#4ade80", "#fbbf24", "#fb7185", "#7dd3fc"];
+  const UNCLASSIFIED = "Uncategorized (未分类)";
+  const CORE_TABLE = "raw_jobs";
+
+  let network = null;
+  let physicsOn = true;
+  let activeDbFilter = "ALL";
+  let selectedTable = CORE_TABLE;
+
+  /* ------------------------- 领域色板与工具 ------------------------- */
+  const domainNames = [...new Set(Object.values(DB_DATA).flatMap(db => Object.values(db.tables).map(t => t.domain)))];
+  const domainColor = {};
+  domainNames.forEach((name, i) => {
+    domainColor[name] = (DOMAIN_COLORS[name] && DOMAIN_COLORS[name].color) || FALLBACK_COLORS[i % FALLBACK_COLORS.length];
+  });
+  const hexA = (hex, alpha) => {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+  };
+  const findTable = (name) => {
+    for (const db of Object.values(DB_DATA)) if (db.tables[name]) return { t: db.tables[name], db: db.file };
+    return null;
+  };
+
+  /* ------------------------------ 顶栏 ------------------------------ */
+  (function renderHeader() {
+    document.getElementById("header-stats").innerHTML = [
+      `<span class="stat-chip"><b>${STATS.dbs}</b> 个数据库</span>`,
+      `<span class="stat-chip"><b>${STATS.tables}</b> 张表</span>`,
+      `<span class="stat-chip"><b>${STATS.columns}</b> 个字段</span>`,
+      `<span class="stat-chip"><b>${STATS.relations}</b> 条关系</span>`,
+      `<span class="gen-chip">快照生成于 ${GENERATED_AT}</span>`,
+    ].join("");
+    document.getElementById("footer-note").innerHTML = IS_PUBLIC
+      ? `本页由 <code>scripts/generate_db_map.py --public</code> 于 ${GENERATED_AT} 自动生成：结构实时读自 4 个本地 SQLite 文件的 PRAGMA（公开版已剔除行数等运行时数据），表/字段中文描述维护于 <code>scripts/db_map_annotations.json</code>。`
+      : `本页由 <code>scripts/generate_db_map.py</code> 于 ${GENERATED_AT} 自动生成：表结构、字段与索引实时读自 4 个本地 SQLite 文件的 PRAGMA，行数为生成当日快照；中文注释维护于 <code>scripts/db_map_annotations.json</code>。结构变更后重新运行 <code>python3 scripts/generate_db_map.py</code> 即可刷新本页。`;
+  })();
+
+  /* ------------------------------ 页签 ------------------------------ */
+  function switchTab(btn, id) {
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".pane").forEach(p => p.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById("pane-" + id).classList.add("active");
+    if (id === "graph" && network) setTimeout(() => network.fit(), 60);
+  }
+
+  /* --------------------------- 关系图面板 --------------------------- */
+  function buildSeedPositions() {
+    const seeds = {
+      "job_hunter.db":             { x: 0,    y: 0,    r: 260 },
+      "autopilot.db":              { x: 560,  y: -60,  r: 165 },
+      "langgraph_checkpoints.db":  { x: -540, y: 220,  r: 150 },
+      "sessions.db":               { x: -500, y: -250, r: 100 },
+    };
+    const pos = {};
+    for (const [dbName, db] of Object.entries(DB_DATA)) {
+      const seed = seeds[dbName] || { x: 0, y: -420, r: 160 };
+      const names = Object.keys(db.tables).sort();
+      names.forEach((name, i) => {
+        if (name === CORE_TABLE && dbName === "job_hunter.db") { pos[name] = { x: 0, y: 0 }; return; }
+        const angle = (i / Math.max(names.length, 1)) * Math.PI * 2 - Math.PI / 2;
+        pos[name] = {
+          x: seed.x + seed.r * Math.cos(angle),
+          y: seed.y + seed.r * Math.sin(angle),
+        };
+      });
+    }
+    return pos;
+  }
+
+  function initGraph() {
+    const positions = buildSeedPositions();
+    const nodes = [];
+    const edges = [];
+
+    for (const [dbName, db] of Object.entries(DB_DATA)) {
+      for (const t of Object.values(db.tables)) {
+        const color = domainColor[t.domain] || "#94a3b8";
+        const isCore = t.name === CORE_TABLE;
+        const label = t.rows != null ? `${t.name}\n${t.rows.toLocaleString()} 行` : t.name;
+        nodes.push({
+          id: t.name,
+          label,
+          x: positions[t.name].x,
+          y: positions[t.name].y,
+          title: `表名: ${t.name}\n所属库: ${dbName}\n${t.desc || ""}`,
+          shape: "box",
+          shapeProperties: { borderRadius: 9 },
+          color: {
+            background: isCore ? color : "#1b1913",
+            border: isCore ? color : hexA(color, 0.55),
+            highlight: { background: hexA(color, 0.25), border: color },
+            hover: { background: hexA(color, 0.18), border: color },
+          },
+          font: {
+            face: "ui-monospace, Menlo, monospace",
+            size: isCore ? 16 : 12,
+            color: isCore ? "#ffffff" : "#edecec",
+            bold: isCore,
+          },
+          margin: isCore ? 16 : 11,
+          borderWidth: isCore ? 2.5 : 1.4,
+          shadow: { enabled: true, color: "rgba(0,0,0,0.35)", size: 6, x: 0, y: 2 },
+        });
+      }
+    }
+
+    RELATIONSHIPS.forEach((rel, idx) => {
+      if (!findTable(rel.source) || !findTable(rel.target)) return;
+      const isFk = rel.kind === "fk";
+      edges.push({
+        id: "e_" + idx,
+        from: rel.source,
+        to: rel.target,
+        label: rel.type,
+        title: `${rel.desc}\n${rel.source}.${rel.source_col} ➔ ${rel.target}.${rel.target_col}`,
+        arrows: { to: { enabled: true, scaleFactor: 0.55 } },
+        dashes: !isFk,
+        color: {
+          color: isFk ? "rgba(237,236,236,0.38)" : "rgba(237,236,236,0.13)",
+          highlight: isFk ? "#38bdf8" : "rgba(237,236,236,0.45)",
+          hover: isFk ? "#38bdf8" : "rgba(237,236,236,0.45)",
+        },
+        width: isFk ? 1.6 : 1,
+        font: { face: "ui-monospace, Menlo, monospace", size: 9, color: isFk ? "#a1a1aa" : "#52525b" },
+        smooth: { type: "curvedCW", roundness: 0.18 },
+      });
+    });
+
+    const container = document.getElementById("network");
+    network = new vis.Network(
+      container,
+      { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) },
+      {
+        autoResize: true,
+        physics: {
+          enabled: true,
+          solver: "forceAtlas2Based",
+          forceAtlas2Based: { gravitationalConstant: -95, centralGravity: 0.02, springLength: 115, springConstant: 0.06, damping: 0.65, avoidOverlap: 1 },
+          stabilization: { iterations: 300, fit: true },
+        },
+        interaction: { hover: true, tooltipDelay: 120, zoomView: true, dragView: true },
+      }
+    );
+    network.on("click", (params) => {
+      if (params.nodes.length > 0) renderSidebar(params.nodes[0]);
+    });
+    renderSidebar(selectedTable);
+  }
+
+  function resetGraphView() { network && network.fit({ animation: true }); }
+  function zoomGraph(scale) {
+    if (!network) return;
+    network.moveTo({ scale: network.getScale() * scale, animation: true });
+  }
+  function togglePhysics() {
+    if (!network) return;
+    physicsOn = !physicsOn;
+    network.setOptions({ physics: { enabled: physicsOn } });
+    const btn = document.getElementById("physics-btn");
+    btn.textContent = physicsOn ? "冻结布局" : "解冻布局";
+    btn.classList.toggle("on", physicsOn);
+  }
+
+  function renderLegend() {
+    const parts = [];
+    domainNames.forEach((name) => {
+      const cn = name.includes("(") ? name.slice(name.indexOf("(") + 1, -1) : name;
+      parts.push(`<span class="legend-item"><span class="legend-dot" style="background:${domainColor[name]}"></span>${cn}</span>`);
+    });
+    parts.push('<span class="legend-item"><i class="legend-line"></i>数据关联</span>');
+    parts.push('<span class="legend-item"><i class="legend-line flow"></i>业务流</span>');
+    document.getElementById("graph-legend").innerHTML = parts.join("");
+  }
+
+  function renderSidebar(tableName) {
+    const found = findTable(tableName);
+    if (!found) return;
+    const t = found.t;
+    selectedTable = tableName;
+    const color = domainColor[t.domain] || "#94a3b8";
+    document.getElementById("sb-db").textContent = t.db;
+    document.getElementById("sb-name").textContent = t.name;
+    document.getElementById("sb-dot").style.background = color;
+    document.getElementById("sb-domain").textContent = t.domain;
+    document.getElementById("sb-desc").textContent = t.desc || "（暂无描述）";
+    document.getElementById("sb-rows").textContent =
+      t.rows != null ? `${t.rows.toLocaleString()} 行 · ${t.columns.length} 字段 · ${t.indexes.length} 索引` : `${t.columns.length} 字段 · ${t.indexes.length} 索引`;
+
+    document.getElementById("sb-columns").innerHTML = t.columns.map((c) => `
+      <div class="col-row">
+        <span class="col-name${c.pk ? " pk" : ""}">${c.name}</span>
+        <span class="col-type">${c.type || "—"}</span>
+        <span></span>
+        ${c.desc ? `<span class="col-desc">${c.desc}</span>` : ""}
+      </div>`).join("");
+
+    const rels = RELATIONSHIPS.filter((r) => r.source === tableName || r.target === tableName);
+    document.getElementById("sb-relations").innerHTML = rels.length
+      ? rels.map((r) => {
+          const out = r.source === tableName;
+          const path = out
+            ? `${r.source}.${r.source_col} ➔ ${r.target}.${r.target_col}`
+            : `${r.source}.${r.source_col} ➔ ${r.target}.${r.target_col}`;
+          return `<div class="rel-item${r.kind === "fk" ? "" : " is-flow"}">
+            <div class="rel-head"><span class="rel-kind">${r.kind === "fk" ? "数据关联" : "业务流"}</span>
+            <span class="rel-path">${out ? "" : "← "}${path}</span></div>
+            <p>${r.desc}</p></div>`;
+        }).join("")
+      : '<p class="sb-empty">该表暂无已登记的关系线（独立存储域）。</p>';
+  }
+
+  /* --------------------------- 数据字典面板 --------------------------- */
+  function fmtRows(n) { return n != null ? n.toLocaleString() + " 行" : null; }
+
+  function renderDictionary() {
+    const root = document.getElementById("dictionary-root");
+    const groups = [];
+    for (const [dbName, db] of Object.entries(DB_DATA)) {
+      const cards = Object.values(db.tables).map((t) => {
+        const color = domainColor[t.domain] || "#94a3b8";
+        const rowsChip = fmtRows(t.rows) ? `<span class="tc-chip">${fmtRows(t.rows)}</span>` : "";
+        const idxNames = t.indexes.filter(i => !i.name.startsWith("sqlite_autoindex")).map(i => i.name);
+        return `
+        <article class="table-card" data-table="${t.name}" data-db="${dbName}"
+                 data-search="${(t.name + " " + t.domain + " " + t.desc + " " + t.columns.map(c => c.name + " " + c.desc).join(" ")).toLowerCase()}">
+          <div class="tc-head">
+            <span class="legend-dot" style="background:${color};width:7px;height:7px"></span>
+            <h4>${t.name}</h4>
+            <span class="tc-chip">${t.columns.length} 字段</span>
+            ${rowsChip}
+          </div>
+          <div class="t-domain"><span class="legend-dot" style="background:${color}"></span>${t.domain}</div>
+          <p class="t-desc">${t.desc || "（暂无描述）"}</p>
+          <div class="col-table">
+            ${t.columns.map((c) => `
+              <div class="col-row">
+                <span class="col-name${c.pk ? " pk" : ""}">${c.name}</span>
+                <span class="col-type">${c.type || "—"}</span>
+                <span></span>
+                ${c.desc ? `<span class="col-desc">${c.desc}</span>` : ""}
+              </div>`).join("")}
+          </div>
+          <div class="idx-note">${idxNames.length ? "索引: " + idxNames.join(" · ") : "无显式索引"}</div>
+        </article>`;
+      }).join("");
+      groups.push(`
+        <section class="db-group" data-db="${dbName}">
+          <header class="db-group-head">
+            <h3>${dbName}</h3>
+            <span class="db-path">${db.file}</span>
+            <span class="db-count">${Object.keys(db.tables).length} 张表</span>
+          </header>
+          <div class="table-cards">${cards}</div>
+        </section>`);
+    }
+    root.innerHTML = groups.join("");
+
+    // 数据库过滤按钮（表数量由生成数据计算，不写死）
+    const pills = ['<button class="filter-btn active" data-db="ALL" onclick="setDbFilter(this)">全部数据库</button>'];
+    for (const [dbName, db] of Object.entries(DB_DATA)) {
+      pills.push(`<button class="filter-btn" data-db="${dbName}" onclick="setDbFilter(this)">${dbName} (${Object.keys(db.tables).length}表)</button>`);
+    }
+    document.getElementById("db-filter").innerHTML = pills.join("");
+  }
+
+  function setDbFilter(btn) {
+    activeDbFilter = btn.dataset.db;
+    document.querySelectorAll("#db-filter .filter-btn").forEach(b => b.classList.toggle("active", b === btn));
+    filterTables();
+  }
+
+  function filterTables() {
+    const q = document.getElementById("table-search").value.trim().toLowerCase();
+    document.querySelectorAll("#dictionary-root .table-card").forEach((card) => {
+      const matchDb = activeDbFilter === "ALL" || card.dataset.db === activeDbFilter;
+      const matchQ = !q || card.dataset.search.includes(q);
+      card.classList.toggle("is-hidden", !(matchDb && matchQ));
+    });
+    document.querySelectorAll("#dictionary-root .db-group").forEach((group) => {
+      const anyVisible = group.querySelector(".table-card:not(.is-hidden)");
+      group.classList.toggle("is-hidden", !anyVisible);
+    });
+  }
+
+  /* ------------------------------ 启动 ------------------------------ */
+  renderLegend();
+  initGraph();
+  renderDictionary();
+</script>
+</body>
+</html>

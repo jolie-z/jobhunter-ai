@@ -286,9 +286,14 @@ async def update_job_resume(payload: UpdateJobResumeRequest):
     cur_status = (payload.current_status or "").strip()
     if not cur_status:
         try:
+            # extract_record_id 定义在 feishu_service（2026-10-23 修复：此前误从
+            # feishu_utils 导入，ImportError 恒中断本 try 块，终态保护查表静默失效）
             from app.core.config import settings
-            from app.core.feishu_utils import extract_feishu_text, extract_record_id
-            from app.services.feishu_service import get_job_record_from_feishu
+            from app.core.feishu_utils import extract_feishu_text
+            from app.services.feishu_service import (
+                extract_record_id,
+                get_job_record_from_feishu,
+            )
             pure_rid = extract_record_id(target_id)
             rec = await asyncio.to_thread(get_job_record_from_feishu, pure_rid, settings.FEISHU_TABLE_ID_JOBS)
             if rec and isinstance(rec.get("fields"), dict):
@@ -297,7 +302,8 @@ async def update_job_resume(payload: UpdateJobResumeRequest):
             _log.warning(f"获取岗位当前跟进状态异常(fail-safe): {e}")
 
     from app.core.feishu_utils import is_terminal_or_post_delivery_status
-    fields_to_update: dict[str, Any] = {"AI改写JSON": payload.resume_data}
+    from app.jobs.action_service import normalize_resume_json_field
+    fields_to_update: dict[str, Any] = {"AI改写JSON": normalize_resume_json_field(payload.resume_data)}
     if is_terminal_or_post_delivery_status(cur_status):
         _log.info(f"🛡️ [update_job_resume] 岗位 {target_id} 当前为终态/投递后状态({cur_status})，仅保存简历内容，不倒流跟进状态")
     else:
@@ -452,12 +458,13 @@ async def stream_task_logs(task_id: str = Query(..., description="异步任务�
 import time  # noqa: E402
 
 from app.core.config import BASE_DIR  # noqa: E402
+from app.core.db_paths import writable_path  # noqa: E402
 from app.core.feishu_client import feishu_client  # noqa: E402
 from app.core.pdf_renderer import render_resume_pdf  # noqa: E402
 from app.jobs.schemas import JobResumePdfRequest  # noqa: E402
 from app.services.export_service import upload_file_to_feishu_async  # noqa: E402
 
-TEMP_DATA_DIR = BASE_DIR / "temp_print_data"
+TEMP_DATA_DIR = writable_path(BASE_DIR / "temp_print_data", "temp_print_data")
 TEMP_DATA_DIR.mkdir(exist_ok=True)
 
 @router.get("/api/jobs/temp-data/{job_id}")

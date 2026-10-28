@@ -80,7 +80,7 @@ esac
 
 case "$MODEL" in
   gemini-3.8-flash-high) MODEL_LABEL="Gemini 3.8 Flash (High)" ;;
-  bigmodel/glm-5.3-flash|glm-5.3-flash|workbuddy/glm-5.3-flash) MODEL_LABEL="GLM 5.3 Flash (WorkBuddy)" ;;
+  bigmodel/glm-5.3-flash|glm-5.3-flash|workbuddy/glm-5.3-flash) MODEL_LABEL="GLM 5.3 Flash" ;;
   bigmodel/glm-5.3|glm-5.3) MODEL_LABEL="GLM 5.3" ;;
   Qwen3.8-Flash|qwen3.8-flash|qwen-3.8-flash) MODEL_LABEL="Qwen 3.8 Flash (xhigh)" ;;
   Qwen3.8-Max|qwen3.8-max) MODEL_LABEL="Qwen 3.8 Max (xhigh)" ;;
@@ -160,13 +160,20 @@ trap 'rm -f "$RESP_FILE" "$ERR_FILE"' EXIT
 
 START_TS=$(date +%s)
 if [ "$ENGINE" = "zcode" ]; then
-  "$ZCODE_BIN" -p "$PROMPT" >"$RESP_FILE" 2>"$ERR_FILE"
+  "$ZCODE_BIN" -p "$PROMPT" --no-color >"$RESP_FILE" 2>"$ERR_FILE"
   RC=$?
 elif [ "$ENGINE" = "qoder" ]; then
   "$QODER_BIN" -p "$PROMPT" -m "$MODEL" --reasoning-effort "${REASONING_EFFORT:-xhigh}" --tools "" --dangerously-skip-permissions >"$RESP_FILE" 2>"$ERR_FILE"
   RC=$?
 else
-  "$AGY_BIN" --model "$MODEL" --disable-slash-commands --print-timeout "$PRINT_TIMEOUT" --print="$PROMPT" \
+  AGY_MODEL="$MODEL"
+  AGY_EFFORT="${EFFORT:-high}"
+  case "$MODEL" in
+    *-high) AGY_EFFORT="high"; AGY_MODEL="${MODEL%-high}" ;;
+    *-medium) AGY_EFFORT="medium"; AGY_MODEL="${MODEL%-medium}" ;;
+    *-low) AGY_EFFORT="low"; AGY_MODEL="${MODEL%-low}" ;;
+  esac
+  "$AGY_BIN" --model "$AGY_MODEL" --effort "$AGY_EFFORT" --disable-slash-commands --print-timeout "$PRINT_TIMEOUT" --print="$PROMPT" \
     >"$RESP_FILE" 2>"$ERR_FILE"
   RC=$?
 fi

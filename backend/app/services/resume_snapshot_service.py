@@ -27,7 +27,10 @@ from app.core.resume_confidence import score_resume_confidence
 
 logger = logging.getLogger("resume_snapshot_service")
 
-SNAPSHOT_ROOT = Path(__file__).resolve().parents[2] / "data" / "resume_snapshots"
+# db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
+from app.core.db_paths import writable_path  # noqa: E402
+
+SNAPSHOT_ROOT = writable_path(Path(__file__).resolve().parents[2] / "data" / "resume_snapshots", "resume_snapshots")
 
 # snapshot_id 只允许 uuid 形态字符，路由层同样校验（防路径穿越双保险）
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")

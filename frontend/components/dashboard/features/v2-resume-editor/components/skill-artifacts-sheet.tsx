@@ -38,7 +38,18 @@ export interface ArtifactItem {
   name: string
   size: number
   is_resume_candidate: boolean
+  /** 契约声明的最终交付物 */
+  is_final?: boolean
+  result_kind?: "resume" | "markdown" | "json"
+  has_resume_output?: boolean
+  final_artifact?: string
   executed_at?: string
+  /** 该次运行是否部分成功（06 有效但产物未跑满） */
+  partial?: boolean
+  artifact_count?: number
+  expected_artifact_count?: number
+  engine?: "official" | "agent"
+  error_reason?: string
   preview?: string
   path?: string
 }
@@ -83,7 +94,12 @@ export function SkillArtifactsSheet({
             if (prev && list.some((a) => a.name === prev.name && a.skill_id === prev.skill_id)) {
               return prev
             }
-            return list.find((a) => a.is_resume_candidate) || list[0]
+            return (
+              list.find((a) => a.is_final) ||
+              list.find((a) => a.name === "06_targeted_resume.md") ||
+              list.find((a) => a.is_resume_candidate) ||
+              list[0]
+            )
           })
         } else {
           setSelectedArtifact(null)
@@ -239,34 +255,34 @@ export function SkillArtifactsSheet({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="!max-w-[1320px] w-[95vw] h-[88vh] flex flex-col p-0 gap-0 overflow-hidden rounded-2xl border-slate-200/90 shadow-2xl bg-white focus:outline-none sm:!max-w-[1320px]">
         {/* 顶部 Header：采用极简高质感水平排版 */}
-        <div className="px-6 py-3.5 border-b border-slate-100 bg-slate-50/70 flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-3.5">
-            <div className="size-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-600 shadow-2xs">
+        <div className="px-6 py-3.5 border-b border-slate-100 bg-slate-50/70 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 shrink-0">
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className="size-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-600 shadow-2xs shrink-0">
               <FolderArchive className="size-5" />
             </div>
-            <div>
-              <div className="flex items-center gap-2.5">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2.5 flex-wrap">
                 <DialogTitle className="text-base font-bold text-slate-800 tracking-tight">
                   Skill 作战产物归档 (Artifacts Studio)
                 </DialogTitle>
                 {jobTitle && (
-                  <Badge variant="outline" className="text-xs font-normal text-slate-600 bg-white border-slate-200">
+                  <Badge variant="outline" className="text-xs font-normal text-slate-600 bg-white border-slate-200 max-w-[280px] truncate">
                     {jobTitle}
                   </Badge>
                 )}
               </div>
-              <DialogDescription className="text-xs text-slate-500 mt-0.5 flex items-center gap-2">
+              <DialogDescription className="text-xs text-slate-500 mt-0.5 flex items-center gap-2 flex-wrap">
                 <span>浏览并管理该技能生成的全套 Markdown 深度研报、面试卡片与定制简历底稿</span>
-                <span className="text-amber-600/80 font-medium">（💡 随时可在顶部工具栏点击「📂 作战产物库」重新打开）</span>
+                <span className="text-amber-600/80 font-medium hidden xl:inline">（💡 随时可在顶部工具栏点击「📂 作战产物库」重新打开）</span>
               </DialogDescription>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 pr-8">
+          <div className="flex items-center gap-2 pr-8 shrink-0">
             <Button
               variant="outline"
               size="sm"
-              className="h-8 text-xs text-slate-600 hover:text-slate-900 bg-white border-slate-200 shadow-2xs"
+              className="h-8 text-xs text-slate-600 hover:text-slate-900 bg-white border-slate-200 shadow-2xs whitespace-nowrap"
               onClick={fetchArtifacts}
               disabled={isLoadingList}
             >
@@ -278,8 +294,8 @@ export function SkillArtifactsSheet({
 
         {/* 核心主体：宽屏左右分栏 */}
         <div className="flex-1 flex overflow-hidden min-h-0">
-          {/* 左侧：产物文件树列表 (宽 320px) */}
-          <div className="w-80 shrink-0 border-r border-slate-100 bg-slate-50/40 flex flex-col min-h-0">
+          {/* 左侧：产物文件树列表（窄窗口收窄，宽屏 320px） */}
+          <div className="w-64 lg:w-80 shrink-0 border-r border-slate-100 bg-slate-50/40 flex flex-col min-h-0">
             <div className="p-3 px-4 border-b border-slate-100 flex items-center justify-between text-xs text-slate-500 font-medium bg-slate-50/60 shrink-0">
               <span className="flex items-center gap-1.5 font-semibold text-slate-700">
                 <Layers className="size-3.5 text-slate-500" />
@@ -328,12 +344,16 @@ export function SkillArtifactsSheet({
                     >
                       <div className="flex items-center justify-between gap-1.5 w-full">
                         <span className="font-medium text-xs truncate flex items-center gap-1.5 text-slate-800">
-                          <FileText className={`size-3.5 shrink-0 ${file.is_resume_candidate ? "text-amber-500" : "text-slate-400"}`} />
+                          <FileText className={`size-3.5 shrink-0 ${file.is_final || file.is_resume_candidate ? "text-amber-500" : "text-slate-400"}`} />
                           <span className="truncate">{file.name}</span>
                         </span>
-                        {file.is_resume_candidate ? (
+                        {file.is_final ? (
                           <Badge className="bg-amber-50 text-amber-700 border-amber-200 text-[10px] h-4 px-1 shrink-0 font-medium">
-                            ⭐ 简历主稿
+                            ⭐ {file.result_kind === "resume" ? "简历主稿" : "最终交付物"}
+                          </Badge>
+                        ) : file.is_resume_candidate ? (
+                          <Badge variant="secondary" className="bg-slate-100 text-slate-500 text-[10px] h-4 px-1 shrink-0 font-normal">
+                            📄 简历候选
                           </Badge>
                         ) : (
                           <Badge variant="secondary" className="bg-slate-100 text-slate-500 text-[10px] h-4 px-1 shrink-0 font-normal">
@@ -356,27 +376,43 @@ export function SkillArtifactsSheet({
           <div className="flex-1 flex flex-col bg-white overflow-hidden min-h-0">
             {selectedArtifact ? (
               <>
-                {/* 文件头部与操作栏 */}
-                <div className="p-3.5 px-6 border-b border-slate-100 flex items-center justify-between bg-white shrink-0">
-                  <div className="flex items-center gap-2.5">
-                    <span className="text-sm font-bold text-slate-800">{selectedArtifact.name}</span>
-                    {selectedArtifact.is_resume_candidate ? (
-                      <Badge className="bg-emerald-50 text-emerald-700 border-emerald-200 text-xs font-normal">
-                        可一键回填至简历画布
+                {/* 文件头部与操作栏（窄窗口自动换行，动作按钮永不压缩） */}
+                <div className="p-3.5 px-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 bg-white shrink-0">
+                  <div className="flex items-center gap-2.5 min-w-0 flex-wrap">
+                    <span className="text-sm font-bold text-slate-800 truncate max-w-[340px]">{selectedArtifact.name}</span>
+                    {selectedArtifact.is_final ? (
+                      <Badge className="bg-amber-50 text-amber-700 border-amber-200 text-xs font-normal shrink-0">
+                        {selectedArtifact.result_kind === "resume" ? "最终简历主稿" : "最终交付物"}
+                      </Badge>
+                    ) : selectedArtifact.is_resume_candidate ? (
+                      <Badge variant="outline" className="text-xs text-slate-500 font-normal bg-slate-50 shrink-0">
+                        简历候选
                       </Badge>
                     ) : (
-                      <Badge variant="outline" className="text-xs text-slate-500 font-normal bg-slate-50">
+                      <Badge variant="outline" className="text-xs text-slate-500 font-normal bg-slate-50 shrink-0">
                         求职备战参考 / 深度研报
+                      </Badge>
+                    )}
+                    {selectedArtifact.is_resume_candidate && selectedArtifact.result_kind !== "markdown" && selectedArtifact.result_kind !== "json" && (
+                      <Badge className="bg-emerald-50 text-emerald-700 border-emerald-200 text-xs font-normal shrink-0">
+                        可一键回填至简历画布
+                      </Badge>
+                    )}
+                    {selectedArtifact.partial && (
+                      <Badge className="bg-amber-50 text-amber-700 border-amber-200 text-xs font-normal shrink-0">
+                        {(selectedArtifact.expected_artifact_count ?? 0) > 0
+                          ? `部分产物 ${selectedArtifact.artifact_count ?? 0}/${selectedArtifact.expected_artifact_count}`
+                          : `部分产物 ${selectedArtifact.artifact_count ?? 0} 份`}
                       </Badge>
                     )}
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     {/* 视图切换：排版阅读 / 源码 */}
-                    <div className="flex items-center bg-slate-100/80 p-0.5 rounded-lg border border-slate-200/60 mr-1">
+                    <div className="flex items-center bg-slate-100/80 p-0.5 rounded-lg border border-slate-200/60 mr-1 shrink-0">
                       <button
                         onClick={() => setViewMode("rendered")}
-                        className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-md transition-all ${
+                        className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-md transition-all whitespace-nowrap ${
                           viewMode === "rendered"
                             ? "bg-white text-slate-800 font-medium shadow-2xs"
                             : "text-slate-500 hover:text-slate-700"
@@ -387,7 +423,7 @@ export function SkillArtifactsSheet({
                       </button>
                       <button
                         onClick={() => setViewMode("raw")}
-                        className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-md transition-all ${
+                        className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-md transition-all whitespace-nowrap ${
                           viewMode === "raw"
                             ? "bg-white text-slate-800 font-medium shadow-2xs"
                             : "text-slate-500 hover:text-slate-700"
@@ -401,7 +437,7 @@ export function SkillArtifactsSheet({
                     <Button
                       variant="outline"
                       size="sm"
-                      className="h-8 text-xs text-slate-600 hover:text-slate-800 bg-white shadow-2xs"
+                      className="h-8 text-xs text-slate-600 hover:text-slate-800 bg-white shadow-2xs shrink-0 whitespace-nowrap"
                       onClick={handleCopy}
                     >
                       {copied ? <Check className="size-3.5 mr-1.5 text-emerald-600" /> : <Copy className="size-3.5 mr-1.5" />}
@@ -410,7 +446,7 @@ export function SkillArtifactsSheet({
                     <Button
                       variant="outline"
                       size="sm"
-                      className="h-8 text-xs text-slate-600 hover:text-slate-800 bg-white shadow-2xs"
+                      className="h-8 text-xs text-slate-600 hover:text-slate-800 bg-white shadow-2xs shrink-0 whitespace-nowrap"
                       onClick={handleDownload}
                     >
                       <Download className="size-3.5 mr-1.5" />
@@ -419,7 +455,7 @@ export function SkillArtifactsSheet({
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-8 text-xs text-rose-500 hover:text-rose-700 hover:bg-rose-50"
+                      className="h-8 text-xs text-rose-500 hover:text-rose-700 hover:bg-rose-50 shrink-0 whitespace-nowrap"
                       onClick={handleDeleteSingleArtifact}
                       title="删除当前文件"
                     >
@@ -427,30 +463,35 @@ export function SkillArtifactsSheet({
                       删除
                     </Button>
 
-                    {/* ✨ 核心回填按钮：自适应提取并灌入标准简历画布 */}
-                    <Button
-                      size="sm"
-                      className={`h-8 text-xs font-medium transition-all shadow-sm ${
-                        selectedArtifact.is_resume_candidate
-                          ? "bg-amber-600 hover:bg-amber-700 text-white"
-                          : "bg-indigo-600 hover:bg-indigo-700 text-white"
-                      }`}
-                      onClick={handleFillToResumeCanvas}
-                      disabled={isFilling || isLoadingContent || !content.trim()}
-                    >
-                      {isFilling ? (
-                        <Loader2 className="size-3.5 animate-spin mr-1.5" />
-                      ) : (
-                        <Sparkles className="size-3.5 mr-1.5" />
-                      )}
-                      一键回填到简历画布
-                      <ArrowRight className="size-3 ml-1" />
-                    </Button>
+                    {/* ✨ 简历类产物才提供回填；通用 skill 产物只归档/下载，不污染画布 */}
+                    {selectedArtifact.is_resume_candidate && selectedArtifact.result_kind !== "markdown" && selectedArtifact.result_kind !== "json" && (
+                      <Button
+                        size="sm"
+                        className="h-8 text-xs font-medium transition-all shadow-sm bg-amber-600 hover:bg-amber-700 text-white shrink-0 whitespace-nowrap"
+                        onClick={handleFillToResumeCanvas}
+                        disabled={isFilling || isLoadingContent || !content.trim()}
+                      >
+                        {isFilling ? (
+                          <Loader2 className="size-3.5 animate-spin mr-1.5" />
+                        ) : (
+                          <Sparkles className="size-3.5 mr-1.5" />
+                        )}
+                        一键回填到简历画布
+                        <ArrowRight className="size-3 ml-1" />
+                      </Button>
+                    )}
                   </div>
                 </div>
 
                 {/* 防错提示条：对非简历产物进行清晰隔离提醒 */}
-                {!selectedArtifact.is_resume_candidate && (
+                {selectedArtifact.result_kind && selectedArtifact.result_kind !== "resume" ? (
+                  <div className="bg-amber-50/70 border-b border-amber-100/80 px-6 py-2 flex items-center gap-2 text-xs text-amber-800 shrink-0">
+                    <ShieldAlert className="size-4 shrink-0 text-amber-600" />
+                    <span>
+                      当前为<b>通用技能产物</b>（{selectedArtifact.result_kind}）。该技能未声明简历改写产物，执行结果只归档到产物库，不会写回简历库或简历画布。
+                    </span>
+                  </div>
+                ) : !selectedArtifact.is_resume_candidate && (
                   <div className="bg-amber-50/70 border-b border-amber-100/80 px-6 py-2 flex items-center gap-2 text-xs text-amber-800 shrink-0">
                     <ShieldAlert className="size-4 shrink-0 text-amber-600" />
                     <span>

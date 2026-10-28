@@ -284,7 +284,7 @@ _TINY_PNG_DATA_URL = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
 
-# 诊断专用短超时：探活不该被 get_safe_httpx_client 的 180s 长超时拖住
+# 诊断专用短超时：探活不该被 get_safe_httpx_client 的 LLM 长超时（默认 360s，可配置）拖住
 _DIAGNOSE_TIMEOUT_SECONDS = 30.0
 
 
@@ -441,11 +441,18 @@ async def diagnose_llm() -> dict[str, Any]:
             client.close()
 
     all_ok = all(c["ok"] for c in checks if not c.get("optional"))
+    try:
+        from app.core.llm_gate import get_llm_gate
+        gate_stats = get_llm_gate().stats()
+    except Exception:
+        gate_stats = None
+
     return {
         "code": 0,
         "data": {
             "all_ok": all_ok,
             "checked_at": datetime.now().isoformat(timespec="seconds"),
             "checks": checks,
+            "gate_stats": gate_stats,
         },
     }

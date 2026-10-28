@@ -128,14 +128,14 @@
     },
     {
       "pattern": "零(资损|事故|投诉|差错|异常)",
-      "safe": "极低",
-      "reason": "零是绝对化表述，需完整时间范围内的审计记录佐证",
+      "safe": "极低\\1率",
+      "reason": "零是绝对化表述，需完整时间范围内的审计记录佐证；反向引用保留宾语（零差错→极低差错率）避免病句",
       "severity": "high",
       "scope": "universal"
     },
     {
       "pattern": "(指数级|数量级)(的)?(提升|增长|降低)",
-      "safe": "大幅",
+      "safe": "大幅\\3",
       "reason": "指数级/数量级需前后对比数据佐证，否则属于空洞夸大",
       "severity": "medium",
       "scope": "universal"
@@ -162,8 +162,15 @@
       "scope": "universal"
     },
     {
-      "pattern": "(飙升|骤降|暴涨|暴跌)",
-      "safe": "明显变化",
+      "pattern": "(飙升|暴涨)",
+      "safe": "大幅上升",
+      "reason": "戏剧化用词，需前后数据对比佐证",
+      "severity": "low",
+      "scope": "universal"
+    },
+    {
+      "pattern": "(骤降|暴跌)",
+      "safe": "大幅下降",
       "reason": "戏剧化用词，需前后数据对比佐证",
       "severity": "low",
       "scope": "universal"

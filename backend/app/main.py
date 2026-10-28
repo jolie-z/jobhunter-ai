@@ -4,6 +4,7 @@ import inspect
 import logging
 import os
 import sys
+import time
 from contextlib import asynccontextmanager
 
 import sentry_sdk
@@ -16,6 +17,9 @@ from starlette.middleware.cors import CORSMiddleware
 _default_no_proxy = "localhost,127.0.0.1,open.feishu.cn,*.feishu.cn,feishu.cn"
 os.environ["NO_PROXY"] = f"{_default_no_proxy},{os.environ.get('NO_PROXY', '')}".strip(",")
 os.environ["no_proxy"] = os.environ["NO_PROXY"]
+
+# lifespan 后台任务强引用集合（asyncio 官方建议：create_task 结果不持引用可能被 GC 中途回收）
+_LIFESPAN_BG_TASKS: set = set()
 
 # 🌟 启动最早期把 settings.json（配置页保存的值）注入 os.environ 与 pydantic settings 单例，
 # 保证下方全部路由 import 时读到的 FEISHU_*/OPENAI_* 都是页面配置的最新值
@@ -190,6 +194,21 @@ if settings.SENTRY_DSN and settings.ENVIRONMENT != "local":
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ARG001  # FastAPI lifespan 协议签名
     """FastAPI lifespan: init/close Playwright PDF renderer and Automation Scheduler."""
+    import time as _time
+
+    _t0 = _time.perf_counter()
+    _last = _t0
+
+    def _mark(step: str) -> None:
+        # 启动链路计时打点（桌面打包态 shell.log 消费）：定位慢步骤（2026-10-06 Windows
+        # 真机 0.1.1 实测 lifespan 内存在 ~70s 盲区，90s 超时被误杀）。单步增量 + 累计双口径。
+        nonlocal _last
+        now = _time.perf_counter()
+        logging.getLogger("main").info(
+            f"⏱️ [启动链路] {step} 单步 +{now - _last:.1f}s / 累计 {now - _t0:.1f}s"
+        )
+        _last = now
+
     from app.automation import console_stream
     from app.automation.scheduler import init_automation_pipeline, start_scheduler
     from app.core.pdf_renderer import close_pdf_renderer, init_pdf_renderer
@@ -201,10 +220,17 @@ async def lifespan(app: FastAPI):  # noqa: ARG001  # FastAPI lifespan 协议签�
         await init_pdf_renderer()
     except Exception as e:
         logging.getLogger("main").warning(f"⚠️ Playwright PDF renderer init skipped: {e}")
+    _mark("PDF渲染器")
 
     try:
         # 初始化 LangGraph 与持久化存储
         await init_automation_pipeline()
+        # 僵尸 running 清账（2026-10-23 终止失效工单）：上次进程被杀时 automation_logs
+        # 的 finally 终态不会执行，残留 running 会让任务历史永久「运行中」
+        from app.automation.db import reconcile_stale_running_logs
+        _stale = reconcile_stale_running_logs()
+        if _stale:
+            logging.getLogger("main").warning(f"🧹 [automation_logs] 重启清账：{_stale} 条僵尸 running 已标记 interrupted_on_restart")
         # 启动 Cron 调度器（实验端或调试环境若置 1 则跳过定时任务，避免多实例冲突）
         if os.getenv("DISABLE_AUTOMATION_SCHEDULER") == "1":
             logging.getLogger("main").info("⏸️ 检测到 DISABLE_AUTOMATION_SCHEDULER=1，跳过 APScheduler 自动化定时任务")
@@ -257,16 +283,40 @@ async def lifespan(app: FastAPI):  # noqa: ARG001  # FastAPI lifespan 协议签�
         logging.getLogger("main").info("✅ ChatAgent（工具循环 harness）已就绪")
     except Exception as e:
         logging.getLogger("main").warning(f"⚠️ ChatAgent init skipped: {e}")
+    _mark("ChatAgent")
 
     try:
-        # 飞书 WebSocket 长连接（消息事件主通道；webhook 仅作兜底）
-        from app.core.feishu_ws import start_feishu_ws
-        if start_feishu_ws(asyncio.get_running_loop()):
-            logging.getLogger("main").info("✅ 飞书 WebSocket 长连接已启动")
-        else:
-            logging.getLogger("main").warning("⚠️ 飞书 WebSocket 长连接未启动（缺 FEISHU_APP_ID/SECRET）")
+        # 飞书 WebSocket 长连接（消息事件主通道；webhook 仅作兜底）。
+        # 2026-10-07 移入后台任务：Windows 真机日志实证此步骤稳定耗时 64~69s
+        # （lark_oapi 重依赖冷导入被杀软实时扫描放大），阻塞 lifespan 会吃掉壳的
+        # 就绪等待窗口；WS 是入站消息通道，晚几秒启动无感。
+        # R4 复审 P1：冷导入是同步阻塞调用，协程内直接执行会在被调度时冻住整个
+        # 事件循环——必须 asyncio.to_thread 下放工作线程；loop 引用在主线程先取好
+        async def _start_feishu_ws_bg(loop: asyncio.AbstractEventLoop) -> None:
+            t0 = time.monotonic()
+
+            def _import_and_start() -> bool:
+                from app.core.feishu_ws import start_feishu_ws  # 冷导入成本计入本任务
+                logging.getLogger("main").info(
+                    f"⏱️ [飞书WS后台] 模块导入 {time.monotonic() - t0:.1f}s"
+                )
+                return start_feishu_ws(loop)
+
+            try:
+                if await asyncio.to_thread(_import_and_start):
+                    logging.getLogger("main").info("✅ 飞书 WebSocket 长连接已启动")
+                else:
+                    logging.getLogger("main").warning("⚠️ 飞书 WebSocket 长连接未启动（缺 FEISHU_APP_ID/SECRET）")
+                logging.getLogger("main").info(f"⏱️ [飞书WS后台] 总计 {time.monotonic() - t0:.1f}s")
+            except Exception:
+                logging.getLogger("main").exception("🚨 飞书 WebSocket 长连接启动失败")
+
+        task = asyncio.create_task(_start_feishu_ws_bg(asyncio.get_running_loop()))
+        _LIFESPAN_BG_TASKS.add(task)  # 持强引用防 GC（asyncio 官方建议模式）
+        task.add_done_callback(_LIFESPAN_BG_TASKS.discard)
     except Exception as e:
-        logging.getLogger("main").exception(f"🚨 飞书 WebSocket 长连接启动失败: {e}")
+        logging.getLogger("main").exception(f"🚨 飞书 WebSocket 后台任务派发失败: {e}")
+    _mark("飞书WebSocket")
 
     try:
         # 飞书战报定时调度器（日/周/月报）：进程内存态，随应用启动从 job_goals 装载时间表；
@@ -275,6 +325,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001  # FastAPI lifespan 协议签�
         start_report_scheduler()
     except Exception as e:
         logging.getLogger("main").exception(f"⚠️ 战报调度器启动失败: {e}")
+    _mark("战报调度器（lifespan 完毕）")
 
     yield
     try:

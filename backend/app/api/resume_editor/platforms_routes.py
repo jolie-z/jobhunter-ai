@@ -16,6 +16,9 @@ from app.session.health_checker import probe_port
 from app.session.manager import session_manager
 from app.session.registry import PLATFORM_CONFIGS
 
+# Windows 防闪窗：子进程统一走防闪窗包装（backend 根模块，参照 engine_guard）
+from subprocess_utils import run_hidden
+
 from .common import DATA_DIR, PLATFORMS, PLATFORMS_DIR, UNIFIED_PATH, atomic_write_json
 from .platforms_zhilian_heal_routes import router as zhilian_heal_router
 
@@ -190,7 +193,7 @@ else:
 '''
     env = {**os.environ, "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
     try:
-        result = subprocess.run(
+        result = run_hidden(
             [sys.executable, "-c", script, str(port), login_url, PLATFORMS_DIR],
             capture_output=True, text=True, timeout=25, env=env,
         )

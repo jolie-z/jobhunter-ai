@@ -703,6 +703,26 @@ async def run_batch_ai_task(
     queue: asyncio.Queue,
     scheduled_at: str | None = None
 ):
+    """前台手动批量任务入口（/api/tasks/batch-process 与 chatops 的唯一消费方）。
+
+    整链标记交互通道：caller=ai_evaluator/ai_scorer 等批处理名单内的调用不再占用
+    LLM_BATCH_MAX_CONCURRENCY 批处理配额，只占全局并发槽——后台定时批量打满 2 个
+    批处理槽时，用户手动评估不再排队 60s×N 次后「AI评估失败」。定时/自动化链路
+    不走本入口，批处理配额语义保持不变。
+    """
+    from app.core.llm_gate import interactive_llm_channel
+
+    with interactive_llm_channel():
+        await _run_batch_ai_task_body(task_id, task_type, job_ids, queue, scheduled_at)
+
+
+async def _run_batch_ai_task_body(
+    task_id: str,
+    task_type: str,
+    job_ids: list[str],
+    queue: asyncio.Queue,
+    scheduled_at: str | None = None
+):
     if global_task_lock.locked():
         await send_sse_msg(queue, "info", "系统繁忙，正在排队等待执行...")
 

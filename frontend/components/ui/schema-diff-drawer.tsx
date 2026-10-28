@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useState } from "react"
+import { getApiBase } from "@/lib/api"
 import {
   Sparkles,
   PlusCircle,
@@ -44,7 +45,8 @@ export function SchemaDiffDrawer({
   onClose,
   diff,
   platformLabel = "在线招聘平台",
-  apiBase = "http://localhost:8000",
+  // 基址运行时解析（M1 收口）：默认参数每次渲染求值，Getter 形式为 M2 动态端口留 seam
+  apiBase = getApiBase(),
   onSyncSuccess,
 }: SchemaDiffDrawerProps) {
   const [applying, setApplying] = useState(false)

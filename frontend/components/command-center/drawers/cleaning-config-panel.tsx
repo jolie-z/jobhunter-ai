@@ -28,6 +28,10 @@ export function CleaningConfigPanel({ onSaved }: CleaningConfigPanelProps) {
 
   // Tier 2 状态
   const [aiScoutRules, setAiScoutRules] = useState<AIScoutRule[]>([])
+  // 后端回填的内置示例标记（ai_scout_rules 为空时展示示例规则，供用户参考格式）
+  const [scoutIsExample, setScoutIsExample] = useState(false)
+  // 示例下发原文快照：保存时对比"用户是否真的改过示例"，未改则落空数组（R2 P2）
+  const [exampleSnapshot, setExampleSnapshot] = useState<AIScoutRule[]>([])
 
   // 加载当前策略
   const fetchStrategy = useCallback(async () => {
@@ -55,6 +59,8 @@ export function CleaningConfigPanel({ onSaved }: CleaningConfigPanelProps) {
           setRawSafePhrases(Array.isArray(data.safe_phrases) ? data.safe_phrases : [])
           setRawKeywordRules(Array.isArray(data.keyword_rules) ? data.keyword_rules : [])
           setAiScoutRules(Array.isArray(data.ai_scout_rules) ? data.ai_scout_rules : [])
+          setScoutIsExample(Boolean(data.ai_scout_rules_is_example))
+          setExampleSnapshot(Array.isArray(data.ai_scout_rules) ? data.ai_scout_rules : [])
         }
       }
     } catch {
@@ -91,7 +97,12 @@ export function CleaningConfigPanel({ onSaved }: CleaningConfigPanelProps) {
           allowed_cities: cities,
           safe_phrases: rawSafePhrases,
           keyword_rules: rawKeywordRules,
-          ai_scout_rules: aiScoutRules,
+          // R2 P2：当前展示的是后端回填的示例规则（库里本为空），用户未改动示例时
+          // 保存空数组——否则示例会被当真实配置落库，且用户"清空保存"的意图被破坏
+          ai_scout_rules:
+            scoutIsExample && JSON.stringify(aiScoutRules) === JSON.stringify(exampleSnapshot)
+              ? []
+              : aiScoutRules,
         }),
       })
       const result = await res.json()
@@ -140,7 +151,7 @@ export function CleaningConfigPanel({ onSaved }: CleaningConfigPanelProps) {
       />
 
       {/* 2. Tier 2 AI 侦察兵大模型初筛规则表 */}
-      <AIScoutRulesTable rules={aiScoutRules} onChange={setAiScoutRules} />
+      <AIScoutRulesTable rules={aiScoutRules} onChange={setAiScoutRules} isExample={scoutIsExample} />
 
       {/* 3. 底部操作栏 */}
       <div className="pt-3 border-t border-border flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">

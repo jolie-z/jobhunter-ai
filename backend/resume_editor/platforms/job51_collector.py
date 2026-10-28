@@ -14,8 +14,13 @@ import time
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _BACKEND_DIR = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
-DATA_DIR = os.path.join(_BACKEND_DIR, "resume_editor", "data")
-OUTPUT_PATH = os.path.join(DATA_DIR, "51job_fields.json")
+# DO NOT MOVE: 本脚本独立拉起时 sys.path[0] 只有 platforms/，必须先插 backend 根，
+# 下一行 from resume_editor.paths import 才能成立（禁止改成裸 import paths）
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+from resume_editor.paths import fields_path  # noqa: E402
+
+OUTPUT_PATH = fields_path("51job")   # 用户数据：打包态落用户数据目录
 
 sys.path.insert(0, _SCRIPT_DIR)
 from browser_common import get_platform_port, connect_page, save_fields_json

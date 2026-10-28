@@ -2,6 +2,8 @@
 import asyncio
 import json
 import re
+import shutil
+import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +15,9 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.llm_tracker import make_tracked_client
+
+# Windows 防闪窗：子进程统一走防闪窗包装（backend 根模块，参照 engine_guard）
+from subprocess_utils import create_subprocess_exec_hidden
 
 # ==========================================
 # 1. 基础配置与全局状态管理
@@ -34,6 +39,11 @@ def get_client():
 
 # 动态定位爬虫目录的基础路径
 BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
+
+# chatops 只读查库走 db_paths 阀门（与主库同源；打包态落 JOBHUNTER_DATA_DIR）
+from app.core.db_paths import job_hunter_db_path  # noqa: E402
+
+CHATOPS_DB_PATH = str(job_hunter_db_path(BASE_DIR / "data" / "job_hunter.db"))
 
 PLATFORM_CONFIG = {
     "boss":   {"per_page": 15, "script_name": "boss_collector.py",   "dir_name": "boss_scraper"},
@@ -141,8 +151,15 @@ async def run_sequential_chatops_scheduler(task_id: str, platforms: list, target
                 await queue.put('data: {"type": "info", "message": "🔐 正在自动提取 Edge 浏览器 Cookie 刷新登录态..."}\n\n')
                 await queue.put('data: {"type": "progress", "message": "  > boss login --cookie-source edge"}\n\n')
 
-                login_process = await asyncio.create_subprocess_exec(
-                    "boss", "login", "--cookie-source", "edge",
+                # boss 是用户 PATH 上的外部命令：Windows 下可能是 .cmd/.bat shim
+                # （npm/pip 式包装），CreateProcessW 不能直接执行批处理，需 cmd.exe /c 包装
+                boss_cmd = shutil.which("boss") or "boss"
+                if sys.platform == "win32" and boss_cmd.lower().endswith((".bat", ".cmd")):
+                    login_cmd = ["cmd.exe", "/c", boss_cmd, "login", "--cookie-source", "edge"]
+                else:
+                    login_cmd = [boss_cmd, "login", "--cookie-source", "edge"]
+                login_process = await create_subprocess_exec_hidden(
+                    *login_cmd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(spider_dir)
@@ -179,9 +196,9 @@ async def run_sequential_chatops_scheduler(task_id: str, platforms: list, target
                 await queue.put(f'data: {{"type": "progress", "message": "  > {display_cmd}"}}\n\n')
 
                 script_path = str(spider_dir / script_name)
-                cmd = ["python", "-u", script_path, "--platform", plat, "-p", str(page)]
+                cmd = [sys.executable, "-u", script_path, "--platform", plat, "-p", str(page)]
 
-                process = await asyncio.create_subprocess_exec(
+                process = await create_subprocess_exec_hidden(
                     *cmd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
@@ -228,7 +245,7 @@ async def run_sequential_chatops_scheduler(task_id: str, platforms: list, target
                     await queue.put(f'data: {{"type": "progress", "message": "  > {display_cmd}"}}\n\n')
 
                     script_path = str(spider_dir / script_name)
-                    cmd = ["python", "-u", script_path, "--platform", plat, "-p", str(page)]
+                    cmd = [sys.executable, "-u", script_path, "--platform", plat, "-p", str(page)]
                     if final_keyword:
                         cmd.extend(["--keyword", final_keyword])
                     if final_city:
@@ -236,7 +253,7 @@ async def run_sequential_chatops_scheduler(task_id: str, platforms: list, target
                     if final_salary:
                         cmd.extend(["--salary", final_salary])
 
-                    process = await asyncio.create_subprocess_exec(
+                    process = await create_subprocess_exec_hidden(
                         *cmd,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
@@ -318,7 +335,7 @@ async def run_chatops_pusher(task_id: str, queue: asyncio.Queue):
     try:
         await queue.put('data: {"type": "info", "message": "📤 开始将清洗通过的岗位同步到飞书多维表格..."}\n\n')
         from job_processor.step2_sync_feishu import sync_sqlite_to_feishu_async
-        db_path = str(BASE_DIR / "data" / "job_hunter.db")
+        db_path = CHATOPS_DB_PATH
         # 同步阻塞函数丢入线程池，避免卡死事件循环（async 入口负责锚定主 loop 供线程内 SSE 回推）
         await sync_sqlite_to_feishu_async(db_path, "raw_jobs", task_id)
         await queue.put('data: {"type": "success", "message": "✅ 飞书同步完毕！新岗位已推送到多维表格（自动查重）。"}\n\n')
@@ -332,7 +349,7 @@ async def run_chatops_db_querier(task_id: str, sql: str, queue: asyncio.Queue): 
     """查询本地数据库：在 raw_jobs 表上执行只读查询并返回预览。"""
     import sqlite3
     try:
-        db_path = str(BASE_DIR / "data" / "job_hunter.db")
+        db_path = CHATOPS_DB_PATH
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()

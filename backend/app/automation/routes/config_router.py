@@ -144,10 +144,14 @@ async def generate_mass_greeting():
     except Exception:
         jd_report = ""
     if not jd_report:
-        raise HTTPException(status_code=400, detail="还没有 A级岗位画像，请先生成")
+        # 2026-10-06 降级：新装系统零岗位零评估 → 必无 A 级画像，此前直接 400 死锁
+        # （通用版生成的前提依赖一个还不存在的产物）。降级为纯简历通用版：
+        # greeting skill 对空 JD 有兜底 blocks，SOP/自定义 prompt 均可跑。
+        logger.info("[generate-mass-greeting] 无 A 级岗位画像，降级为纯简历通用版")
 
     text, _ = await asyncio.to_thread(
-        run_skill_based_greeting, jd_report, {}, resume_text, "A级岗位画像（海投通用）")
+        run_skill_based_greeting, jd_report, {}, resume_text,
+        "A级岗位画像（海投通用）" if jd_report else "通用海投开场白（简历通用版）")
     text = (text or "").strip()
     if not text or text.startswith("❌"):
         raise HTTPException(status_code=502, detail=text[:200] or "模型返回空内容，请重试或更换模型")

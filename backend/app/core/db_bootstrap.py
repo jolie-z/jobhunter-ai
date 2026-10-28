@@ -175,6 +175,12 @@ CREATE TABLE IF NOT EXISTS xhs_raw_posts (
     publish_date TEXT,
     note_id TEXT
 );
+CREATE TABLE IF NOT EXISTS system_reports (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,              -- 报告正文（Markdown）
+    generated_at TEXT,                -- ISO 生成时间；飞书迁移旧值为 NULL（生成时间不可考，刷新判定视为超期）
+    meta_json TEXT DEFAULT '{}'       -- 样本构成/模型/阶段等元数据（A级画像重构 2026-10-11）
+);
 CREATE INDEX IF NOT EXISTS idx_raw_jobs_status ON raw_jobs(process_status, is_synced);
 CREATE INDEX IF NOT EXISTS idx_raw_jobs_platform ON raw_jobs(platform, process_status);
 CREATE INDEX IF NOT EXISTS idx_raw_jobs_feishu_rid ON raw_jobs(feishu_record_id);
@@ -201,11 +207,19 @@ END;
 def resolve_main_db_path() -> str:
     """解析主库路径——全仓唯一真源，goal_service.DB_PATH 直接复用本函数。
 
-    口径与 goal_service 历史行为逐字一致（勿改语义）：
+    口径与 goal_service 历史行为逐字一致（勿改语义），仅按优先级新增两档收口：
+    - JOBHUNTER_DB_PATH：显式覆盖（M1 锁库阀门，最高优先级）；
+    - JOBHUNTER_DATA_DIR：打包形态用户数据目录（M2 收口）；
     - ANALYTICS_DB_PATH：显式覆盖，即使文件尚不存在也采纳（QA 隔离栈先指路径后建库）；
     - MAIN_PROJECT_DB：遗留外部主库开关，仅当文件已存在才采纳；
     - 缺省：仓内 backend/data/job_hunter.db。
     """
+    jobhunter_db = os.environ.get("JOBHUNTER_DB_PATH", "")
+    if jobhunter_db:
+        return jobhunter_db
+    data_dir = os.environ.get("JOBHUNTER_DATA_DIR", "").strip()
+    if data_dir:
+        return os.path.join(data_dir, "job_hunter.db")
     main_project_db = os.environ.get("MAIN_PROJECT_DB", "")
     local_db = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),

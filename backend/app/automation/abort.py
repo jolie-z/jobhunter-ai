@@ -39,6 +39,12 @@ def is_aborted() -> bool:
         return _state["aborted"]
 
 
+def current_pipeline_task_id() -> str:
+    """当前登记运行中的链路 task_id（无登记为空串）。供终止接口做降级判定与日志取证。"""
+    with _lock:
+        return _state["pipeline_task_id"]
+
+
 def request_platform_abort(platform: str) -> bool:
     """登记平台级终止（拦截编排层后续轮次）。未知平台忽略并返回 False。"""
     with _lock:
@@ -59,9 +65,20 @@ def get_aborted_platforms() -> list:
 
 
 def end_pipeline() -> None:
-    """链路收尾时调用：释放登记（终止标记保留给报告读取，由下次 begin 清理）。"""
+    """链路收尾时调用：释放登记并清掉终止标记。
+
+    2026-10-24 工单：旧版只清 task_id、保留 aborted，导致「上一轮被终止」的标记残留到
+    之后的单岗评估/审批放行投递与定时发射波次——这些流程不走 begin_pipeline，会被误判
+    为仍在终止中而全部拦截。终止战报在 end_pipeline 之前生成，此处清理不影响报告标注。
+    """
     with _lock:
         _state["pipeline_task_id"] = ""
+        _state["aborted"] = False
+        # code-review R2-P2：平台终止登记与单岗取消标记同为「一次性」语义，链路收尾一并清——
+        # 「先单岗取消、后全局终止」时投递节点的全局分支会提前 return 跳过 clear，若不在此
+        # 兜底，陈旧单岗标记会残留到下一轮，造成同岗位首次投递被误拦一次。
+        _platform_aborted.clear()
+        _cancelled_job_deliveries.clear()
 
 
 # ==========================================

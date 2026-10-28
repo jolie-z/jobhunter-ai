@@ -16,8 +16,20 @@ import { EditorModuleRenderer } from "./components/editor-module-renderer"
 import { PdfPreviewDialog } from "./components/pdf-preview-dialog"
 import { SkillArtifactsSheet } from "./components/skill-artifacts-sheet"
 import { SkillAgentLiveModal } from "./components/skill-agent-live-modal"
+import { SkillRewriteInlineStatus } from "./components/skill-rewrite-inline-status"
 import { WizardStatusPanel } from "./components/wizard-status-panel"
-import { runSkillRewrite, startAsyncSkillRewrite } from "@/hooks/use-skill-rewrite"
+import {
+  runSkillRewrite,
+  startAsyncSkillRewrite,
+  isPackageSkill,
+  isOfficialSkillId,
+  skillDisplayName,
+  preflightSkillRewrite,
+  type SkillRewriteParams,
+  type SkillPreflightReport,
+} from "@/hooks/use-skill-rewrite"
+import { SkillPreflightDialog } from "@/components/skill-preflight-dialog"
+import type { SkillAgentCompletePayload } from "@/hooks/use-skill-agent-stream"
 import { useResumeV2Store } from "@/hooks/use-resume-v2-store"
 import { PendingSummaryBar } from "./components/pending-summary-bar"
 import { toast } from "@/hooks/use-toast"
@@ -65,6 +77,18 @@ export function V2ResumeEditor({
   const [artifactsOpen, setArtifactsOpen] = useState(false)
   const [liveModalOpen, setLiveModalOpen] = useState(false)
   const [liveTaskId, setLiveTaskId] = useState<string | null>(null)
+  // 官方剧本/单文件技能改写：不弹看板，行内状态条承接（多文件包才走 liveModalOpen）
+  const [inlineTaskId, setInlineTaskId] = useState<string | null>(null)
+  const [inlineSkillLabel, setInlineSkillLabel] = useState<string>("官方标准剧本")
+  // 执行前预检：确认后才真正消耗 token
+  const [preflightState, setPreflightState] = useState<{
+    report: SkillPreflightReport | null
+    params: SkillRewriteParams
+    skillToUse?: string
+    errorMessage?: string
+  } | null>(null)
+  const [preflightLoading, setPreflightLoading] = useState(false)
+  const inlineTaskSkillRef = useRef<string | undefined>(undefined)
   const [isDiagnosing, setIsDiagnosing] = useState(false)
   const [diagnosisSuggestions, setDiagnosisSuggestions] = useState<any[]>([])
   const [isQAEvaluating, setIsQAEvaluating] = useState(false)
@@ -136,6 +160,55 @@ export function V2ResumeEditor({
     } catch (err: any) { alert("诊断异常: " + err.message) } finally { setIsDiagnosing(false) }
   }
 
+  const startSkillRewrite = async (params: SkillRewriteParams, skillToUse?: string) => {
+    try {
+      // 🚀 启动异步 Agent 推演通道；按「是否多文件技能包」分流呈现（与后端引擎路由同判据）：
+      // 多文件包 → 实时作战看板（多轮 Agent，日志密集）；官方剧本/单文件 → 行内状态条（单轮引擎）
+      const taskId = await startAsyncSkillRewrite(params)
+
+      if (await isPackageSkill(skillToUse)) {
+        setLiveTaskId(taskId)
+        setLiveModalOpen(true)
+        setIsTestingSkill(false)
+      } else {
+        // 单轮引擎：行内状态条承接，按钮保持禁用至终局（防重复触发）
+        inlineTaskSkillRef.current = skillToUse
+        setInlineSkillLabel(await skillDisplayName(skillToUse))
+        setInlineTaskId(taskId)
+      }
+    } catch (err: any) {
+      console.warn("启动异步推演失败，回退至同步等待模式:", err)
+      try {
+        const data = await runSkillRewrite(params)
+        const isResume = data.result_kind === undefined || data.result_kind === "resume"
+        if (isResume && data.parsed_json) {
+          const { setResumeData } = useResumeV2Store.getState()
+          setResumeData(data.parsed_json as ResumeDataV2)
+          if (onUpdateJob) {
+            onUpdateJob({ ...job!, aiRewriteJson: JSON.stringify(data.parsed_json, null, 2) })
+          }
+        }
+
+        const isCustomSkill = !!skillToUse && skillToUse !== "resume_rewrite"
+        if (!isResume) {
+          setArtifactsOpen(true)
+          toast({
+            title: "✅ 技能执行完成",
+            description: "产物已归档到产物库，可在「作战产物库」查看",
+          })
+        } else if (isCustomSkill) {
+          setArtifactsOpen(true)
+        } else {
+          alert(`✅ 官方标准简历改写完成，已实时铺入简历画布！`)
+        }
+      } catch (syncErr: any) {
+        alert("❌ 简历改写失败: " + syncErr.message)
+      } finally {
+        setIsTestingSkill(false)
+      }
+    }
+  }
+
   const handleSkillRewriteAndSave = async (overrideSkillId?: string, force = false) => {
     if (!job?.id) {
       alert("请先选择一个岗位！")
@@ -147,51 +220,92 @@ export function V2ResumeEditor({
       return
     }
     const skillToUse = overrideSkillId || selectedSkill || undefined
+    const params: SkillRewriteParams = {
+      job_id: job.id,
+      jd_text: job.jobDescription || "",
+      job_name: `${job.jobTitle || ""} ${job.companyName || ""}`,
+      skill_id: skillToUse,
+      include_diagnosis: includeDiagnosis,
+    }
 
     setIsTestingSkill(true)
     try {
-      // 🚀 优先启动异步 Agent 推演通道并建立 SSE 实时看板
-      const taskId = await startAsyncSkillRewrite({
-        job_id: job.id,
-        jd_text: job.jobDescription || "",
-        job_name: `${job.jobTitle || ""} ${job.companyName || ""}`,
-        skill_id: skillToUse,
-        include_diagnosis: includeDiagnosis,
-      })
-
-      setLiveTaskId(taskId)
-      setLiveModalOpen(true)
+      const report = await preflightSkillRewrite(params)
+      setPreflightState({ report, params, skillToUse })
     } catch (err: any) {
-      console.warn("启动异步推演失败，回退至同步等待模式:", err)
-      try {
-        const data = await runSkillRewrite({
-          job_id: job.id,
-          jd_text: job.jobDescription || "",
-          job_name: `${job.jobTitle || ""} ${job.companyName || ""}`,
-          skill_id: skillToUse,
-          include_diagnosis: includeDiagnosis,
-        })
-        
-        if (data.parsed_json) {
-          const { setResumeData } = useResumeV2Store.getState()
-          setResumeData(data.parsed_json as ResumeDataV2)
-        }
-        if (onUpdateJob && data.parsed_json) {
-          onUpdateJob({ ...job, aiRewriteJson: JSON.stringify(data.parsed_json, null, 2) })
-        }
-
-        const isCustomSkill = !!skillToUse && skillToUse !== "resume_rewrite"
-        if (isCustomSkill) {
-          setArtifactsOpen(true)
-        } else {
-          alert(`✅ 官方标准简历改写完成，已实时铺入简历画布！`)
-        }
-      } catch (syncErr: any) {
-        alert("❌ 简历改写失败: " + syncErr.message)
-      }
-    } finally {
-      setIsTestingSkill(false)
+      // 预检失败不阻断执行，但要让用户知道无法提前预估
+      setPreflightState({
+        report: null,
+        params,
+        skillToUse,
+        errorMessage: err?.message || "预检失败",
+      })
     }
+  }
+
+  const confirmPreflight = async () => {
+    if (!preflightState) return
+    const { params, skillToUse } = preflightState
+    setPreflightLoading(true)
+    try {
+      await startSkillRewrite(params, skillToUse)
+      setPreflightState(null)
+    } finally {
+      setPreflightLoading(false)
+    }
+  }
+
+  const cancelPreflight = () => {
+    setPreflightState(null)
+    setIsTestingSkill(false)
+  }
+
+  // 行内状态条失败终局：toast 真实报错 + 释放按钮/任务态（状态条随 inlineTaskId 清空卸载）
+  const handleInlineError = (message: string) => {
+    setInlineTaskId(null)
+    setIsTestingSkill(false)
+    toast({ title: "❌ 简历改写失败", description: message })
+  }
+
+  // 行内状态条完成：铺画布 + 写回岗位（与看板 onComplete 同一套落点）+ 释放任务态
+  // （画布已填 + toast 已弹，状态条功成身退，避免终局横幅常驻/收起语义歧义）
+  const handleInlineComplete = (data: SkillAgentCompletePayload) => {
+    setInlineTaskId(null)
+    setIsTestingSkill(false)
+    const isResume = data.result_kind === undefined || data.result_kind === "resume"
+    if (!isResume) {
+      handleLiveModalComplete(data)
+      setArtifactsOpen(true)
+      toast({
+        title: "✅ 技能执行完成",
+        description: "产物已归档到产物库，可在「作战产物库」查看",
+      })
+      return
+    }
+    handleLiveModalComplete(data)
+    const usedSkill = inlineTaskSkillRef.current
+    if (!isOfficialSkillId(usedSkill)) {
+      toast({
+        title: "✅ 简历改写完成",
+        description: "已自动写入飞书「AI改写JSON」+ 跟进状态=简历人工复核；退出不再提醒保存",
+      })
+      setArtifactsOpen(true)
+    } else {
+      toast({
+        title: "✅ 官方标准简历改写完成",
+        description: "已自动写入飞书「AI改写JSON」+ 跟进状态=简历人工复核；退出不再提醒保存",
+      })
+    }
+  }
+
+  // 行内状态条手动收起（仅运行中可见）：SSE 停订但任务在服务端继续执行
+  const handleInlineDismiss = () => {
+    setInlineTaskId(null)
+    setIsTestingSkill(false)
+    toast({
+      title: "改写任务转入后台",
+      description: "任务仍在执行，完成后自动写入飞书「AI改写JSON」与跟进状态",
+    })
   }
 
   // 🌟 弹窗确认重复改写：带原 skill 参数 force 继续
@@ -202,12 +316,37 @@ export function V2ResumeEditor({
     void handleSkillRewriteAndSave(skillId, true)
   }
 
-  const handleLiveModalComplete = (data: { parsed_json: any; markdown: string; usage: any }) => {
+  const handleLiveModalComplete = (data: SkillAgentCompletePayload) => {
+    const isResume = data.result_kind === undefined || data.result_kind === "resume"
+    if (!isResume) {
+      // 通用 skill：只归档产物，不碰简历画布 / AI改写JSON / 跟进状态
+      setArtifactsOpen(true)
+      if (data.partial) {
+        toast({
+          title: "⚠️ 技能部分完成",
+          description: "已产出的文件已归档到产物库；缺少的产物可重新运行补齐",
+        })
+      }
+      return
+    }
     if (data.parsed_json) {
-      const { setResumeData } = useResumeV2Store.getState()
-      setResumeData(data.parsed_json)
+      const store = useResumeV2Store.getState()
+      // 铺画布+基线同事务（基线取 withKeys 转换后形态，原始 parsed_json 直转会让
+      // dirty 恒真——R1 P1）：后端 persisted 回执确认已落飞书，此刻画布=已保存内容；
+      // 后续 loadData 重载以注入 title/头像后的最终形态再校准
+      store.setResumeDataWithBaseline(data.parsed_json)
       if (onUpdateJob && job) {
-        onUpdateJob({ ...job, aiRewriteJson: JSON.stringify(data.parsed_json, null, 2) })
+        // followStatus 同步自 persisted 权威回执（此前只更新 aiRewriteJson，定制面板
+        // 状态下拉整个会话显示旧值，用户误以为跟进状态没改）
+        onUpdateJob({
+          ...job,
+          aiRewriteJson: JSON.stringify(data.parsed_json, null, 2),
+          // 清旧稿镜像：manualRefinedResume 与 aiRewriteJson 后端同列（AI改写JSON），
+          // 但本地镜像在完成回调后仍是旧值，loadData 优先读它会把画布/基线铺回旧稿
+          manualRefinedResume: "",
+          followStatus: data.persisted?.follow_status || job.followStatus,
+          _localRewriteAt: Date.now(),
+        })
       }
     }
   }
@@ -357,6 +496,28 @@ export function V2ResumeEditor({
             ))}
           </div>
         </div>
+      )}
+
+      {/* 执行前预检：确认后才消耗用户 token；非简历 skill 只告知，不阻止 */}
+      <SkillPreflightDialog
+        open={Boolean(preflightState)}
+        report={preflightState?.report ?? null}
+        skillName={preflightState?.report?.name || selectedSkill || "官方剧本"}
+        errorMessage={preflightState?.errorMessage}
+        loading={preflightLoading}
+        onConfirm={confirmPreflight}
+        onCancel={cancelPreflight}
+      />
+
+      {/* 官方剧本/单文件技能改写：轻量行内进度（多文件技能包才弹实时作战看板） */}
+      {inlineTaskId && (
+        <SkillRewriteInlineStatus
+          taskId={inlineTaskId}
+          skillLabel={inlineSkillLabel}
+          onComplete={handleInlineComplete}
+          onError={handleInlineError}
+          onDismiss={handleInlineDismiss}
+        />
       )}
 
       <main className="flex-1 overflow-y-auto">
