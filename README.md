@@ -47,11 +47,11 @@
 > 📖 **新手起步**：参阅 **[使用指南](https://jobhunter.joliezeng.top/guide/pipeline)** 配置大模型 API Key 并连接飞书，即可立即启动全自动求职。
 
 <a id="download"></a>
-## 📦 下载桌面客户端（v0.4.0）
+## 📦 下载桌面客户端（v0.4.9）
 
 | 平台 | 安装包 |
 | :--- | :--- |
-| 🪟 **Windows x64**（Win10 / Win11） | **[⬇️ 下载 Windows 安装包 .exe](https://github.com/jolie-z/jobhunter-ai/releases/latest/download/JobHunter.Windows.x64.0.4.0.exe)** |
+| 🪟 **Windows x64**（Win10 / Win11） | **[⬇️ 下载 Windows 安装包 .exe](https://github.com/jolie-z/jobhunter-ai/releases/latest/download/JobHunter.Windows.x64.0.4.9.exe)** |
 | 🍎 **macOS Apple Silicon**（M 系列） | **[⬇️ 下载 macOS 安装包 .dmg](https://github.com/jolie-z/jobhunter-ai/releases/latest/download/JobHunter-mac-arm64.dmg)** |
 
 > 💡 下载链接始终指向最新版本；更新日志见 **[Releases 页面](https://github.com/jolie-z/jobhunter-ai/releases)**。
