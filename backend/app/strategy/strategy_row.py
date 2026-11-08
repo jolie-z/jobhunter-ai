@@ -22,7 +22,8 @@ def map_strategy_row(row) -> dict:
     """按列名语义解析一行 job_strategies（CR-Split-R1-P2：zip 按列名映射，
     消除位置下标平移风险；row 为任意序列：tuple/sqlite3.Row）。"""
     values = list(row) + [None] * (len(STRATEGY_COLUMNS) - len(row))
-    mapped = dict(zip(STRATEGY_COLUMNS, values))
+    # strict=False 保持历史语义：row 超长时静默截断（等长/短行场景下与 strict=True 等价）
+    mapped = dict(zip(STRATEGY_COLUMNS, values, strict=False))
     for field in _JSON_FIELDS:
         mapped[field] = json.loads(mapped.get(field) or "[]")
     return mapped

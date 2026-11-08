@@ -6,7 +6,8 @@ import { DiagnosticsExportCard } from "@/components/dashboard/strategy-lab/diagn
 
 /**
  * 底层配置页「内测诊断通道」卡片：
- * 无 preload 桥（纯 web 开发态）整卡隐藏；有桥时导出/打开文件夹两按钮的状态反馈
+ * 无 preload 桥（纯 web 开发态）降级为「浏览器模式」禁用卡（按钮置灰 + 引导文案，
+ * 不再整卡隐藏）；有桥时导出/打开文件夹两按钮的状态反馈
  * （loading → 成功/失败内联 hint）与统一错误弹窗（global-error-dialog）同范式。
  */
 
@@ -22,9 +23,12 @@ afterEach(() => {
 })
 
 describe("DiagnosticsExportCard 诊断通道卡片", () => {
-  it("无 preload 桥时整卡隐藏（web 开发态安全降级）", () => {
-    const { container } = render(<DiagnosticsExportCard />)
-    expect(container.innerHTML).toBe("")
+  it("无 preload 桥时降级为「浏览器模式」禁用卡（组件契约：保留引导不再整卡隐藏）", () => {
+    const { container, getByText } = render(<DiagnosticsExportCard />)
+    expect(getByText("浏览器模式")).toBeTruthy()
+    expect(container.textContent).toContain("当前是浏览器模式：导出诊断日志 / 打开日志文件夹需要在 JobHunter 桌面客户端中使用")
+    // 两按钮均置灰：web 态不可误触导出
+    expect(container.querySelectorAll("button[disabled]").length).toBe(2)
   })
 
   it("导出成功：按钮进入 loading，hint 展示桌面包文件名", async () => {

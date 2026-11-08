@@ -7,7 +7,8 @@ step 常量与台账写入收敛到 services 层；run_snapshot 仍是存储本�
 CR-Split-R1-P2 修正：STEP_RESUME_GREETING 改为从 run_snapshot 单点导入转发
 （消除常量双份定义）；显式签名替代 *args/**kwargs。
 """
-from app.automation.run_snapshot import record_delivery_failure as _record, STEP_RESUME_GREETING  # noqa: F401
+from app.automation.run_snapshot import STEP_RESUME_GREETING
+from app.automation.run_snapshot import record_delivery_failure as _record  # noqa: F401
 
 __all__ = ["STEP_RESUME_GREETING", "record_delivery_failure"]
 

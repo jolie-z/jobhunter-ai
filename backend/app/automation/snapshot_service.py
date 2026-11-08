@@ -19,18 +19,16 @@ from typing import Any
 from app.automation import db as automation_db
 from app.automation import pipeline_broadcast as pb
 from app.automation import run_snapshot as _rs
-from app.core import process_status
-from app.core.feishu_utils import POST_DELIVERY_FOLLOW_STATUSES
 from app.automation.snapshot_dispatch import (  # 拆分子任务：分诊/失败卡/SQLite 映射抽离（<500 行门禁）
+    _SQLITE_REJECTED_STATUSES,
     _map_sqlite_process_status,
     _mass_review_reason,
     _triage_classify,
     build_failure_job,
     build_failure_suggestion,
     classify_feishu_followup,
-    _RUNNING_CLEAN_STATES,
-    _SQLITE_REJECTED_STATUSES,
 )
+from app.core import process_status
 from app.core.process_status import APPROVAL_FOLLOW_STATUSES
 from app.core.utils import is_greeting_supported_platform, normalize_platform_code
 from app.services import feishu_service
@@ -651,7 +649,6 @@ async def build_jobs_snapshot() -> dict[str, Any]:
 
                     pipeline_stopped = not runtime.get("running")
                     norm_grade = str(grade).strip().upper() if grade else ""
-                    has_rating = norm_grade in ("A", "B", "C", "D")
 
                     _section4_failure_info = None  # 循环每条记录重置（CR-B2-R2-P1：防跨条污染/UnboundLocal）
                     # 分诊唯一实现（CR-B2-R1-P4；R3-P2：「已拒绝」分支并入纯函数，调用方无特判）：
