@@ -368,7 +368,7 @@ _PAGE_TAB_PROBE_INTERVAL_S = 1.0
 
 def _get_page_tabs(requests, url: str, proxies: dict) -> list:
     """GET /json → page/webview tab 列表；网络异常向上抛，由调用方决定重试。"""
-    resp = requests.get(url, proxies=proxies, timeout=2)  # type: ignore[arg-type]
+    resp = requests.get(url, proxies=proxies, timeout=2)
     return [t for t in (resp.json() or []) if t.get("type") in ("page", "webview")]
 
 
@@ -407,7 +407,7 @@ def _ensure_page_tab_sync(config: PlatformConfig) -> str | None:
 
     target_url = config.login_check_url or config.auth_url or "about:blank"
     try:
-        requests.put(f"{url}/new?{target_url}", proxies=proxies, timeout=2)  # type: ignore[arg-type]
+        requests.put(f"{url}/new?{target_url}", proxies=proxies, timeout=2)
     except Exception as e:
         logger.warning(
             "[browser] %s 端口 %s 补建 page tab 失败: %s", config.name, config.port, e,
