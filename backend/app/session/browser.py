@@ -149,6 +149,19 @@ def _read_log_tail(log_path: Path, limit: int = 600) -> str:
         return "(日志文件不可读)"
 
 
+def _testing_fuse_active() -> bool:
+    """launch_edge 测试熔断判定（单测定点 monkeypatch 本函数即可解禁，
+    不必污染全局 RUN_LIVE_E2E 开关——agy round1 P2）。默认与飞书外发守卫同语义。"""
+    from app.core.testing_guard import is_testing_env
+
+    return is_testing_env()
+
+
+# 真实判定函数的稳定引用：单测 monkeypatch _testing_fuse_active 解禁后，
+# 熔断回归用例经此引用恢复默认判定（不被打桩连坐——agy round2 P1）
+_REAL_FUSE_ACTIVE = _testing_fuse_active
+
+
 def launch_edge(config: PlatformConfig, url: str | None = None) -> dict:
     """
     拉起指定平台的专用 Edge：固定调试端口 + 独立 profile + 自动打开授权页。
@@ -161,11 +174,39 @@ def launch_edge(config: PlatformConfig, url: str | None = None) -> dict:
        同 profile 双实例互相伤害（轻则一方被顶掉，重则 cookie 库损坏）；
     2. 拉起后轮询 CDP 端口至多 30s，exec 成功但浏览器秒退时如实抛错并附日志尾部，
        不再对前端谎报成功。
+
+    2026-11-06 测试熔断（智联 Edge 自动拉起事故根治）：launch_edge 是双重 fork
+    守护进程（孤儿链 launchd→监护→Edge），pytest 进程退出后浏览器仍常驻，用户侧
+    表现为「莫名其妙被拉起智联登录页」。熔断位于复用检查之前（agy round1 P1 定稿）：
+    测试进程内即使端口已有真实浏览器（宿主机常驻实例）也不得复用/接管——逃逸链路
+    借宿主机浏览器走通复用同样是越权行为，且复用判定依赖宿主机端口状态会让单测
+    非确定。测试进程内一律拒绝；真机验证显式 RUN_LIVE_E2E=1 解禁（经
+    _testing_fuse_active 统一收口，单测可定点打桩）。
     """
     from .health_checker import probe_port
 
-    # 防双实例竞态：端口已有浏览器在听 → 直接复用
+    # 测试熔断（先于复用检查与真实拉起）：测试进程内绝不 exec 新 Edge、
+    # 也绝不静默复用宿主机常驻浏览器（见 docstring 2026-11-06 段）
+    if _testing_fuse_active():
+        raise RuntimeError(
+            f"[测试熔断] 测试进程内禁止拉起/接管真实浏览器（{config.display_name} 端口 "
+            f"{config.port}）。单测请 monkeypatch _testing_fuse_active 或 mock "
+            f"_launch_edge_daemon / ensure_browser_ready_sync；真机验证请 RUN_LIVE_E2E=1 显式解禁。"
+        )
+
+    # 防双实例竞态：端口已有浏览器在听 → 复用前先过身份守卫。
+    # 2026-10-31 复审 P2：probe_port 与复用之间可能被陌生浏览器抢注端口；
+    # 复用路径同样必须确认占用者是本平台 profile（或可信桌面版 profile）。
     if probe_port(config.port, timeout=0.4):
+        try:
+            from engine_guard import verify_browser_identity
+            ok, reason = verify_browser_identity(config.port, config.profile_dir, platform=config.name)
+        except Exception as e:
+            ok, reason = False, f"identity_guard_unavailable: {e}"
+        if not ok:
+            raise RuntimeError(
+                f"{config.display_name} 端口 {config.port} 已被其他实例占用，拒绝复用：{reason}"
+            )
         # 注意：复用路径不会导航到 url 参数指定的页面（续期/重新登录类调用方需自行补发 CDP 导航）
         logger.info(
             f"[launch_edge] {config.name} 端口 {config.port} 已有浏览器监听，跳过重复拉起"
@@ -316,6 +357,205 @@ def close_edge(config: PlatformConfig) -> bool:
         return False
 
 
+# /json 探测有界重试（2026-10-31 事故根治）：刚拉起的 Edge TCP 已监听但 DevTools
+# HTTP 首响应可远超 2s——四平台冷启动实测 10s+ 仍未应答（profile 700MB-1GB、
+# 系统盘余量 <6Gi 的 I/O 争抢下），单次或短窗探测即判死会把可自愈的平台整轮
+# 跳过。GET 按截止时间预算重试（默认 24s 窗）；PUT 补建只做一次，避免重试
+# 放大成 tab 风暴。
+_PAGE_TAB_PROBE_DEADLINE_S = 24.0
+_PAGE_TAB_PROBE_INTERVAL_S = 1.0
+
+
+def _get_page_tabs(requests, url: str, proxies: dict) -> list:
+    """GET /json → page/webview tab 列表；网络异常向上抛，由调用方决定重试。"""
+    resp = requests.get(url, proxies=proxies, timeout=2)  # type: ignore[arg-type]
+    return [t for t in (resp.json() or []) if t.get("type") in ("page", "webview")]
+
+
+def _ensure_page_tab_sync(config: PlatformConfig) -> str | None:
+    """确保端口上至少有一个 page/webview 目标。
+
+    DrissionPage 的 connect_browser 要求 /json 返回至少一个 page tab；CDP 活着
+    但窗口全关（0 tab）的浏览器会让它等满 30s 后抛 BrowserConnectError。
+    返回 "alive"（已有 tab）/ "page_tab_created"（补建成功）/ None（失败）。
+    """
+    import requests
+
+    url = f"http://127.0.0.1:{config.port}/json"
+    proxies = {"http": None, "https": None}
+    deadline = time.monotonic() + _PAGE_TAB_PROBE_DEADLINE_S
+
+    tabs: list | None = None
+    last_error: Exception | None = None
+    while True:
+        try:
+            tabs = _get_page_tabs(requests, url, proxies)
+            if tabs:
+                return "alive"
+            break  # 0 tab：交给下方补建（补建只做一次，不再重试 GET）
+        except Exception as e:
+            tabs, last_error = None, e
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(_PAGE_TAB_PROBE_INTERVAL_S)
+    if tabs is None:
+        logger.warning(
+            "[browser] %s 端口 %s 检查 page tab 失败（%.0fs 探测预算耗尽）: %s",
+            config.name, config.port, _PAGE_TAB_PROBE_DEADLINE_S, last_error,
+        )
+        return None
+
+    target_url = config.login_check_url or config.auth_url or "about:blank"
+    try:
+        requests.put(f"{url}/new?{target_url}", proxies=proxies, timeout=2)  # type: ignore[arg-type]
+    except Exception as e:
+        logger.warning(
+            "[browser] %s 端口 %s 补建 page tab 失败: %s", config.name, config.port, e,
+        )
+        return None
+    while True:
+        try:
+            if _get_page_tabs(requests, url, proxies):
+                return "page_tab_created"
+        except Exception as e:
+            last_error = e
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(_PAGE_TAB_PROBE_INTERVAL_S)
+    logger.warning(
+        "[browser] %s 端口 %s 补建后 page tab 仍不可见: %s", config.name, config.port, last_error,
+    )
+    return None
+
+
+def _wait_for_port(port: int, timeout_s: float) -> bool:
+    from .health_checker import probe_port
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if probe_port(port, timeout=0.4):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _wait_for_port_release(port: int, timeout_s: float = 8.0) -> bool:
+    from .health_checker import probe_port
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if not probe_port(port, timeout=0.2):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def ensure_browser_ready_sync(
+    config: PlatformConfig,
+    *,
+    allow_restart: bool = True,
+    launch_timeout_s: float = 30.0,
+) -> tuple[bool, str]:
+    """同步版「浏览器就绪」单一实现（预检 + 采集子进程共用）。
+
+    契约：
+    - 只有「CDP 可达 **且** 至少一个 page tab」才返回 True；
+    - 端口被占用时先过 ``verify_browser_identity``：陌生 profile 一律 fail-closed；
+      可信桌面版 profile 仅在 CDP 健康时允许复用，CDP 不可用时拒绝按端口重启
+      （不误杀用户正在用的桌面版浏览器）；
+    - ``allow_restart=False``（抓取/投递在飞）时只做只读探活，不关闭、不重启。
+
+    返回 (ok, reason)。reason 供调用方做日志/分诊，不要用于业务分支以外的判断：
+    alive / page_tab_created / launched / zombie_restarted / in_flight_alive /
+    in_flight_unavailable / port_busy_foreign / sibling_browser_unhealthy_refused /
+    launch_failed / launch_timeout / no_page_tab / port_release_timeout /
+    identity_guard_unavailable。
+    """
+    from .cdp_probe import probe_cdp_channel
+    from .health_checker import probe_port
+
+    port = config.port
+    port_up = probe_port(port, timeout=0.4)
+
+    if not port_up:
+        if not allow_restart:
+            return False, "in_flight_unavailable"
+        try:
+            launch_edge(config)
+        except Exception as e:
+            logger.warning("[browser] %s 端口 %s 拉起失败: %s", config.name, port, e)
+            return False, f"launch_failed: {e}"
+        if not _wait_for_port(port, launch_timeout_s):
+            return False, "launch_timeout"
+        tab_state = _ensure_page_tab_sync(config)
+        if tab_state is None:
+            return False, "no_page_tab"
+        return True, "launched"
+
+    # 在飞保护：抓取/投递正在进行时只做只读探活，不校验身份、不补 tab、不重启。
+    # 正在导航的浏览器 CDP 命令可能暂时不应答，任何写操作都可能误伤。
+    if not allow_restart:
+        if probe_cdp_channel(port) == "alive":
+            return True, "in_flight_alive"
+        return False, "in_flight_unavailable"
+
+    # 端口被占用：先确认占用者身份，绝不附着/杀掉陌生浏览器（Q24）。
+    try:
+        from engine_guard import IDENTITY_REASON_SIBLING, verify_browser_identity
+    except Exception as e:  # 打包态/独立进程缺模块时 fail-closed
+        logger.critical("[browser] %s 端口 %s 身份守卫不可用，拒绝操作: %s", config.name, port, e)
+        return False, f"identity_guard_unavailable: {e}"
+
+    ok, guard_reason = verify_browser_identity(port, config.profile_dir, platform=config.name)
+    if not ok:
+        logger.critical(
+            "[browser] %s 端口 %s 占用者身份校验失败，拒绝附着/重启: %s",
+            config.name, port, guard_reason,
+        )
+        return False, f"port_busy_foreign: {guard_reason}"
+
+    channel = probe_cdp_channel(port)
+    if channel == "alive":
+        tab_state = _ensure_page_tab_sync(config)
+        if tab_state is None:
+            return False, "no_page_tab"
+        return True, tab_state
+
+    # 同产品桌面版浏览器（sibling_profile_match）不是本实例的资产：CDP 已坏时
+    # 只允许复用其登录态，绝不允许按端口 close_edge——否则会杀掉用户正在用的
+    # 桌面版 JobHunter 浏览器。要求用户关闭/重启桌面版后重试。
+    if guard_reason == IDENTITY_REASON_SIBLING:
+        logger.critical(
+            "[browser] %s 端口 %s 被同产品桌面版浏览器占用但 CDP 不可用（%s），"
+            "拒绝按端口重启；请关闭/重启桌面版 JobHunter 后重试",
+            config.name, port, channel,
+        )
+        return False, "sibling_browser_unhealthy_refused"
+
+    # zombie / down：端口有人监听但 CDP 不可用。身份已确认为本平台 profile，可以优雅重启。
+    logger.warning(
+        "[browser] %s 端口 %s CDP 通道不可用（%s），优雅重启浏览器",
+        config.name, port, channel,
+    )
+    try:
+        close_edge(config)
+    except Exception as e:
+        logger.warning("[browser] %s 旧浏览器关闭失败（仍尝试重新拉起）: %s", config.name, e)
+    if not _wait_for_port_release(port, timeout_s=8.0):
+        return False, "port_release_timeout"
+    try:
+        launch_edge(config)
+    except Exception as e:
+        logger.warning("[browser] %s 端口 %s 重启失败: %s", config.name, port, e)
+        return False, f"launch_failed: {e}"
+    if not _wait_for_port(port, launch_timeout_s):
+        return False, "launch_timeout"
+    tab_state = _ensure_page_tab_sync(config)
+    if tab_state is None:
+        return False, "no_page_tab"
+    return True, "zombie_restarted"
+
+
 def close_all_edges() -> int:
     """优雅关闭所有已配置平台的 Edge 浏览器进程，确保登录 cookie 落盘"""
     try:
@@ -450,20 +690,35 @@ def get_all_platform_sessions() -> list:
             state_val = cdp_status.state.value if hasattr(cdp_status.state, "value") else str(cdp_status.state)
             message = cdp_status.message or "已连接"
             if key == "liepin":
-                # 猎聘的 healthy 只代表浏览器在跑（匿名首页不渲染登录元素），补注资产实况，
-                # 消除「会话条已连接、预检却报缺 Cookie 文件」的矛盾观感（2026-09-27）。
-                # freshness 走只读快照，浏览器运行中可能滞后数秒——此处仅提示，不做门禁判定。
-                if cfg.legacy_cookie_file and os.path.exists(cfg.legacy_cookie_file):
-                    message += "；Cookie 文件存在"
+                # 猎聘加固（2026-11-01）：猎聘匿名首页亦不在 /login 上，不能仅凭 Tab URL 判定 healthy。
+                # 经本地凭证双校验收敛真实状态（Cookie 文件有效性 + profile 登录键实证，耗时 < 5ms）：
+                from .health_checker import (
+                    _judge_login_keys,
+                    _read_login_keys_via_profile_db,
+                    is_liepin_cookie_file_valid,
+                )
+                cookie_file_valid = False
+                try:
+                    cookie_file_valid = is_liepin_cookie_file_valid(cfg.legacy_cookie_file) if cfg.legacy_cookie_file else False
+                except Exception as e:
+                    logger.warning(f"[Session] 猎聘 Cookie 文件有效性检查异常: {e}")
+                if cookie_file_valid:
+                    message = f"{message}；Cookie 凭证有效"
+                    state_val = "healthy"
                 else:
-                    freshness = inspect_profile_cookie_freshness(cfg)
-                    if freshness["state"] == "valid":
-                        message += (
-                            f"；profile 登录有效至 {freshness['expires_at']}"
-                            f"（采集启动时将自动自愈回写 Cookie 文件）"
-                        )
+                    profile_logged_in = False
+                    try:
+                        profile_keys = _read_login_keys_via_profile_db(cfg.profile_dir)
+                        profile_logged_in = _judge_login_keys(profile_keys) if profile_keys else False
+                    except Exception as e:
+                        logger.warning(f"[Session] 猎聘 profile 登录态检查异常: {e}")
+                    if profile_logged_in:
+                        message = f"{message}；浏览器登录态有效；Cookie 文件待自愈"
+                        state_val = "degraded"
                     else:
-                        message += "；Cookie 文件未生成"
+                        file_desc = "Cookie 文件已失效" if (cfg.legacy_cookie_file and os.path.exists(cfg.legacy_cookie_file)) else "缺少 Cookie 文件"
+                        message = f"{file_desc}且浏览器未登录（请点击唤起浏览器扫码登录）"
+                        state_val = "expired"
             results.append({
                 "platform": key,
                 "display_name": cfg.display_name,

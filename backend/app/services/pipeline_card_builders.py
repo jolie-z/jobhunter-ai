@@ -20,6 +20,7 @@ SUB_CARD_MAX: int = 20
 TRIGGER_SOURCE_LABELS: dict[str, str] = {
     "scheduled": "定时任务",
     "manual": "手动即时任务",
+    "resumed": "继续任务（LLM 异常恢复轮）",
 }
 
 

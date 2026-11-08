@@ -1,32 +1,71 @@
 "use client"
 
-import { useState, useCallback, useRef } from "react"
+import { useState, useCallback, useRef, useEffect } from "react"
 import { toast } from "sonner"
 import { API_BASE } from "@/lib/api"
 import { usePipelineStore, PipelineJob } from "@/store/pipeline-store"
-import { isJobReadyToDeliver, isJobWaitingReview } from "../job-predicates"
-
-// 本地时间串（与后端快照 "YYYY-MM-DD HH:mm:ss" 同格式）：放行后立刻参与看板置顶排序，
-// 不用 ISO（UTC）以免与后端本地时间串混排时差 8 小时
-function nowLocalString(): string {
-  const d = new Date()
-  const p = (n: number) => String(n).padStart(2, "0")
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-}
+import { isJobDelivering, isJobReadyToDeliver, isJobWaitingReview } from "../job-predicates"
+import { nowLocalString } from "@/lib/local-time"
 
 const RELEASED_DESC = "老板放行就绪，等待定时发射"
+
+// 后端 422 校验错误的 detail 是 Pydantic 数组（审计 P2-25）：直接 toast 会显示 [object Object]
+function safeDetail(data: any, fallback: string): string {
+  const d = data?.detail
+  if (Array.isArray(d)) return String(d[0]?.msg || (typeof d[0] === "object" ? JSON.stringify(d[0]) : d[0]) || fallback)
+  if (d && typeof d === "object") return JSON.stringify(d)
+  return String(d || data?.message || fallback)
+}
 
 export function useBoardActions(waitingJobs: PipelineJob[], readyToDeliverJobs: PipelineJob[]) {
   const [batchLoading, setBatchLoading] = useState(false)
   const [deliveringBatch, setDeliveringBatch] = useState(false)
   const [approvingJobIds, setApprovingJobIds] = useState<Record<string, boolean>>({})
+  // 单岗「重试/立即投递」防抖（2026-11-02 审计 P1-11）：failed-job-card 的 onRetry
+  // 分支先于本地 setRetrying 返回、按钮禁用永不生效，双击会 spawn 并发后台任务。
+  // 照抄 cancellingJobIdsRef 模式：ref 立即占位（同步拦连击），state 驱动按钮禁用
+  const [deliveringJobIds, setDeliveringJobIds] = useState<Record<string, boolean>>({})
+  const deliveringJobIdsRef = useRef<Record<string, boolean>>({})
   const [batchRetryingFailed, setBatchRetryingFailed] = useState(false)
   const [batchDismissingFailed, setBatchDismissingFailed] = useState(false)
   const [cancellingJobIds, setCancellingJobIds] = useState<Record<string, boolean>>({})
   const cancellingJobIdsRef = useRef<Record<string, boolean>>({})
+  // 终止兜底定时器句柄：store 复位时提前 clear，避免迟到回调在组件卸载后仍持有闭包
+  const cancelTimersRef = useRef<
+    Record<string, { buffered?: ReturnType<typeof setTimeout>; longTail?: ReturnType<typeof setTimeout> }>
+  >({})
+
+  const clearCancelTimers = useCallback((jobId: string) => {
+    const timers = cancelTimersRef.current[jobId]
+    if (!timers) return
+    if (timers.buffered) clearTimeout(timers.buffered)
+    if (timers.longTail) clearTimeout(timers.longTail)
+    delete cancelTimersRef.current[jobId]
+  }, [])
 
   // 从 store 获取更新方法，确保类型一致性和统一的修改入口
   const updateJob = usePipelineStore((s) => s.updateJob)
+
+  // 「终止中」状态跟随真实投递状态：岗位一旦离开 delivering（终止生效/投递结束/失败落账），
+  // 立即复位按钮。此前只靠 10 秒定时器盲复位——后端仍在等待预检窗口时按钮会提前恢复可点，
+  // 用户重复点击只会得到「已处于终止处理流程中」。
+  useEffect(() => {
+    const sync = (jobs: Record<string, PipelineJob>) => {
+      setCancellingJobIds((prev) => {
+        const stale = Object.keys(prev).filter((id) => !isJobDelivering(jobs[id]))
+        if (stale.length === 0) return prev
+        const next = { ...prev }
+        for (const id of stale) {
+          delete next[id]
+          delete cancellingJobIdsRef.current[id]
+          clearCancelTimers(id)
+        }
+        return next
+      })
+    }
+    sync(usePipelineStore.getState().jobs)
+    return usePipelineStore.subscribe((state) => sync(state.jobs))
+  }, [clearCancelTimers])
 
   // 单个审批放行（补料+放行一体）：改走 /auto-heal-and-approve，
   // 缺失物料自动渲染挂载（定制岗按 AI改写JSON 渲染定制 PDF），杜绝「放了行却没物料，
@@ -59,7 +98,7 @@ export function useBoardActions(waitingJobs: PipelineJob[], readyToDeliverJobs: 
           }
           toast.info("已拒绝该岗位")
         } else {
-          toast.error("审批操作失败: " + (data.detail || data.message || "未知错误"))
+          toast.error("审批操作失败: " + safeDetail(data, "未知错误"))
         }
       } catch {
         toast.error("无法连接后端审批服务")
@@ -93,7 +132,7 @@ export function useBoardActions(waitingJobs: PipelineJob[], readyToDeliverJobs: 
         toast.success(data.message || "✅ 岗位已补料放行，进入「待投递」队列")
       } else {
         // 失败即拦截在待审批：物料缺失/海投打招呼语未配置等，后端已给明原因
-        toast.error("放行中止: " + (data.detail || data.message || "未知错误"))
+        toast.error("放行中止: " + safeDetail(data, "未知错误"))
       }
     } catch {
       toast.error("无法连接后端审批服务")
@@ -156,6 +195,11 @@ export function useBoardActions(waitingJobs: PipelineJob[], readyToDeliverJobs: 
 
   // 批量立即触发投递
   const handleTriggerDeliverAll = useCallback(async () => {
+    // 与单岗防抖互斥（审计 P1-11）：任一单岗投递在途时批量暂缓
+    if (Object.keys(deliveringJobIdsRef.current).length > 0) {
+      toast.warning("有岗位正在单岗投递中，请稍候再批量触发")
+      return
+    }
     // 直接从 store 获取最新数据
     const st = usePipelineStore.getState()
     const jobs = Object.values(st.jobs).filter(isJobReadyToDeliver)
@@ -185,7 +229,7 @@ export function useBoardActions(waitingJobs: PipelineJob[], readyToDeliverJobs: 
           }
         })
       } else {
-        toast.error("触发投递失败: " + (data.detail || data.message || "未知错误"))
+        toast.error("触发投递失败: " + safeDetail(data, "未知错误"))
       }
     } catch {
       toast.error("无法连接后端投递服务")
@@ -196,6 +240,9 @@ export function useBoardActions(waitingJobs: PipelineJob[], readyToDeliverJobs: 
 
   // 单个立即触发投递
   const handleTriggerDeliverSingle = useCallback(async (jobId: string) => {
+    if (deliveringJobIdsRef.current[jobId]) return  // 在途拦截：双击不再产生并发后台任务
+    deliveringJobIdsRef.current[jobId] = true
+    setDeliveringJobIds((prev) => ({ ...prev, [jobId]: true }))
     try {
       const res = await fetch(`${API_BASE}/api/automation/deliver_approved`, {
         method: "POST",
@@ -216,15 +263,25 @@ export function useBoardActions(waitingJobs: PipelineJob[], readyToDeliverJobs: 
           })
         }
       } else {
-        toast.error("投递失败: " + (data.detail || data.message || "未知错误"))
+        toast.error("投递失败: " + safeDetail(data, "未知错误"))
       }
     } catch {
       toast.error("无法连接后端投递服务")
+    } finally {
+      delete deliveringJobIdsRef.current[jobId]
+      setDeliveringJobIds((prev) => {
+        const next = { ...prev }
+        delete next[jobId]
+        return next
+      })
     }
   }, [])
 
   // 失败岗位：重试
   const handleRetryFailedJob = useCallback(async (job: PipelineJob) => {
+    if (deliveringJobIdsRef.current[job.job_id]) return  // 在途拦截（同上）
+    deliveringJobIdsRef.current[job.job_id] = true
+    setDeliveringJobIds((prev) => ({ ...prev, [job.job_id]: true }))
     try {
       const res = await fetch(`${API_BASE}/api/automation/retry-failed-job`, {
         method: "POST",
@@ -249,10 +306,17 @@ export function useBoardActions(waitingJobs: PipelineJob[], readyToDeliverJobs: 
           })
         }
       } else {
-        toast.error("重试失败: " + (data.detail || data.message || "未知错误"))
+        toast.error("重试失败: " + safeDetail(data, "未知错误"))
       }
     } catch {
       toast.error("重试请求异常")
+    } finally {
+      delete deliveringJobIdsRef.current[job.job_id]
+      setDeliveringJobIds((prev) => {
+        const next = { ...prev }
+        delete next[job.job_id]
+        return next
+      })
     }
   }, [])
 
@@ -277,7 +341,7 @@ export function useBoardActions(waitingJobs: PipelineJob[], readyToDeliverJobs: 
         delete nextJobs[job.job_id]
         usePipelineStore.setState({ jobs: nextJobs })
       } else {
-        toast.error("放弃操作失败: " + (data.detail || data.message || "未知错误"))
+        toast.error("放弃操作失败: " + safeDetail(data, "未知错误"))
       }
     } catch {
       toast.error("放弃请求异常")
@@ -380,13 +444,19 @@ export function useBoardActions(waitingJobs: PipelineJob[], readyToDeliverJobs: 
 
       if (res.ok && data.status === "success") {
         toast.info(data.message || `🗑️ 已成功放弃 ${data.dismissed_count || jobIds.length} 个岗位`)
-        // 若有正在投递未被放弃的岗位，回滚恢复那些岗位
+        const busyIds: string[] = Array.isArray(data.busy_ids) ? data.busy_ids : []
+        // 墓碑登记（审计 P2-19；CR-B3-R1 修正）：仅放弃成功者 removeJob（busy 岗位不登记，
+        // 否则稍后恢复的卡片会被快照合并直接丢弃）
+        jobIds.forEach((id) => {
+          if (busyIds.includes(id)) return
+          usePipelineStore.getState().removeJob(id)
+        })
+        // 恢复在途（busy）岗位（CR-B3-R1 修正）：重新 getState（原版复用 removeJob 前的
+        // 陈旧快照把删除覆盖回去）；仅恢复 busy 且看板中已消失者，不再遍历全量 backupMap
         if (data.busy_count > 0) {
-          const st = usePipelineStore.getState()
-          const restoredJobs = { ...st.jobs }
+          const restoredJobs = { ...usePipelineStore.getState().jobs }
           backupMap.forEach((oldJob, id) => {
-            if (!restoredJobs[id]) {
-              // 由快照轮询或当前状态恢复
+            if (busyIds.includes(id) && !restoredJobs[id]) {
               restoredJobs[id] = oldJob
             }
           })
@@ -394,11 +464,15 @@ export function useBoardActions(waitingJobs: PipelineJob[], readyToDeliverJobs: 
         }
         return true
       } else {
-        toast.error("批量放弃失败: " + (data.detail || data.message || "未知错误") + "，已恢复卡片")
-        const st = usePipelineStore.getState()
-        const restoredJobs = { ...st.jobs }
+        toast.error("批量放弃失败: " + safeDetail(data, "未知错误") + "，已恢复卡片")
+        const cur = usePipelineStore.getState()
+        const restoredJobs = { ...cur.jobs }
         backupMap.forEach((oldJob, id) => {
-          restoredJobs[id] = oldJob
+          // 回滚不覆盖最新快照（审计 P2-19）：请求在途期间 12s 轮询/SSE 可能已推进
+          // 该岗位状态，仅恢复「看板中已消失（未被新快照接管）」的岗位
+          if (!restoredJobs[id]) {
+            restoredJobs[id] = oldJob
+          }
         })
         usePipelineStore.setState({ jobs: restoredJobs })
         return false
@@ -424,6 +498,7 @@ export function useBoardActions(waitingJobs: PipelineJob[], readyToDeliverJobs: 
     setCancellingJobIds((prev) => ({ ...prev, [jobId]: true }))
 
     const cleanupCancellingState = () => {
+      clearCancelTimers(jobId)
       delete cancellingJobIdsRef.current[jobId]
       setCancellingJobIds((prev) => {
         if (!prev[jobId]) return prev
@@ -433,8 +508,9 @@ export function useBoardActions(waitingJobs: PipelineJob[], readyToDeliverJobs: 
       })
     }
 
-    // 10 秒超时清理保护：若网络断开或后端未推流，10秒后重置 loading，避免按钮永久禁用
-    const timeoutTimer = setTimeout(() => {
+    // 网络层兜底：仅防「请求本身挂起」导致按钮永久禁用。请求一旦返回，终止中状态交给
+    // 真实的投递状态驱动（见上方 store 订阅），不再 10 秒盲复位。
+    const requestTimeout = setTimeout(() => {
       cleanupCancellingState()
     }, 10000)
 
@@ -444,21 +520,40 @@ export function useBoardActions(waitingJobs: PipelineJob[], readyToDeliverJobs: 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ record_id: jobId }),
       })
+      clearTimeout(requestTimeout)
       const data = await res.json().catch(() => ({} as any))
       if (res.ok && data.status === "success") {
         toast.info(data.message || "🛑 终止指令已下达，正在退出并释放锁…")
-        // 不抢跑更新 store，等待后端通过 SSE 或快照将岗位置为失败态
+        // 不抢跑更新 store，等后端快照把岗位移出投递中；按钮复位由 store 订阅自动完成。
+        // interrupted=true 表示浏览器已破门打断，给状态推流留 3s 缓冲后兜底复位；
+        // 兜底前复判一次 delivering——后端收尾超过 3s 时不能提前复活按钮。
+        if (data.interrupted === true) {
+          cancelTimersRef.current[jobId] = {
+            ...(cancelTimersRef.current[jobId] || {}),
+            buffered: setTimeout(() => {
+              if (!isJobDelivering(usePipelineStore.getState().jobs[jobId])) {
+                cleanupCancellingState()
+              }
+            }, 3000),
+          }
+        }
+        // 长尾兜底（2026-10-30 CR R2-P1）：终态推送丢失/断流时「终止中」不能永久禁用按钮。
+        // 120s 后无条件复位；此时重复点击由后端 already_cancelled 幂等兜住，只多一条提示。
+        // interrupted=false（预检等待被终止）同样受此保护——它本就没有 3s 分支。
+        cancelTimersRef.current[jobId] = {
+          ...(cancelTimersRef.current[jobId] || {}),
+          longTail: setTimeout(() => cleanupCancellingState(), 120000),
+        }
       } else {
-        clearTimeout(timeoutTimer)
-        toast.error("终止失败: " + (data.detail || data.message || "未知错误"))
+        toast.error("终止失败: " + safeDetail(data, "未知错误"))
         cleanupCancellingState()
       }
     } catch {
-      clearTimeout(timeoutTimer)
+      clearTimeout(requestTimeout)
       toast.error("无法连接后端终止服务")
       cleanupCancellingState()
     }
-  }, [])
+  }, [clearCancelTimers])
 
   return {
     batchLoading,
@@ -473,6 +568,7 @@ export function useBoardActions(waitingJobs: PipelineJob[], readyToDeliverJobs: 
     handleTriggerDeliverAll,
     handleTriggerDeliverSingle,
     handleRetryFailedJob,
+    deliveringJobIds,
     handleDismissFailedJob,
     handleBatchRetryFailedJobs,
     handleBatchDismissFailedJobs,

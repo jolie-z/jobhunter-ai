@@ -8,6 +8,7 @@ import sys
 import time
 import random
 import subprocess
+import tempfile
 from datetime import datetime
 
 # ==========================================
@@ -25,7 +26,7 @@ from app.core.feishu_utils import download_feishu_file
 
 from DrissionPage import ChromiumPage, ChromiumOptions
 
-from engine_guard import EngineGuardError, verify_browser_identity
+from engine_guard import EngineGuardError, cross_process_port_lock, verify_browser_identity
 from app.core.db_paths import writable_path
 
 BOSS_HOME_URL = "https://www.zhipin.com/"
@@ -261,6 +262,7 @@ def _upload_resume_images(local_image_paths: list):
         abs_path = os.path.abspath(img_path)
         
         # 🌟 1. 自动预压缩：将体积压缩至 Web 友好大小 (<1MB, 宽度≤1000px)，杜绝 BOSS OSS 上传超时
+        opt_path = None
         try:
             from PIL import Image
             with Image.open(abs_path) as im:
@@ -269,7 +271,8 @@ def _upload_resume_images(local_image_paths: list):
                 target_w = min(im.width, 1000)
                 target_h = int(im.height * (target_w / im.width))
                 im_resized = im.resize((target_w, target_h), Image.Resampling.LANCZOS)
-                opt_path = f"/tmp/boss_opt_{idx}_{int(time.time())}.jpg"
+                # 不可写死 /tmp：Windows 无此目录，会 FileNotFoundError
+                opt_path = os.path.join(tempfile.gettempdir(), f"boss_opt_{idx}_{int(time.time())}.jpg")
                 im_resized.save(opt_path, format="JPEG", quality=85, optimize=True)
                 abs_path = opt_path
                 print(f"   🗜️ 长图物料已轻量化压缩 ({os.path.getsize(opt_path)} bytes, {target_w}x{target_h})")
@@ -342,6 +345,13 @@ def _upload_resume_images(local_image_paths: list):
             print(f"   ✅ 第 {idx+1} 张图片已送达（DOM 确认成功）")
         else:
             print(f"   ❌ 第 {idx+1} 张图片两次注入均未送达，可用 resend_resume_images 补发")
+
+        # 压缩临时图用完即删（仅在压缩成功、abs_path 已切换为 opt_path 时）
+        if opt_path and abs_path == opt_path:
+            try:
+                os.remove(opt_path)
+            except OSError:
+                pass
             
     print(f"   ✅ 简历图片投递完毕：{sent}/{len(local_image_paths)} 张送达")
     return sent, len(local_image_paths)
@@ -470,6 +480,7 @@ def _cleanup_after_delivery(local_image_paths: list, disconnect_error: bool):
         except Exception:
             pass
 
+@cross_process_port_lock(BOSS_DEBUG_PORT, "boss", timeout_s=300, on_busy="false")
 def deliver_job(job_data: dict) -> bool:
     """投递入口。
 

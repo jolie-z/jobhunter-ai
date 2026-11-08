@@ -5,6 +5,7 @@ import { GlobalNav } from "@/components/dashboard/strategy-lab/global-nav"
 import { SystemConfig } from "@/components/dashboard/strategy-lab/system-config"
 import { ResumeBuilder } from "@/components/dashboard/resume-builder"
 import { FeishuHub } from "@/components/dashboard/feishu-hub"
+import { GlobalErrorDialog } from "@/components/dashboard/global-error-dialog"
 
 function SimpleHeader({ title, subtitle }: { title: string; subtitle: string }) {
   return (
@@ -48,6 +49,9 @@ function PageInner() {
           {store.toastMsg}
         </div>
       )}
+
+      {/* 全局意外错误弹窗（带「导出诊断日志」按钮，取证链路见组件头注释） */}
+      <GlobalErrorDialog />
     </div>
   )
 }

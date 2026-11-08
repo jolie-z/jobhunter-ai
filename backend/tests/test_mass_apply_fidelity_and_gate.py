@@ -16,6 +16,7 @@ async def test_mass_apply_missing_greeting_raises_http_400():
         "id": "recTest123",
         "fields": {
             "跟进状态": "海投人工复核",
+            "综合评级 (A-F)": "C",
             "公司名称": "测试科技",
             "岗位名称": "Python后端开发",
             "招聘平台": "BOSS直聘",
@@ -47,6 +48,7 @@ async def test_mass_apply_with_greeting_and_stale_pdf_forces_rerender():
         "id": "recTest456",
         "fields": {
             "跟进状态": "海投人工复核",
+            "综合评级 (A-F)": "C",
             "公司名称": "未来公司",
             "岗位名称": "全栈工程师",
             "招聘平台": "BOSS直聘",
@@ -177,6 +179,7 @@ async def test_mass_apply_51job_only_skips_greeting_gate():
         "id": "rec51job123",
         "fields": {
             "跟进状态": "海投人工复核",
+            "综合评级 (A-F)": "C",
             "公司名称": "西藏奇正藏药",
             "岗位名称": "市场研究经理",
             "招聘平台": "51job",

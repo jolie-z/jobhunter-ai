@@ -16,6 +16,18 @@ from app.automation.hybrid_delivery import (  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
+# 裸 asyncio.create_task 强引用（2026-11-02 审计 P2-25）：CPython 事件循环只持弱引用，
+# 不持引用的任务可能在长 await 期间被 GC 静默消失（对照 delivery_router._BACKGROUND_TASKS
+# 与 batch_retry_service 的既有正确做法）
+_BACKGROUND_TASKS: set = set()
+
+
+def _spawn_tracked(coro):
+    t = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(t)
+    t.add_done_callback(_BACKGROUND_TASKS.discard)
+    return t
+
 # 本模块的局部图执行器实例缓存（支持显式注入参数化）
 pipeline_app: Any | None = None
 
@@ -153,13 +165,23 @@ async def trigger_auto_apply_job(pipeline_app: Any | None = None):
     return pipeline_task_id
 
 
-async def _resume_job_delivery(thread_id: str, pipeline_app: Any | None = None) -> tuple[bool, str]:
+async def _resume_job_delivery(
+    thread_id: str,
+    pipeline_app: Any | None = None,
+    preflight_wait_s: int | None = None,
+) -> tuple[bool, str]:
     """从人工审批断点恢复指定岗位的流水线并执行投递（thread_id = 飞书记录 record_id）。
 
     支持双轨：
     1. 若存在 LangGraph 状态机断点 (manual_review_node)，推进图状态机执行投递；
     2. 若岗位已放行进入「待投递」队列或断点已结束，直接从飞书读取物料通过 delivery_node 执行投递。
     返回 (是否投递成功, 结果说明)。与 /resume 和 /deliver_approved 走同一双轨机制。
+
+    Args:
+        preflight_wait_s: 覆盖投递预检的登录等待窗口（None 用默认 300s）。手动单岗重试
+            建议传更短值——用户就在屏幕前，且等待可被「终止投递」随时打断。
+            仅直投轨（轨道 2：mock_state → delivery_node）生效；轨道 1 的 LangGraph 断点
+            恢复沿用图状态，不读取本参数，仍按默认窗口执行。
     """
     from langgraph.types import Command
     app = pipeline_app or get_pipeline_app()
@@ -206,6 +228,7 @@ async def _resume_job_delivery(thread_id: str, pipeline_app: Any | None = None) 
                 "feishu_fields": fields,
                 "final_markdown": _txt(fields.get("AI改写JSON", "")) or "",
                 "retry_greeting_only": retry_greeting_only,
+                "preflight_wait_s": preflight_wait_s,
             }
             res = await delivery_node(mock_state)
             if res.get("status") == "已投递":
@@ -521,7 +544,7 @@ async def _scheduled_delivery_batch_task_impl(
                 logger.warning(f"[定时投递·{window_label}] 自愈动作异常（不影响流程）: {heal_e}")
             # L3 诊断：连续失败达阈值的岗位自动产出 AI 诊断报告（旁路，不阻塞波次）
             diagnose_fn = _get_active_func("_auto_diagnose", _auto_diagnose)
-            asyncio.create_task(diagnose_fn(j["job_id"]))
+            _spawn_tracked(diagnose_fn(j["job_id"]))
     logger.info(f"🎯 [定时投递·{window_label}] 完成：成功 {ok_cnt} · 失败 {fail_cnt}")
 
     # 飞书自动投递卡片同步：发送每轮投递战报卡片到聊天框

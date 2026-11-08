@@ -100,3 +100,52 @@ def test_condition_progress_endpoint(client):
     assert reset_r.status_code == 200
     assert reset_r.json()["code"] == 0
 
+
+
+def test_platform_limit_clamped_to_new_cap_on_save_and_read(client):
+    """单平台单轮上限 50→15 收紧：保存时 clamp、读取时同样 clamp（存量超限值即时收敛）。"""
+    r = client.put(
+        "/api/pipeline/scrape-config",
+        json={
+            "keywords": [{"keyword": "agent"}],
+            "platforms": {"boss": {"enabled": True, "limit": 20}, "liepin": {"enabled": True, "limit": 15}},
+            "default_city": "广州",
+            "default_salary": "不限",
+        },
+    )
+    assert r.status_code == 200
+    got = client.get("/api/pipeline/scrape-config").json()["data"]
+    # 保存路径：超限 20 → 15；上限值 15 原样保留
+    assert got["platforms"]["boss"]["limit"] == 15
+    assert got["platforms"]["liepin"]["limit"] == 15
+
+    # 读取路径兜底：直接改库写入超限值（模拟历史版本存量数据），读出来也必须 ≤15
+    import sqlite3
+    conn = sqlite3.connect(pipeline_mod.DB_PATH)
+    try:
+        conn.execute(
+            "UPDATE pipeline_scrape_config SET platforms = ? WHERE id = 1",
+            ['{"boss": {"enabled": true, "limit": 50}}'],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    got = client.get("/api/pipeline/scrape-config").json()["data"]
+    assert got["platforms"]["boss"]["limit"] == 15
+
+
+def test_platform_limit_default_three_kept_and_invalid_falls_back(client):
+    """新默认值 3 不被误 clamp；非法值回落 3。"""
+    r = client.put(
+        "/api/pipeline/scrape-config",
+        json={
+            "keywords": [{"keyword": "agent"}],
+            "platforms": {"boss": {"enabled": True, "limit": 3}, "zhilian": {"enabled": True, "limit": "abc"}},
+            "default_city": "",
+            "default_salary": "",
+        },
+    )
+    assert r.status_code == 200
+    got = client.get("/api/pipeline/scrape-config").json()["data"]
+    assert got["platforms"]["boss"]["limit"] == 3
+    assert got["platforms"]["zhilian"]["limit"] == 3

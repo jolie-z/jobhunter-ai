@@ -33,6 +33,26 @@ ABANDONED = "已放弃" # 用户主动放弃
 ACTIVE_STATUSES = frozenset({STORED, CLEANING, PENDING_AI, PUSH_PENDING, PUSH_PENDING_LEGACY, SYNCED, RECALL_PENDING_EVAL, READY_TO_DELIVER})
 
 
+# ---- 人工审批断点的飞书跟进状态词表（2026-11-02 审计 CR-B2-R1-P1 收口）----
+# 单一事实源：快照第 4 段 is_waiting 判定与 /auto-heal-and-approve 评估闸共用，
+# 两端不许再各自内联。含「疑似重复」（待裁决二选一：有评级时可放行可拒绝，均由
+# 闸门/审批端点正常受理）。「跟进状态空+有评级」的快照兜底形态（以 waiting/
+# manual_review_node 出现在待审批 Tab）不在本词表——闸门以「空状态 + 评级∈A-D」
+# 条件单独放行，与快照 has_rating→waiting 分支精确对齐（见 delivery_router 评估闸）
+APPROVAL_FOLLOW_STATUSES = frozenset({
+    "简历人工复核", "海投人工复核", "待审批", "疑似重复",
+})
+
+
+# ---- 初评淘汰回写可改写白名单（2026-11-02 审计 P1-6 配套，CR-R3-P2 下沉至此）----
+# 仅初评前/流转中的归档态可被批量改写为 REJECT_AI；淘汰终态（幂等跳过）与投递后段
+# （绝不改写）均不在列。消费方：reject_sync_service / backfill_reject_raw 核验。
+EVAL_REJECT_WRITABLE_STATUSES = frozenset({
+    SCORED, SYNCED, STORED, CLEANING, PENDING_AI, PENDING_AI_LEGACY,
+    PUSH_PENDING, PUSH_PENDING_LEGACY, RECALL_PENDING_EVAL,
+})
+
+
 def is_rejected(p_status: str) -> bool:
     """判断 process_status 是否为淘汰终态（含存量旧词）。"""
     return (p_status or "").strip() in REJECTED_STATUSES

@@ -28,6 +28,7 @@ if str(ENGINE_DIR) not in sys.path:
     sys.path.insert(0, str(ENGINE_DIR))
 try:
     import liepin_auto_delivery as lad
+    import liepin_attachment_uploader
     import liepin_im_sender
     import liepin_resume_manager
     import liepin_session
@@ -41,8 +42,300 @@ pytestmark = pytest.mark.skipif(not HAS_ENGINE, reason="DrissionPage 不可用")
 # ---------------- 1. 选择器收敛 ----------------
 
 def test_resume_card_selector_scoped_to_main_box():
-    assert lad.CSS_RESUME_CARD_CONTAINER.startswith("css:.attachment-view-box ")
-    assert lad.CSS_RESUME_CARD_CONTAINER.endswith(".resume-card-container")
+    """卡片选择器的每个备选都必须约束在附件主展示区内（旧版 .attachment-view-box /
+    2026-10 改版 attachmentView--*），侧边栏 resume-analysis-card 不得被计入槽位。"""
+    sel = lad.CSS_RESUME_CARD_CONTAINER
+    assert sel.startswith("css:")
+    alternatives = [s.strip() for s in sel[len("css:"):].split(",")]
+    assert len(alternatives) >= 2, "需同时覆盖改版前后的 DOM"
+    for alt in alternatives:
+        assert alt.startswith(".attachment-view-box ") or alt.startswith('[class*="attachmentView--"] '), alt
+    assert ".attachment-view-box .resume-card-container" in alternatives
+    assert '[class*="attachmentView--"] [class*="attachmentCard--"]' in alternatives
+
+
+@pytest.mark.parametrize("const_name,legacy,current", [
+    ("CSS_ANT_MODAL_CLOSE", ".ant-modal-close", ".ant-c-modal-close"),
+    ("CSS_MODAL_CONTENT", ".ant-modal-content", ".ant-c-modal-content"),
+    ("CSS_DROPDOWN_MENU", ".ant-dropdown-menu", ".ant-c-dropdown-menu"),
+    ("CSS_CARD_FILE_NAME", ".file-name", '[class*="fileName--"]'),
+    ("CSS_CARD_MORE_ICON", ".more-icon", '[class*="moreIcon--"]'),
+    ("CSS_UPLOAD_FILE_INPUT", '.ant-upload input[type="file"]', '.ant-c-upload input[type="file"]'),
+])
+def test_selectors_cover_both_legacy_and_ant_c_prefix(const_name, legacy, current):
+    """2026-10 猎聘换肤：Ant Design 前缀 ant- → ant-c-，业务 class → CSS Modules 哈希。
+    每个选择器都必须新旧并列，旧页面灰度/回滚时不再失明。"""
+    sel = getattr(liepin_resume_manager, const_name)
+    assert legacy in sel and current in sel, sel
+
+
+def test_popups_modal_selectors_cover_ant_c_prefix():
+    import liepin_popups
+    assert ".ant-c-modal-close" in liepin_popups.CSS_ANT_MODAL_CLOSE
+    assert ".ant-c-modal-content" in liepin_popups.CSS_ANT_MODAL_CONTENT
+
+
+def test_new_dom_selectors_use_hash_immune_substring_match():
+    """CSS Modules 哈希后缀（attachmentCard--XzM2N）随站点构建漂移：
+    改版选择器必须写成 [class*="name--"] 前缀子串匹配，且不得把任何具体哈希写死进选择器，
+    否则猎聘下次前端发版会再次全灭。"""
+    import re
+    for const in ("CSS_RESUME_CARD_CONTAINER", "CSS_CARD_FILE_NAME", "CSS_CARD_MORE_ICON"):
+        sel = getattr(liepin_resume_manager, const)
+        if "[class*=" in sel:
+            for frag in re.findall(r'\[class\*="([^"]+)"\]', sel):
+                assert frag.endswith("--"), f"{const}: 片段 {frag!r} 未按 name-- 前缀子串匹配"
+        assert not re.search(r"--[A-Za-z0-9]{4,}", sel), f"{const}: 写死了 CSS Modules 哈希: {sel}"
+
+
+def test_upload_entrypoint_is_the_only_production_path():
+    """入口不变量（R4-P2）：_manage_and_upload_resume 内置「物料校验先于删除」防线，
+    必须是猎聘生产代码中唯一的「上传+账号变更」路径——新增上传路径若绕过它，
+    物料缺失事故（删了旧的、新的没传上）防线即被旁路。"""
+    import re
+    engine_dir = Path(__file__).resolve().parent.parent / "liepin_scraper"
+    offenders = []
+    for py in engine_dir.glob("*.py"):
+        src = py.read_text(encoding="utf-8")
+        for i, line in enumerate(src.split("\n"), 1):
+            s = line.strip()
+            if s.startswith("#") or s.startswith('"') or s.startswith("'"):
+                continue
+            if re.search(r"_upload_attachment_resume\s*\(|_ensure_resume_slots\s*\(|_delete_resume_card\s*\(", s):
+                if py.name in ("liepin_attachment_uploader.py", "liepin_resume_manager.py"):
+                    continue  # 入口/防线实现与模块内部调用所在文件
+                offenders.append(f"{py.name}:{i}: {s}")
+    assert not offenders, f"发现绕过上传入口的直调路径（物料防线会被旁路）: {offenders}"
+    # 生产入口调用点收敛在 liepin_auto_delivery（deliver_job 主路径 + mass_apply 补传路径）
+    lad_src = (engine_dir / "liepin_auto_delivery.py").read_text(encoding="utf-8")
+    calls = re.findall(r"_manage_and_upload_resume\s*\(", lad_src)
+    assert len(calls) == 2, f"生产入口调用点应为 2 处（主路径+补传路径），实际 {len(calls)}"
+
+
+# ---------------- 1b. 2026-10 改版：弹窗驱动的上传流程 ----------------
+
+class _FakeClock:
+    """sleep 推进虚拟时钟，让 _wait_for_card 的 deadline 轮询在单测里零等待收敛"""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def time(self):
+        return self.now
+
+    def sleep(self, s):
+        self.now += s
+
+
+class _Modal:
+    def __init__(self, page, text, close_sel=None, confirm_text=None):
+        self._page = page
+        self.text = text
+        self._close_sel = close_sel
+        self._confirm_text = confirm_text
+        self.states = types.SimpleNamespace(is_displayed=True)
+        self.confirmed = False
+
+    def ele(self, sel, timeout=None):
+        if self._close_sel and sel == self._close_sel:
+            return types.SimpleNamespace(click=lambda by_js=False: self._page.close_modal(self))
+        if self._confirm_text and sel == f"text:{self._confirm_text}":
+            def _click():
+                self.confirmed = True
+            return types.SimpleNamespace(click=_click)
+        return None
+
+
+class _RevampedPage:
+    """模拟改版后的附件页：导航到 editType=attachment 即弹出「上传附件简历」弹窗（含 file input），
+    关闭弹窗销毁其 DOM；原生注入成功时卡片列表反应式追加。"""
+
+    def __init__(self, cards, upload_succeeds=True):
+        self.cards = list(cards)
+        self.upload_succeeds = upload_succeeds
+        self.modals = []
+        self.urls = []
+        self.refreshed = 0
+        self.injected = []
+        self.js_calls = []
+        self.shots = []
+
+    def open_upload_modal(self):
+        if not any(getattr(m, "is_upload", False) for m in self.modals):
+            m = _Modal(self, "上传附件简历 点击上传或将文件拖拽至此处", close_sel=liepin_resume_manager.CSS_ANT_MODAL_CLOSE)
+            m.is_upload = True
+            self.modals.append(m)
+
+    def close_modal(self, modal):
+        self.modals = [m for m in self.modals if m is not modal]
+
+    @property
+    def upload_modal_open(self):
+        return any(getattr(m, "is_upload", False) for m in self.modals)
+
+    def get(self, url):
+        self.urls.append(url)
+        if "editType=attachment" in url:
+            self.open_upload_modal()
+
+    def refresh(self):
+        self.refreshed += 1
+
+    def eles(self, sel, timeout=None):
+        if sel == liepin_resume_manager.CSS_RESUME_CARD_CONTAINER:
+            return list(self.cards)
+        if sel == liepin_resume_manager.CSS_MODAL_CONTENT:
+            return list(self.modals)
+        return []
+
+    def ele(self, sel, timeout=None):
+        if sel == liepin_resume_manager.CSS_UPLOAD_FILE_INPUT and self.upload_modal_open:
+            page = self
+
+            class _Input:
+                def input(self, path):
+                    page.injected.append(path)
+                    if page.upload_succeeds:
+                        page.cards.append(_Card(Path(path).name))
+            return _Input()
+        return None
+
+    def run_js(self, js):
+        self.js_calls.append(js)
+        return "no_input" if "customRequest" in js else None
+
+    def get_screenshot(self, path):
+        self.shots.append(path)
+
+
+def _patch_upload_env(monkeypatch, tmp_path, page):
+    # 上传执行链路在 liepin_attachment_uploader（2026-10-29 拆分）；卡片/槽位工具仍在 resume_manager
+    monkeypatch.setattr(liepin_attachment_uploader, "time", _FakeClock())
+    monkeypatch.setattr(liepin_resume_manager, "time", _FakeClock())
+    monkeypatch.setattr(liepin_resume_manager, "page", page)
+    monkeypatch.setattr(liepin_attachment_uploader, "TEMP_DIR", str(tmp_path / "temp_resumes"))
+    monkeypatch.setattr(liepin_attachment_uploader, "writable_path", lambda default, sub: str(tmp_path / sub))
+    import liepin_popups
+    monkeypatch.setattr(liepin_popups, "page", page, raising=False)
+    monkeypatch.setattr(liepin_popups, "_clear_liepin_annoying_popups", lambda p=None: None)
+    src = tmp_path / "raw.pdf"
+    src.write_bytes(b"%PDF-1.4 fake")
+    return src
+
+
+def test_upload_refuses_when_local_material_missing(monkeypatch, tmp_path):
+    """本地物料缺失时必须在触碰账号前显式失败（真实事故防线）：
+    绝不允许「删了旧附件、新的没传上」，也不用 assert（python -O 下会被移除）。"""
+    page = _RevampedPage(cards=[_Card("我的简历.pdf")])
+    _patch_upload_env(monkeypatch, tmp_path, page)  # 页面与账号状态就绪
+    missing = tmp_path / "not_exist.pdf"
+
+    with pytest.raises(RuntimeError, match="本地物料缺失"):
+        liepin_attachment_uploader._upload_attachment_resume(str(missing), "某公司_某岗位")
+    assert len(page.cards) == 1, "账号不得发生任何删除/变更"
+    assert page.injected == [], "物料缺失时不得触发任何注入"
+
+
+def test_material_guard_rejects_empty_file(monkeypatch, tmp_path):
+    """空文件物料：三条防线分支之二，显式 raise。"""
+    empty = tmp_path / "empty.pdf"
+    empty.write_bytes(b"")
+    with pytest.raises(RuntimeError, match="空文件"):
+        liepin_attachment_uploader._assert_local_material_ready(str(empty))
+
+
+def test_stage_copy_rejects_size_mismatch(monkeypatch, tmp_path):
+    """副本大小不一致：三条防线分支之三。"""
+    good = tmp_path / "good.pdf"
+    good.write_bytes(b"%PDF-1.4 real-content")
+    stage_dir = tmp_path / "temp_resumes" / "_liepin_upload_stage"
+    stage_dir.mkdir(parents=True)
+    staged = stage_dir / "X.pdf"
+    staged.write_bytes(b"%PDF-1.4 truncated")  # 模拟复制不完整
+
+    real_copy = liepin_attachment_uploader.shutil.copy2
+    monkeypatch.setattr(liepin_attachment_uploader.shutil, "copy2",
+                        lambda *a, **k: real_copy(*a, **k))
+    # 让 copy2 产出大小不符的副本
+    def _bad_copy(src, dst, *a, **k):
+        Path(dst).write_bytes(b"%PDF-1.4 truncated")
+    monkeypatch.setattr(liepin_attachment_uploader.shutil, "copy2", _bad_copy)
+    monkeypatch.setattr(liepin_attachment_uploader, "TEMP_DIR", str(tmp_path / "temp_resumes"))
+
+    with pytest.raises(RuntimeError, match="大小不一致"):
+        liepin_attachment_uploader._stage_upload_copy(str(good), "X")
+
+
+def test_manage_upload_checks_material_before_any_account_change(monkeypatch, tmp_path):
+    """调用顺序契约（R3-P1-7）：_manage_and_upload_resume 必须在访问页面/删除槽位之前
+    完成物料校验——物料缺失时 get/refresh/删除入口一律零调用。"""
+    page = _RevampedPage(cards=[_Card("我的简历.pdf"), _Card("旧定制.pdf")])
+    _patch_upload_env(monkeypatch, tmp_path, page)
+    # 即使账号满槽（删除条件成立），物料缺失也必须先失败且零导航零删除
+    page.cards.append(_Card("第三份.pdf"))
+    missing = tmp_path / "not_exist.pdf"
+
+    with pytest.raises(RuntimeError, match="本地物料缺失"):
+        liepin_attachment_uploader._manage_and_upload_resume(str(missing), "某公司_某岗位")
+    assert page.urls == [], "物料校验必须先于任何页面导航"
+    assert page.refreshed == 0, "物料校验必须先于任何页面刷新"
+    assert len(page.cards) == 3, "物料缺失时账号不得发生任何删除/变更"
+
+
+def test_upload_opens_modal_via_url_and_injects_sanitized_filename(monkeypatch, tmp_path):
+    """满槽改版页面没有任何上传按钮：必须靠 editType=attachment 导航弹出弹窗；
+    原生注入用消毒后的文件名；成功后不得再走 Fiber 兜底；临时副本必须清理。"""
+    page = _RevampedPage(cards=[_Card("我的简历.pdf"), _Card("旧定制.pdf")])
+    src = _patch_upload_env(monkeypatch, tmp_path, page)
+
+    liepin_attachment_uploader._upload_attachment_resume(str(src), "新奥集团_AI Agent 全栈工程师（FDE 方向）")
+
+    assert any("editType=attachment" in u for u in page.urls), "未通过 URL 参数打开上传弹窗"
+    assert len(page.injected) == 1
+    assert Path(page.injected[0]).name == "新奥集团_AI_Agent_全栈工程师（.pdf"
+    assert not Path(page.injected[0]).exists(), "上传后的临时副本未清理"
+    assert not any("customRequest" in js for js in page.js_calls), "原生注入已成功，不得再触发 Fiber 兜底重复上传"
+    assert [c.name for c in page.cards][-1] == "新奥集团_AI_Agent_全栈工程师（.pdf"
+
+
+def test_upload_falls_back_to_fiber_then_fails_loudly_with_screenshot(monkeypatch, tmp_path):
+    """原生注入未产生卡片 → 刷新复核仍无 → 才切 Fiber 兜底；兜底也无果时抛错并留截图，
+    不得像改版前那样只留一行 `[]`。"""
+    page = _RevampedPage(cards=[_Card("我的简历.pdf")], upload_succeeds=False)
+    src = _patch_upload_env(monkeypatch, tmp_path, page)
+
+    with pytest.raises(RuntimeError, match="卡片列表中未找到"):
+        liepin_attachment_uploader._upload_attachment_resume(str(src), "某公司_某岗位")
+
+    assert len(page.injected) == 1
+    assert sum("customRequest" in js for js in page.js_calls) == 1, "Fiber 兜底应恰好执行一次"
+    assert page.refreshed >= 1, "切兜底前必须先刷新看服务端真值，防止首路已成功时重复上传"
+    assert page.shots and "upload_missing" in page.shots[0]
+
+
+def test_close_upload_modal_only_touches_upload_modal():
+    page = _RevampedPage(cards=[])
+    page.open_upload_modal()
+    other = _Modal(page, "确定要删除该附件简历吗？删除后不可恢复", close_sel=liepin_resume_manager.CSS_ANT_MODAL_CLOSE)
+    page.modals.append(other)
+
+    assert liepin_resume_manager._close_upload_modal_if_open(page) is True
+    assert not page.upload_modal_open
+    assert other in page.modals, "非上传弹窗不得被误关"
+    assert liepin_resume_manager._close_upload_modal_if_open(page) is False
+
+
+def test_confirm_delete_skips_upload_modal_and_confirms_delete_modal(monkeypatch):
+    monkeypatch.setattr(liepin_resume_manager, "time", _FakeClock())
+    page = _RevampedPage(cards=[])
+    page.open_upload_modal()
+    delete_modal = _Modal(page, "确定要删除该附件简历吗？", confirm_text="确 定")
+    page.modals.append(delete_modal)
+    monkeypatch.setattr(liepin_resume_manager, "page", page)
+
+    assert liepin_resume_manager._confirm_delete_in_modal() is True
+    assert delete_modal.confirmed
+    assert page.upload_modal_open, "上传弹窗不得被当作删除确认弹窗操作"
 
 
 # ---------------- 2. 槽位清理失败显式化 ----------------
@@ -133,6 +426,8 @@ def test_get_browser_page_rebuilds_dead_handle(monkeypatch):
     dead = _Dead()
     fresh = types.SimpleNamespace(url="https://c.liepin.com/")
     ctor_calls = []
+    # 本用例只验证句柄重建逻辑；环境守卫会去探真实 9226 端口，宿主若跑着别的数据目录的猎聘 Edge 会被拒
+    monkeypatch.setattr(liepin_session, "verify_browser_identity", lambda *a, **k: (True, ""))
     monkeypatch.setattr(liepin_session, "ChromiumPage", lambda opts: ctor_calls.append(opts) or fresh)
     monkeypatch.setattr(liepin_session, "page", dead)
     monkeypatch.setattr(lad, "ChromiumPage", lambda opts: ctor_calls.append(opts) or fresh)

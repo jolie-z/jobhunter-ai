@@ -48,7 +48,7 @@ def init_autopilot_db():
                     cron_time TEXT NOT NULL,
                     auto_deliver_grades TEXT NOT NULL,
                     auto_deliver_platforms TEXT NOT NULL DEFAULT '["boss", "liepin", "51job", "zhilian"]',
-                    is_enabled BOOLEAN NOT NULL DEFAULT 1,
+                    is_enabled BOOLEAN NOT NULL DEFAULT 0,
                     platform_configs TEXT DEFAULT '{}'
                 )
             ''')
@@ -109,6 +109,12 @@ def init_autopilot_db():
             # 简历改写是否带入深度体检诊断
             try:
                 cursor.execute("ALTER TABLE automation_configs ADD COLUMN rewrite_include_diagnosis BOOLEAN DEFAULT 1")
+            except sqlite3.OperationalError:
+                pass
+            # 简历改写物料模板（classic 黑白经典 / color_v1 商务蓝 / color_v2 极客高密；
+            # 改写节点渲染投递 PDF/长图用，默认 classic 与历史行为一致）
+            try:
+                cursor.execute("ALTER TABLE automation_configs ADD COLUMN rewrite_material_skin TEXT DEFAULT 'classic'")
             except sqlite3.OperationalError:
                 pass
             # 打招呼语提示词模式 (official 官方标准 / custom 自定义Prompt)
@@ -226,6 +232,8 @@ def init_autopilot_db():
             ''')
 
             # 初始化默认配置
+            # 2026-10-29 定时总开关默认关：全新安装不再默认挂每天 09:00 的 daily_scout_task，
+            # 待用户在指挥中心显式开启后 start_scheduler 才会注册
             cursor.execute("SELECT COUNT(*) FROM automation_configs WHERE id = 1")
             if cursor.fetchone()[0] == 0:
                 default_platforms = json.dumps(["boss", "liepin", "51job", "zhilian"])
@@ -240,7 +248,7 @@ def init_autopilot_db():
                 cursor.execute('''
                     INSERT INTO automation_configs
                     (id, cron_time, auto_deliver_grades, auto_deliver_platforms, is_enabled, platform_configs, batch_limit, mass_apply_resume_id, rewrite_base_resume_id, mass_apply_max_headcount, mass_apply_greeting, greeting_platforms, eval_concurrency, enable_company_search, rewrite_skill_id, rewrite_include_diagnosis, greeting_prompt_mode, custom_greeting_prompt, mass_deliver_time, custom_deliver_mode, custom_deliver_time, delivery_timeout_sec)
-                    VALUES (1, '09:00', ?, ?, 1, ?, 20, '', '', 1000, '', ?, 5, 1, 'resume_rewrite', 1, 'official', '', '09:30', 'immediate', '14:00', 45)
+                    VALUES (1, '09:00', ?, ?, 0, ?, 20, '', '', 1000, '', ?, 5, 1, 'resume_rewrite', 1, 'official', '', '09:30', 'immediate', '14:00', 45)
                 ''', (default_grades, default_platforms, default_configs, json.dumps(_DEFAULT_GREETING_PLATFORMS)))
                 conn.commit()
     except Exception as e:
@@ -279,6 +287,7 @@ def get_autopilot_config() -> dict[str, Any]:
                 "enable_company_search": bool(row["enable_company_search"]) if "enable_company_search" in row.keys() and row["enable_company_search"] is not None else True,
                 "rewrite_skill_id": (row["rewrite_skill_id"] if "rewrite_skill_id" in row.keys() else "resume_rewrite") or "resume_rewrite",
                 "rewrite_include_diagnosis": bool(row["rewrite_include_diagnosis"]) if "rewrite_include_diagnosis" in row.keys() and row["rewrite_include_diagnosis"] is not None else True,
+                "rewrite_material_skin": (row["rewrite_material_skin"] if "rewrite_material_skin" in row.keys() else "classic") or "classic",
                 "greeting_prompt_mode": (row["greeting_prompt_mode"] if "greeting_prompt_mode" in row.keys() else "official") or "official",
                 "custom_greeting_prompt": (row["custom_greeting_prompt"] if "custom_greeting_prompt" in row.keys() else "") or "",
                 "mass_deliver_time": (row["mass_deliver_time"] if "mass_deliver_time" in row.keys() else "09:30") or "09:30",
@@ -295,7 +304,7 @@ def get_autopilot_config() -> dict[str, Any]:
             "cron_time": "09:00",
             "auto_deliver_grades": ["C", "D", "F"],
             "auto_deliver_platforms": ["boss", "liepin", "51job", "zhilian"],
-            "is_enabled": True,
+            "is_enabled": False,
             "batch_limit": 20,
             "platform_configs": {
                 "boss": {"limit": 0, "keyword": "", "city": "全国", "salary": "不限"},
@@ -313,6 +322,7 @@ def get_autopilot_config() -> dict[str, Any]:
             "enable_company_search": True,
             "rewrite_skill_id": "resume_rewrite",
             "rewrite_include_diagnosis": True,
+            "rewrite_material_skin": "classic",
             "greeting_prompt_mode": "official",
             "custom_greeting_prompt": "",
             "mass_deliver_time": "09:30",
@@ -342,6 +352,7 @@ def update_autopilot_config(
     enable_company_search: bool = None,
     rewrite_skill_id: str = None,
     rewrite_include_diagnosis: bool = None,
+    rewrite_material_skin: str = None,
     greeting_prompt_mode: str = None,
     custom_greeting_prompt: str = None,
     mass_deliver_time: str = None,
@@ -396,6 +407,13 @@ def update_autopilot_config(
             updates["rewrite_skill_id"] = rewrite_skill_id or "resume_rewrite"
         if rewrite_include_diagnosis is not None:
             updates["rewrite_include_diagnosis"] = 1 if rewrite_include_diagnosis else 0
+        if rewrite_material_skin is not None:
+            # 白名单收敛：非合法值回落 classic，防止手写请求把渲染引擎带入未知分支。
+            # 白名单常量与 materials.get_configured_material_skin 同源（延迟导入防循环依赖）
+            from app.automation.materials import ALLOWED_MATERIAL_SKINS
+            updates["rewrite_material_skin"] = (
+                rewrite_material_skin if rewrite_material_skin in ALLOWED_MATERIAL_SKINS else "classic"
+            )
         if greeting_prompt_mode is not None:
             updates["greeting_prompt_mode"] = greeting_prompt_mode or "official"
         if custom_greeting_prompt is not None:

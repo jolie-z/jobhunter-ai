@@ -1,4 +1,39 @@
 import { create } from 'zustand'
+import {
+  actionDescForNode,
+  isWithinTaskSwitchGuard,
+  markPipelineStart,
+  markSnapshotTask,
+  advanceStages,
+  classifyEndFrame,
+  FAILED_TERMINAL_STATUSES,
+  emptyState,
+  isSameJobEntity,
+  mergeProgress,
+  STAGE_RANK,
+  nodeProgressRank,
+  type PipelineJob,
+  type PipelineStore,
+  type PipelineStatus,
+  type BlockedDetail,
+  type PlatformFailure,
+  type StageStatus,
+  currentSnapshotTaskId,
+  SNAPSHOT_TERMINAL_STATUSES,
+} from "./pipeline-store-helpers"
+
+// 类型与词表 re-export：既有消费方统一从 @/store/pipeline-store 导入（拆分零消费方改动）
+export type {
+  BlockedDetail,
+  PlatformFailure,
+  PipelineJob,
+  PipelineStageSnapshot,
+  PipelineStatus,
+  PlatformProgress,
+  StageStatus,
+} from "./pipeline-store-helpers"
+export { FAILED_TERMINAL_STATUSES, PIPELINE_STAGES } from "./pipeline-store-helpers"
+export { classifyEndFrame, type EndFrameKind } from "./pipeline-store-helpers"
 
 /**
  * 全链路指挥中心 · 实时状态库
@@ -11,227 +46,101 @@ import { create } from 'zustand'
  */
 
 // 与后端 PIPELINE_STAGES 完全一致（顺序即渲染顺序）
-export const PIPELINE_STAGES: { key: string; label: string }[] = [
-  { key: "scraping", label: "平台抓取" },
-  { key: "cleaning", label: "规则清洗" },
-  { key: "feishu_sync", label: "飞书推送" },
-  { key: "evaluating", label: "AI初评" },
-  { key: "deep_eval", label: "深度评估" },
-  { key: "rewriting", label: "简历改写" },
-  { key: "greeting", label: "欢迎语" },
-  { key: "review", label: "待审批" },
-  { key: "delivering", label: "自动投递" },
-  { key: "done", label: "完成" },
-]
-
-export type StageStatus = "pending" | "running" | "done"
-
-export interface PipelineJob {
-  job_id: string       // == 飞书 record_id == LangGraph thread_id / raw_{rowid}
-  job_name: string
-  node: string         // scrape_node / evaluate_node / deep_eval_node / rewrite_node / greeting_node / manual_review_node / delivery_node / error
-  status: string       // scraped / running / done / waiting / delivered / rejected / rejected_manual(老板拒绝,仅全部岗位) / error
-  sub_status?: string  // 细化子状态：ai_eval | deep_eval | rewriting | greeting
-  grade?: string
-  score?: number
-  platform?: string
-  company_name?: string
-  company_scale?: string
-  salary?: string
-  city?: string
-  education?: string
-  experience?: string
-  job_url?: string
-  jd_text?: string
-  reject_reason?: string
-  reject_type?: "ai" | "rule" | "manual"
-  review_type?: "custom_tailored" | "mass_apply"
-  greeting_msg?: string
-  delivery_materials?: {
-    pdf?: boolean
-    image?: boolean
-    greeting?: boolean
-    /** 真实回执：配置了打招呼语但引擎未确认微聊送达（渲染灰色「打招呼未送达」警示） */
-    greeting_failed?: boolean
-    delivered_at?: string
-  }
-  failure_info?: {
-    step?: string
-    reason?: string
-    suggestion?: string
-    can_retry?: boolean
-  }
-  is_current_run?: boolean
-  pipeline_task_id?: string
-  created_at?: string
-  crawl_time?: string
-  last_action_time?: string
-  last_action_desc?: string
-  is_today?: boolean
-}
-
-export interface PlatformProgress {
-  current: number
-  total: number
-}
-
-export type PipelineStatus = "idle" | "running" | "done" | "error"
-
-interface PipelineStore {
-  // 当前链路标识
-  pipelineTaskId: string | null
-  status: PipelineStatus
-
-  // 发射配置时刻
-  deliverySchedule: { mass_time: string; custom_time: string }
-  setDeliverySchedule: (schedule: { mass_time: string; custom_time: string }) => void
-
-  // 阶段推进
-  currentStage: string | null
-  stageStatus: Record<string, StageStatus>
-
-  // 抓取阶段：各平台并发进度
-  scrapeProgress: Record<string, PlatformProgress>
-
-  // 已按指令终止的平台（按平台终止成功后本地置灰标注用）
-  abortedPlatforms: string[]
-
-  // 清洗阶段：硬规则 + AI 初筛进度（来自 step1 的 phase_progress）
-  hardCleanProgress: PlatformProgress | null
-  aiScoutProgress: PlatformProgress | null
-
-  // 飞书推送阶段：同步进度（来自 step2 的 phase_progress phase=feishu_sync）
-  feishuSyncProgress: PlatformProgress | null
-
-  // 岗位流转表（job_id -> PipelineJob）
-  jobs: Record<string, PipelineJob>
-
-  // 用户已确认淘汰/移除的岗位 id 墓碑：jobs-snapshot 轮询不得再把它们拉回看板
-  removedJobIds: string[]
-
-  // 文本日志流
-  logs: string[]
-
-  // 结束摘要
-  summary: Record<string, any> | null
-
-  // ── Actions ─
-  startPipeline: (taskId: string) => void
-  handleEvent: (data: any) => void
-  updateJob: (jobId: string, partial: Partial<PipelineJob>) => void
-  removeJob: (jobId: string) => void
-  reset: () => void
-  // 按平台终止成功后登记（本地置灰标注「已终止」）
-  markPlatformAborted: (platform: string) => void
-  // 用后端台账（查库权威值）合并抓取进度：刷新页面后数字不丢不假
-  mergeScrapeSnapshot: (entries: { key: string; current: number; total: number }[]) => void
-  // 全量合并岗位快照（包含 SQLite 淘汰岗位、飞书待审批与已投递记录）
-  mergeJobsSnapshot: (
-    incomingJobs: PipelineJob[],
-    taskId?: string | null,
-    schedule?: { mass_time: string; custom_time: string }
-  ) => void
-}
-
-const initialStageStatus = (): Record<string, StageStatus> =>
-  Object.fromEntries(PIPELINE_STAGES.map(s => [s.key, "pending" as StageStatus]))
-
-// 🌟 失败终态集合（单一真理源）：执行失败/投递失败等状态，用于阻断乐观运行与卡片分诊
-export const FAILED_TERMINAL_STATUSES = new Set([
-  "error", "failed", "执行失败", "投递失败",
-])
-
-// jobs-snapshot 中代表岗位已到终点的状态（后端台账权威值，优先于本地乐观状态）
-// 🌟 error/failed 也算终态：投递失败若不能穿透本地乐观的 delivering，
-// 卡片会永久死锁在「正在自动投递中」（重试接口发起时即清失败台账，无状态乒乓风险）
-// 🌟 waiting / 待审批 也是权威断点阶段：初评或改写完成进入审批断点时，必须权威穿透本地初评 running，
-// 杜绝岗位被误锁在「评估/改写/投递中」Tab 的 Pinning Bug
-const SNAPSHOT_TERMINAL_STATUSES = new Set([
-  "delivered", "已投递", "rejected", "rejected_auto", "清洗淘汰", "ai清洗淘汰", ...FAILED_TERMINAL_STATUSES,
-  "waiting", "海投人工复核", "简历人工复核", "待审批",
-])
-
-const emptyState = () => ({
-  pipelineTaskId: null as string | null,
-  status: "idle" as PipelineStatus,
-  deliverySchedule: { mass_time: "09:30", custom_time: "14:00" },
-  currentStage: null as string | null,
-  stageStatus: initialStageStatus(),
-  scrapeProgress: {} as Record<string, PlatformProgress>,
-  abortedPlatforms: [] as string[],
-  hardCleanProgress: null as PlatformProgress | null,
-  aiScoutProgress: null as PlatformProgress | null,
-  feishuSyncProgress: null as PlatformProgress | null,
-  jobs: {} as Record<string, PipelineJob>,
-  removedJobIds: [] as string[],
-  logs: [] as string[],
-  summary: null as Record<string, any> | null,
-})
-
-// 给定当前阶段，把它之前的所有阶段标记为 done，自身标记为 running
-function advanceStages(stageStatus: Record<string, StageStatus>, stageKey: string): Record<string, StageStatus> {
-  const idx = PIPELINE_STAGES.findIndex(s => s.key === stageKey)
-  if (idx < 0) return stageStatus
-  const next = { ...stageStatus }
-  for (let i = 0; i < idx; i++) {
-    next[PIPELINE_STAGES[i].key] = "done"
-  }
-  next[stageKey] = "running"
-  return next
-}
-
-function normalizeStr(s?: string | null): string {
-  if (!s) return ""
-  return s
-    .toLowerCase()
-    .replace(/[\s\-_—·（）\(\)【】\[\]、，,]/g, "")
-    .replace(/股份有限公司|有限公司|有限责任公司|分公司|集团/g, "")
-    .trim()
-}
-
-// 判断两个岗位是否为同一个现实中的岗位（支持跨阶段 ID 迁移：raw_{rowid} -> rec_{feishu_id}）
-function isSameJobEntity(
-  a?: { job_id?: string; job_url?: string; company_name?: string; job_name?: string; raw_job_id?: string } | null,
-  b?: { job_id?: string; job_url?: string; company_name?: string; job_name?: string; raw_job_id?: string } | null
-): boolean {
-  if (!a || !b) return false
-  if (a.job_id && b.job_id && a.job_id === b.job_id) return true
-  // 强主键关联：如果一个卡片的 raw_job_id 指向另一个卡片的 job_id
-  if (a.raw_job_id && b.job_id && a.raw_job_id === b.job_id) return true
-  if (b.raw_job_id && a.job_id && b.raw_job_id === a.job_id) return true
-
-  // URL 匹配 (去除 query 参数及尾部斜杠)
-  const urlA = (a.job_url || "").split("?")[0].replace(/\/+$/, "").trim()
-  const urlB = (b.job_url || "").split("?")[0].replace(/\/+$/, "").trim()
-  if (urlA && urlB && urlA === urlB) return true
-
-  // 归一化公司与岗位名匹配
-  const compA = normalizeStr(a.company_name)
-  const compB = normalizeStr(b.company_name)
-  const nameA = normalizeStr(a.job_name)
-  const nameB = normalizeStr(b.job_name)
-  if (compA && compB && nameA && nameB && compA === compB && nameA === nameB) {
-    return true
-  }
-  return false
-}
-
-// 最近一次 jobs-snapshot 所属任务：用于识别任务切换，触发看板「新任务覆盖上一轮岗位」
-let _lastSnapshotTaskId: string | null = null
 
 export const usePipelineStore = create<PipelineStore>((set) => ({
   ...emptyState(),
 
   startPipeline: (taskId) => {
-    _lastSnapshotTaskId = taskId
-    set({
+    markSnapshotTask(taskId)
+    markPipelineStart()
+    set((state) => ({
       ...emptyState(),
+      // 配置类值不随新任务复位：否则刷新后阈值短暂回到 A，深评/改写分母会闪一下
+      autoEvalThreshold: state.autoEvalThreshold,
       pipelineTaskId: taskId,
       status: "running",
-    })
+    }))
   },
 
   reset: () => set({ ...emptyState() }),
+
+  dismissPlatformFailure: (id) => set((state) => ({
+    platformFailures: state.platformFailures.filter((f) => f.id !== id),
+  })),
+
+  setBlocked: (detail) => set({ status: "blocked", blockedDetail: detail }),
+
+  clearBlocked: () => set({ blockedDetail: null }),
+
+  resumePipeline: () => set((state) => ({
+    // 只切状态不清现场：看板卡片/日志/blockedDetail 保留，横幅转「恢复中」进行时态
+    status: "running",
+    summary: state.status === "blocked" ? null : state.summary,
+  })),
+
+  setAutoEvalThreshold: (threshold) => set({
+    autoEvalThreshold: (threshold || "A").toUpperCase(),
+  }),
+
+  seedStageSnapshot: (snapshot) => set((state) => {
+    if (!snapshot) return state
+    const incomingTask = snapshot.task_id ?? null
+    const hasStageData = Object.keys(snapshot.stage_status || {}).length > 0 || Boolean(snapshot.phases)
+    if (!incomingTask && !hasStageData) return state
+
+    // 🌟 阻塞解除通道（2026-11-03 事故根治，必须先于「只种一次」守卫）：
+    // SSE 在 blocked 态被设计为强制断开，轮询是断链后唯一存活通道——后端登记已清
+    // （LLM 自愈 / 继续任务重洗成功 / 终止任务）时，横幅必须能被轮询摘下，
+    // 否则 blockedDetail 永无清除入口，横幅永久卡死在「链路已暂停」。
+    if (!snapshot.blocked?.blocked && state.blockedDetail &&
+        state.status !== "done" && state.status !== "error") {
+      return {
+        status: state.status === "blocked" ? ("running" as PipelineStatus) : state.status,
+        blockedDetail: null,
+      }
+    }
+
+    // 同一任务只种一次：dashboard-sync 每 12 秒轮询，旧响应不得覆盖 SSE 已推进的新阶段
+    if (incomingTask && incomingTask === state.stageSnapshotTaskId) return state
+
+    const nextStageStatus = { ...state.stageStatus }
+    for (const [key, value] of Object.entries(snapshot.stage_status || {})) {
+      if (value !== "pending" && value !== "running" && value !== "done" && value !== "blocked") continue
+      // 旧任务的 blocked 阶段态不得污染新一轮运行任务的导轨
+      if (value === "blocked" && incomingTask && state.pipelineTaskId && incomingTask !== state.pipelineTaskId) continue
+      const current = nextStageStatus[key] || "pending"
+      // 单调守卫：done 阶段不被旧快照倒回 running/pending/blocked
+      if (STAGE_RANK[value] >= STAGE_RANK[current]) {
+        nextStageStatus[key] = value
+      }
+    }
+
+    // 任务级 LLM 阻塞态（刷新恢复的第二通道）：仅同任务且链路未收口时生效，
+    // 防止旧任务的阻塞快照污染新一轮运行或已完成的界面。
+    const blockedPayload = snapshot.blocked
+    let blockedPatch: { status?: PipelineStatus; blockedDetail?: BlockedDetail | null } = {}
+    if (blockedPayload?.blocked) {
+      const sameTask = !state.pipelineTaskId || !incomingTask || incomingTask === state.pipelineTaskId
+      const notSettled = state.status !== "done" && state.status !== "error"
+      if (sameTask && notSettled) {
+        blockedPatch = { status: "blocked", blockedDetail: blockedPayload }
+      }
+    }
+
+    const phases = snapshot.phases || {}
+    const snapCurrent = snapshot.current_stage
+    const snapCurrentStatus = snapCurrent ? nextStageStatus[snapCurrent] : undefined
+    return {
+      stageStatus: nextStageStatus,
+      // 只把快照中仍在 running 的阶段设为当前阶段；null 不覆盖本地新状态
+      currentStage: snapCurrent && snapCurrentStatus === "running" ? snapCurrent : state.currentStage,
+      hardCleanProgress: mergeProgress(state.hardCleanProgress, phases.hard_clean),
+      aiScoutProgress: mergeProgress(state.aiScoutProgress, phases.ai_scout),
+      feishuSyncProgress: mergeProgress(state.feishuSyncProgress, phases.feishu_sync),
+      stageSnapshotTaskId: incomingTask ?? state.stageSnapshotTaskId,
+      ...blockedPatch,
+    }
+  }),
 
   updateJob: (jobId, partial) => set((state) => {
     const prev = state.jobs[jobId]
@@ -268,6 +177,8 @@ export const usePipelineStore = create<PipelineStore>((set) => ({
       next[e.key] = {
         current: Math.max(prev?.current ?? 0, Number(e.current) || 0),
         total: Number(e.total) || prev?.total || 0,
+        // 轮询快照不携带 skipped：保留既有累计值，防被覆盖归零
+        skipped: prev?.skipped ?? 0,
       }
     }
     return { scrapeProgress: next }
@@ -277,8 +188,17 @@ export const usePipelineStore = create<PipelineStore>((set) => ({
     // 任务切换即覆盖：快照携带新的 task_id 时清掉上一轮岗位（含墓碑），
     // 看板只保留最近一次任务（定时或手动）的岗位；历史岗位在岗位列表里处理
     let base = state
-    if (typeof taskId === "string" && taskId && taskId !== _lastSnapshotTaskId) {
-      _lastSnapshotTaskId = taskId
+    if (typeof taskId === "string" && taskId && taskId !== currentSnapshotTaskId()) {
+      // 双保险守卫（2026-11-02 审计 P1-8）：running 且处于 startPipeline 短窗内时，
+      // 与本地链路不一致的载荷判定为「旧任务的在途响应」——其岗位/任务标识全部
+      // 陈旧，整体跳过（不清板、不劫持 pipelineTaskId、不并入旧岗位）；窗口过期
+      // 后恢复接管分支。单靠请求序号挡不住「请求先发出→期间启动新任务→旧响应后到」。
+      if (state.status === "running" && state.pipelineTaskId &&
+          taskId !== state.pipelineTaskId &&
+          isWithinTaskSwitchGuard()) {
+        return state
+      }
+      markSnapshotTask(taskId)
       base = {
         ...state,
         // 轮询先于 SSE 识别到新任务（如定时触发）时同步切换链路标识
@@ -337,6 +257,22 @@ export const usePipelineStore = create<PipelineStore>((set) => ({
       // 初评/改写等非投递状态不得阻断后端权威快照
       const isDeliveringRunning = prev?.status === "running" && (prev?.sub_status === "delivering" || prev?.node === "delivery_node")
       const isOptimisticRunning = !isSnapshotTerminal && (isDeliveringRunning || (j.status === "running" && !SNAPSHOT_TERMINAL_STATUSES.has(prev?.status || "")))
+      // 防降级守卫：本地已在更靠后的节点运行，快照却给出更早节点（且非终态）——
+      // 典型是 rewrite/greeting 期间 Feishu 仍写「已完成初步评估」，快照映射成
+      // done/evaluate_node。12 秒轮询绝不能把卡片打回「AI初评完成」。
+      const isSnapshotDowngrade = Boolean(
+        prev?.status === "running" &&
+        !isSnapshotTerminal &&
+        nodeProgressRank(prev?.node) > nodeProgressRank(j.node) &&
+        (j.status === "done" || j.status === "running")
+      )
+      const keepLocalProgress = isSnapshotDowngrade
+
+      // 快照运行态文案：优先后端下发的 last_action_desc，缺省时按节点生成。
+      // 本地乐观文案只在「投递在途」或「防降级」时优先；否则淘汰旧文案
+      // （如「触发AI排雷规则淘汰」）会一直挂在已复活的岗位卡片上（2026-10-30 实测）。
+      const snapshotActionDesc = j.last_action_desc || actionDescForNode(j.node, j.sub_status)
+      const preferLocalDesc = keepLocalProgress || isDeliveringRunning
 
       next[finalKey] = {
         ...prev,
@@ -358,36 +294,47 @@ export const usePipelineStore = create<PipelineStore>((set) => ({
           : (typeof prev?.score === 'number' && !isNaN(prev.score) ? prev.score : undefined),
         status: isSnapshotTerminal
           ? j.status
-          : (isOptimisticRunning ? "running" : (j.status || prev?.status)),
+          : (keepLocalProgress ? "running" : (isOptimisticRunning ? "running" : (j.status || prev?.status))),
         node: isSnapshotTerminal
           ? j.node
-          : (isOptimisticRunning
-              ? ((j.node && j.node !== "ready_to_deliver" && j.node !== "error" && j.node !== "clean_rejected" && j.node !== "manual_review_node")
-                  ? j.node
-                  : ((prev?.node && prev.node !== "ready_to_deliver" && prev.node !== "error") ? prev.node : "delivery_node"))
-              : (j.node || prev?.node)),
+          : (keepLocalProgress
+              ? prev?.node
+              : (isOptimisticRunning
+                  ? ((j.node && j.node !== "ready_to_deliver" && j.node !== "error" && j.node !== "clean_rejected" && j.node !== "manual_review_node")
+                      ? j.node
+                      : ((prev?.node && prev.node !== "ready_to_deliver" && prev.node !== "error") ? prev.node : "delivery_node"))
+                  : (j.node || prev?.node))),
         sub_status: isSnapshotTerminal
           ? j.sub_status
-          : (isOptimisticRunning
-              // delivering 兜底仅限投递在途节点：scrape_node 等评估/清洗类裸 running
-              // 注入 delivering 会把召回待初评等岗位误锁成「正在自动投递中」
-              ? (prev?.sub_status || j.sub_status ||
-                 ((j.node === "delivery_node" || j.node === "greeting_node" || j.node === "quick_greeting_node")
-                  ? "delivering" : undefined))
-              : (j.sub_status || prev?.sub_status)),
+          : (keepLocalProgress
+              ? prev?.sub_status
+              : (isOptimisticRunning
+                  // delivering 兜底仅限投递在途节点：scrape_node/greeting_node 等
+                  // 裸 running 注入 delivering 会把评估/打招呼中的岗位误锁成「正在自动投递中」
+                  ? (prev?.sub_status || j.sub_status ||
+                     (j.node === "delivery_node" ? "delivering" : undefined))
+                  : (j.sub_status || prev?.sub_status))),
         review_type: prev?.review_type || j.review_type,
+        has_rewrite: j.has_rewrite !== undefined ? j.has_rewrite : prev?.has_rewrite,
+        greeting_msg: j.greeting_msg || prev?.greeting_msg,
         reject_reason: prev?.reject_reason || j.reject_reason,
         reject_type: prev?.reject_type || j.reject_type,
-        delivery_materials: prev?.delivery_materials || j.delivery_materials,
+        // 后端权威快照字段按 !==undefined 合并（审计 P2-18，与 has_rewrite 同口径）：
+        // 旧写法 prev 真值恒胜出——打招呼送达状态恢复后，卡片「未送达」警示与补发按钮
+        // 挂到刷新页面才消失
+        delivery_materials: j.delivery_materials !== undefined ? j.delivery_materials : prev?.delivery_materials,
         failure_info: isSnapshotTerminal
           ? (isFailedTerminal ? (j.failure_info !== undefined ? j.failure_info : prev?.failure_info) : undefined)
-          : (isOptimisticRunning ? undefined : (j.failure_info !== undefined ? j.failure_info : prev?.failure_info)),
+          : (isOptimisticRunning || keepLocalProgress ? undefined : (j.failure_info !== undefined ? j.failure_info : prev?.failure_info)),
+        deep_eval_done: prev?.deep_eval_done || j.deep_eval_done || undefined,
         is_current_run: j.is_current_run !== undefined ? j.is_current_run : (prev?.is_current_run ?? true),
         created_at: j.created_at || prev?.created_at,
         is_today: j.is_today !== undefined ? j.is_today : prev?.is_today,
         last_action_desc: isSnapshotTerminal
           ? (j.last_action_desc || prev?.last_action_desc)
-          : (isOptimisticRunning ? (prev?.last_action_desc || "正在自动投递中…") : (j.last_action_desc || prev?.last_action_desc)),
+          : (preferLocalDesc
+              ? (prev?.last_action_desc || snapshotActionDesc)
+              : (snapshotActionDesc || prev?.last_action_desc)),
       }
     }
 
@@ -426,11 +373,58 @@ export const usePipelineStore = create<PipelineStore>((set) => ({
           ? advanceStages(nextStageStatus, stageKey)
           : nextStageStatus
 
+        // LLM 阻塞事件：整体状态切到 blocked 并落地阻塞明细（含模型名/上游提示/修复依据）
+        if (status === "blocked") {
+          const detail: BlockedDetail = (data.blocked as BlockedDetail | undefined) || state.blockedDetail || {
+            kind: "unknown",
+            message: "AI 排雷持续失败，遗留岗位已保留在待AI初筛",
+          }
+          return {
+            currentStage: state.currentStage,
+            stageStatus: refined,
+            status: "blocked" as PipelineStatus,
+            blockedDetail: detail,
+          }
+        }
+        // 阻塞恢复中（继续任务把 cleaning 置回 running）：保留 blockedDetail 供横幅转进行中态
+        if (status === "running" && stageKey === "cleaning" && state.status === "blocked") {
+          return {
+            currentStage: stageKey,
+            stageStatus: refined,
+            status: "running" as PipelineStatus,
+          }
+        }
+
         return {
-          currentStage: stageKey,
+          // 只有 running 事件才能成为「当前阶段」：done 事件若也写 currentStage，
+          // 已完成的飞书推送会带着紫色脉冲高亮，看起来像还在运行。
+          currentStage: status === "running"
+            ? stageKey
+            : (stageKey === "done" || state.currentStage === stageKey ? null : state.currentStage),
           stageStatus: refined,
           status: stageKey === "done" && status === "done" ? "done" : state.status,
         }
+      }
+
+      case "progress": {
+        // 抓取实时进度（2026-11-02 审计 P2-23）：4 平台 controller 只发 progress 事件
+        //（{stage:"scraping", platform, total_inserted, target_jobs}），前端此前只听
+        // scrape_progress（仅 skipped 字段），实时 N/M 永不生效、只能靠 12s 快照。
+        // 映射到同一 scrapeProgress 存储；同时消费 cleaning_report 保持清洗计数实时
+        if (data.stage === "scraping" && data.platform) {
+          const prevP = state.scrapeProgress[data.platform as string]
+          return {
+            scrapeProgress: {
+              ...state.scrapeProgress,
+              [data.platform as string]: {
+                ...prevP,
+                current: Math.max(prevP?.current ?? 0, Number(data.total_inserted) || 0),
+                total: Math.max(prevP?.total ?? 0, Number(data.target_jobs) || 0),
+              },
+            },
+          }
+        }
+        return state
       }
 
       case "scrape_progress": {
@@ -445,6 +439,8 @@ export const usePipelineStore = create<PipelineStore>((set) => ({
             [p]: {
               current: Math.max(prev?.current ?? 0, incomingCur),
               total: Math.max(prev?.total ?? 0, incomingTot),
+              // 重复跳过实况（跳过类事件只带 skipped；缺省字段经 Math.max 保留既有值）
+              skipped: Math.max(prev?.skipped ?? 0, Number(data.skipped) || 0),
             },
           },
         }
@@ -452,13 +448,14 @@ export const usePipelineStore = create<PipelineStore>((set) => ({
 
       case "phase_progress": {
         const phase = data.phase as string
-        const prog: PlatformProgress = {
+        const incoming = {
           current: Number(data.current) || 0,
           total: Number(data.total) || 0,
         }
-        if (phase === "hard_clean") return { hardCleanProgress: prog }
-        if (phase === "ai_scout") return { aiScoutProgress: prog }
-        if (phase === "feishu_sync") return { feishuSyncProgress: prog }
+        // SSE 重连会回放 50 条历史：旧 phase 事件不得把进度条倒回更小值
+        if (phase === "hard_clean") return { hardCleanProgress: mergeProgress(state.hardCleanProgress, incoming) }
+        if (phase === "ai_scout") return { aiScoutProgress: mergeProgress(state.aiScoutProgress, incoming) }
+        if (phase === "feishu_sync") return { feishuSyncProgress: mergeProgress(state.feishuSyncProgress, incoming) }
         return state
       }
 
@@ -490,6 +487,19 @@ export const usePipelineStore = create<PipelineStore>((set) => ({
           status: data.status || "running",
         }
 
+        // 抓取期流式清洗：清洗泵可能在 scrape 事件排队前后抢先推进卡片状态。
+        // 迟到的 scrape 事件不得把已进入清洗/评估的卡片打回「待清洗」。
+        const isScrapeDowngrade =
+          data.status === "scraped" &&
+          data.node === "scrape_node" &&
+          prev.status !== undefined &&
+          prev.status !== "scraped"
+
+        // 迟到抓取事件命中已升级的 rec_ 卡：保留卡片与 key，绝不回退成 raw_ 卡
+        if (isScrapeDowngrade && matchedKey && matchedKey !== jid) {
+          return state
+        }
+
         const nextJob: PipelineJob = {
           ...prev,
           job_id: jid, // 升级为最新 ID
@@ -504,18 +514,31 @@ export const usePipelineStore = create<PipelineStore>((set) => ({
           experience: data.experience || prev.experience,
           job_url: data.job_url || prev.job_url,
           jd_text: data.jd_text || prev.jd_text,
+          // 运行态事件缺文案时按节点兜底（后端正常都会下发；旧后端/半截事件不能空着）
+          last_action_desc: isScrapeDowngrade
+            ? prev.last_action_desc
+            : (data.last_action_desc
+                || (data.status === "running" ? actionDescForNode(data.node, data.sub_status) : prev.last_action_desc)),
+          last_action_time: data.last_action_time || prev.last_action_time,
           // 状态类字段用 !== undefined 合并：后端必须能通过事件清空/改写这些字段，
           // 否则放行后 node 残留 manual_review_node、重试后 failure_info 残留等状态卡死
-          node: data.node !== undefined ? data.node : prev.node,
-          status: data.status !== undefined ? data.status : prev.status,
-          sub_status: data.sub_status !== undefined ? data.sub_status : prev.sub_status,
+          node: isScrapeDowngrade ? prev.node : (data.node !== undefined ? data.node : prev.node),
+          status: isScrapeDowngrade ? prev.status : (data.status !== undefined ? data.status : prev.status),
+          sub_status: isScrapeDowngrade ? prev.sub_status : (data.sub_status !== undefined ? data.sub_status : prev.sub_status),
           grade: data.grade !== undefined ? data.grade : prev.grade,
           score: typeof data.score === 'number' && !isNaN(data.score) ? data.score : prev.score,
           reject_reason: data.reject_reason !== undefined ? data.reject_reason : prev.reject_reason,
           reject_type: data.reject_type !== undefined ? data.reject_type : prev.reject_type,
           review_type: data.review_type !== undefined ? data.review_type : prev.review_type,
+          has_rewrite: data.has_rewrite !== undefined ? Boolean(data.has_rewrite) : prev.has_rewrite,
+          greeting_msg: data.greeting_msg || prev.greeting_msg,
           delivery_materials: data.delivery_materials !== undefined ? data.delivery_materials : prev.delivery_materials,
           failure_info: data.failure_info !== undefined ? data.failure_info : prev.failure_info,
+          // 深评完成标记以服务端实时登记表为准（每个 job 事件都会带回该字段）。
+          // 兼容旧后端：事件缺省时保留本地值，并识别 deep_eval_node done 事件。
+          deep_eval_done: data.deep_eval_done !== undefined
+            ? Boolean(data.deep_eval_done)
+            : (prev.deep_eval_done || (data.node === "deep_eval_node" && data.status === "done") || undefined),
         }
 
         // 如果旧卡片 key 与新 jid 不同（例如旧 key 是 raw_1，新 jid 是 rec_xxx），删除旧 key
@@ -553,6 +576,35 @@ export const usePipelineStore = create<PipelineStore>((set) => ({
         }
       }
 
+      case "platform_failure": {
+        // 平台抓取失败：右下角弹窗数据源。用户手动关闭前常驻，绝不自动消失；
+        // 同一轮多平台失败各自成卡（boss/51job/智联/猎聘/小红书通用协议）。
+        const platform = (data.platform as string) || "unknown"
+        const ts = Number(data.ts) || Date.now()
+        // 去重：TaskChannel 断线重连会回放历史（同载荷二次投递），按 ts 精确去重——
+        // 重放件静默吞掉；新一轮失败的全新 ts 正常弹出（不同轮次的相同原因不受影响）
+        if (ts && state.platformFailures.some((f) => f.ts === ts && f.platform === platform)) {
+          return state
+        }
+        const failure: PlatformFailure = {
+          id: `${platform}_${ts}_${Math.random().toString(36).slice(2, 7)}`,
+          platform,
+          platform_name: (data.platform_name as string) || platform,
+          reason: (data.reason as string) || "本轮抓取未成功（引擎未上报具体原因）",
+          keyword: data.keyword as string | undefined,
+          city: data.city as string | undefined,
+          salary: data.salary as string | undefined,
+          cursor_note: data.cursor_note as string | undefined,
+          ts,
+          time: new Date(ts).toLocaleTimeString("zh-CN", { hour12: false }),
+        }
+        return {
+          // 上限 20 张：防异常风暴下用户长期不关闭导致无限增长；超出淘汰最早的卡
+          platformFailures: [...state.platformFailures.slice(-19), failure],
+          logs: [...state.logs.slice(-199), `🚨 [${failure.platform_name}] 抓取任务失败: ${failure.reason}`],
+        }
+      }
+
       case "error": {
         // SSE 总线的错误终态事件：链路异常中断，状态机不能停在 running
         const msg = (data.message as string) || "链路发生未知错误"
@@ -563,11 +615,37 @@ export const usePipelineStore = create<PipelineStore>((set) => ({
       }
 
       case "end": {
-        // 兼容两种事件形态：错误在顶层 data.error，或嵌在 emit_end 的 summary.error 里
-        const err = data.error ?? data.summary?.error
+        // 分诊唯一实现在 classifyEndFrame（store 与 SSE toast 共用）
+        const verdict = classifyEndFrame(data)
+        if (verdict.kind === "blocked") {
+          return {
+            status: "blocked" as PipelineStatus,
+            summary: data,
+            blockedDetail: (data.summary?.blocked as BlockedDetail | undefined) || state.blockedDetail,
+          }
+        }
+        if (verdict.kind === "aborted") {
+          // 用户主动终止：中性就绪态（非「任务完成」也非异常），日志留终止说明
+          return {
+            status: "idle",
+            summary: data,
+            blockedDetail: null,
+            logs: [...state.logs.slice(-199), `⏹️ ${verdict.message}`],
+          }
+        }
+        if (verdict.kind === "expired" || verdict.kind === "no_resume") {
+          return {
+            status: "error",
+            summary: data,
+            blockedDetail: null,
+            logs: [...state.logs.slice(-199), `❌ ${verdict.message}`],
+          }
+        }
         return {
-          status: err ? "error" : "done",
+          status: verdict.kind === "error" ? "error" : "done",
           summary: data,
+          // 正常/异常收口都解除阻塞登记：横幅与「继续任务」入口随之撤下
+          blockedDetail: null,
         }
       }
 

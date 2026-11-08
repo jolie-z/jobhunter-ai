@@ -1,25 +1,43 @@
 // 后端 API 地址解析链（M2 动态端口定稿：壳 preload 注入优先）：
 // 1. window.appConfig.backendBase —— 桌面壳 preload 注入（动态端口唯一来源，最高优先）
-// 2. NEXT_PUBLIC_API_URL —— 构建期 env（部署场景）
-// 3. window.location.hostname 推导 :8000 —— 浏览器直接访问 dev 前端的既有约定
+// 2. BACKEND_BASE_URL —— 壳注入前端进程的运行时 env（服务端 SSR 唯一来源，无 window 时生效）
+// 3. NEXT_PUBLIC_API_URL —— 构建期 env（部署场景）
+// 4. window.location.hostname 推导 :8000 —— 浏览器直接访问 dev 前端的既有约定
 // 约定：均为裸地址（不带 /api 路径段）；为兼容历史部署误填「.../api」，
 // 统一剥掉尾部的 /api 段（调用方均已自行拼接 /api/...）
 declare global {
   interface Window {
-    appConfig?: { backendBase?: string }
+    appConfig?: {
+      backendBase?: string
+      /** 导出诊断包到桌面并打开文件夹（错误弹窗「导出诊断日志」用；web 模式无此桥） */
+      exportDiagnostics?: () => Promise<string | null>
+      /** 在文件管理器中定位 shell.log（底层配置页「打开日志文件夹」用；web 模式无此桥） */
+      openLogFolder?: () => Promise<boolean>
+    }
   }
+}
+
+/** 统一规整各来源地址：剥尾部 / 与历史误填的 /api 段 */
+function normalizeApiBase(url: string): string {
+  return url.replace(/\/$/, "").replace(/\/api$/, "")
 }
 
 export function getApiBase(): string {
   const injected =
     typeof window !== "undefined" ? window.appConfig?.backendBase : undefined
   if (injected) {
-    return injected.replace(/\/$/, "").replace(/\/api$/, "")
+    return normalizeApiBase(injected)
+  }
+  // 服务端（Server Component / Route Handler，如 /print/* 打印页的 SSR fetch）无 window，
+  // 读桌面壳注入前端进程的 BACKEND_BASE_URL。打包版后端跑动态端口（8978 起），不能靠
+  // 末尾写死的 8000 兜底——0.3.7 能渲染 PDF 纯属后端首选端口恰为 8000 的巧合，0.3.8
+  // 端口搬家后 SSR fetch 全部 ECONNREFUSED，PDF 渲染成「Failed to load resume data」。
+  // 刻意不用 NEXT_PUBLIC_ 前缀：那类变量会被 next build 内联，这里必须运行时读取。
+  if (typeof window === "undefined" && process.env.BACKEND_BASE_URL) {
+    return normalizeApiBase(process.env.BACKEND_BASE_URL)
   }
   if (process.env.NEXT_PUBLIC_API_URL) {
-    return process.env.NEXT_PUBLIC_API_URL
-      .replace(/\/$/, "")
-      .replace(/\/api$/, "")
+    return normalizeApiBase(process.env.NEXT_PUBLIC_API_URL)
   }
   if (typeof window !== "undefined" && window.location?.hostname) {
     return `http://${window.location.hostname}:8000`

@@ -7,11 +7,24 @@ import sys
 import time
 from contextlib import asynccontextmanager
 
-import sentry_sdk
-from fastapi import FastAPI
-from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.routing import APIRoute
-from starlette.middleware.cors import CORSMiddleware
+# ===== 启动 import 打点（桌面打包态 shell.log 消费）=====
+# 打包态用户没有终端：后端卡在 import 阶段时（2026-10-31 Windows 11 启动超时排查），
+# 原日志只有 db_bootstrap/监控系统两条，无法定位卡在哪条 import 链。每条 import 前
+# 打一行「+累计秒数」：最后一条命中的模块 = 正在加载（疑似卡点），其上一条 = 最后一个
+# 已成功进入的模块。
+_IMPORT_T0 = time.perf_counter()
+
+
+def _import_mark(name: str) -> None:
+    print(f"⏱️ [import] {name} +{time.perf_counter() - _IMPORT_T0:.1f}s", flush=True)
+
+
+_import_mark("sentry_sdk/fastapi/starlette")
+import sentry_sdk  # noqa: E402
+from fastapi import FastAPI, HTTPException, Request  # noqa: E402
+from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
+from fastapi.routing import APIRoute  # noqa: E402
+from starlette.middleware.cors import CORSMiddleware  # noqa: E402
 
 # 🌟 强制注入 NO_PROXY，让 Python requests/urllib/httpx 自动绕过系统/VPN代理直连飞书及本地服务
 _default_no_proxy = "localhost,127.0.0.1,open.feishu.cn,*.feishu.cn,feishu.cn"
@@ -23,15 +36,38 @@ _LIFESPAN_BG_TASKS: set = set()
 
 # 🌟 启动最早期把 settings.json（配置页保存的值）注入 os.environ 与 pydantic settings 单例，
 # 保证下方全部路由 import 时读到的 FEISHU_*/OPENAI_* 都是页面配置的最新值
+_import_mark("common.config")
 from common.config import (  # noqa: E402
     sync_settings_to_runtime as _sync_settings_to_runtime,
 )
 
 _sync_settings_to_runtime()
 
+# 🌟 主库建表引导前置到业务 import 之前（2026-10-28 沙箱首启排查）：ai_evaluator 等业务
+# 模块在 import 期就读主库（模块级/初始化期实例化引擎），全新机器此时库文件还不存在，
+# sqlite3.connect 建出空库即报「no such table: job_strategies」吓到用户，而 lifespan 里的
+# 引导要等全部 import 结束才跑。db_bootstrap 只依赖 logging/os/sqlite3，这里先建表再放行；
+# lifespan 末尾的同款调用保留作幂等双保险，引导失败不拦启动（下游惰性建表兜底）。
+_import_mark("app.core.db_bootstrap")
+try:
+    from app.core.db_bootstrap import ensure_main_db_schema  # noqa: E402
+
+    _early_created = ensure_main_db_schema()
+    if _early_created:
+        print(f"✅ [db_bootstrap] 启动早期建表引导完成，新建 {len(_early_created)} 个对象（业务 import 之前）")
+except Exception as _bootstrap_err:
+    print(f"⚠️ 启动早期主库建表引导失败（不拦启动，lifespan 将重试）: {_bootstrap_err}")
+
+_import_mark("ai_agents")
 from ai_agents import ai_evaluator, ai_scorer  # noqa: E402
+
+_import_mark("app.api.main")
 from app.api.main import api_router  # noqa: E402
+
+_import_mark("app.core.config")
 from app.core.config import settings  # noqa: E402
+
+_import_mark("app.jobs.router")
 from app.jobs.router import router as jobs_router  # noqa: E402
 
 
@@ -99,8 +135,9 @@ _FUNC_DESCRIPTIONS = {
     "truth_boundary_check": "Truth Boundary 事实边界安全阀扫描与降级",
 
     # 公司商业情报 (company_intel.py)
-    "research_company_serper": "Serper 并发搜索公司商业背景与外部情报",
-    "search_company_ai_news": "Serper 4路并发多维商业情报侦察引擎",
+    "research_company_serper": "博查/Serper/Tavily 并发搜索公司商业背景与外部情报",
+    "search_company_bocha": "博查 4路并发多维商业情报侦察引擎（国内直连）",
+    "search_company_ai_news": "Serper 4路并发多维商业情报侦察引擎（境外网络）",
 
     # 波次流水线调度 (wave_pipeline.py)
     "run_wave_evaluation_pipeline": "三波次漏斗流水线主调度控制器",
@@ -328,10 +365,14 @@ async def lifespan(app: FastAPI):  # noqa: ARG001  # FastAPI lifespan 协议签�
     _mark("战报调度器（lifespan 完毕）")
 
     yield
+    # 2026-10-29 修复：此处原 import 的是 scheduler 模块上并不存在的 _scheduler 符号
+    # （from ... import _scheduler 直接 ImportError 被 except 吞掉），自动化调度器
+    # 从未在应用退出时被 shutdown——杀进程前它一直挂着 state=running + 旧事件循环，
+    # 任何后续 add_job 都会打在死循环上。改为 shutdown 模块级单例本体。
     try:
-        from app.automation.scheduler import _scheduler
-        if _scheduler and _scheduler.running:
-            _scheduler.shutdown(wait=False)
+        from app.automation import scheduler as _sch_mod
+        if _sch_mod.scheduler and _sch_mod.scheduler.running:
+            _sch_mod.scheduler.shutdown(wait=False)
     except Exception:
         pass
     try:
@@ -374,42 +415,70 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 app.include_router(jobs_router)
 
 # 挂载策略大盘路由（内部已带 /api/strategy 前缀）
+_import_mark("app.strategy.router")
 from app.strategy.router import router as strategy_router  # noqa: E402
 
 app.include_router(strategy_router)
 
+_import_mark("app.copilot.router")
 from app.copilot.router import router as copilot_router  # noqa: E402
 
 app.include_router(copilot_router)
 
+_import_mark("app.questions.router")
 from app.questions.router import compat_router as questions_compat_router  # noqa: E402
 from app.questions.router import router as questions_router  # noqa: E402
 
 app.include_router(questions_router, prefix="/api/questions", tags=["Questions Bank"])
 app.include_router(questions_compat_router, tags=["Questions Bank"])
 
+_import_mark("app.tasks.router")
 from app.tasks.router import router as tasks_router  # noqa: E402
 
 app.include_router(tasks_router, prefix="/api/tasks", tags=["Tasks"])
 
+_import_mark("app.settings.router")
 from app.settings.router import router as settings_router  # noqa: E402
 
 app.include_router(settings_router, prefix="/api/settings", tags=["Settings"])
 
+_import_mark("app.interview.router")
 from app.interview.router import http_router as interview_http_router  # noqa: E402
 from app.interview.router import router as interview_router  # noqa: E402
 
 app.include_router(interview_router, prefix="/ws/interview", tags=["Interview WebSocket"])
 app.include_router(interview_http_router, tags=["Interview HTTP"])
 
-from app.api.routes import (  # noqa: E402
-    auth,
-    chatops,
-    crawlers,
-    frontend,
-    processor,
-    webhook,
-)
+# 匿名功能计数拉取端点（0.4.7）：桌面壳定时读取本进程计数，随匿名心跳批量出站。
+# 仅限 127.0.0.1 访问（局域网/远程一律 404）——计数不落盘不出机器，经壳并入心跳后才离开本机。
+@app.get("/api/v1/usage/local-counters", include_in_schema=False)
+async def usage_local_counters(request: Request):
+    client = request.client
+    if not client or client.host not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(status_code=404, detail="Not Found")
+    from app.core import usage_counters
+    return {"counters": usage_counters.snapshot()}
+
+
+# 分组 import 拆成逐模块：启动卡住时日志能精确到是哪个路由
+# （webhook → agent_router → db_nl_controller 是启动链上最重的一条）
+_import_mark("app.api.routes.auth")
+from app.api.routes import auth  # noqa: E402
+
+_import_mark("app.api.routes.chatops")
+from app.api.routes import chatops  # noqa: E402
+
+_import_mark("app.api.routes.crawlers")
+from app.api.routes import crawlers  # noqa: E402
+
+_import_mark("app.api.routes.frontend")
+from app.api.routes import frontend  # noqa: E402
+
+_import_mark("app.api.routes.processor")
+from app.api.routes import processor  # noqa: E402
+
+_import_mark("app.api.routes.webhook")
+from app.api.routes import webhook  # noqa: E402
 
 app.include_router(chatops.router, prefix="/api/chatops", tags=["ChatOps"])
 app.include_router(webhook.router, prefix="/api", tags=["feishu_webhook"])
@@ -418,30 +487,36 @@ app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(crawlers.router, prefix="/api/v1/crawlers", tags=["crawlers"])
 app.include_router(processor.router, prefix="/api/v1/processor", tags=["processor"])
 
+_import_mark("app.automation.router")
 from app.automation.router import router as automation_router  # noqa: E402
 
 app.include_router(automation_router, prefix="/api/automation", tags=["Automation Workflow"])
 
+_import_mark("app.pipeline.router")
 from app.pipeline.router import router as pipeline_router  # noqa: E402
 
 app.include_router(pipeline_router)
 
+_import_mark("app.api.routes.analytics")
 from app.api.routes.analytics import router as analytics_router  # noqa: E402
 
 app.include_router(analytics_router, prefix="/api/analytics", tags=["Analytics"])
 
 # ── 数据分析看板 V2 + 求职目标 ──
+_import_mark("app.api.routes.analytics_dashboard")
 from app.api.routes.analytics_dashboard import (  # noqa: E402
     router as analytics_v2_router,
 )
 
 app.include_router(analytics_v2_router, prefix="/api/v2/analytics", tags=["analytics-v2"])
 
+_import_mark("app.api.routes.goals")
 from app.api.routes.goals import router as goals_router  # noqa: E402
 
 app.include_router(goals_router, prefix="/api/v2/goals", tags=["goals"])
 
 # ── 动态 Skill 技能管理路由 ──
+_import_mark("app.api.routes.skills")
 from app.api.routes.skills import router as dynamic_skills_router  # noqa: E402
 
 app.include_router(dynamic_skills_router, prefix="/api", tags=["动态技能管理"])
@@ -558,6 +633,7 @@ async def list_feishu_chats():
         return {"code": 1, "msg": f"获取群聊列表失败: {str(e)}", "data": None}
 
 # 挂载简历编辑器路由
+_import_mark("app.api.resume_editor")
 from app.api.resume_editor import router as resume_editor_router  # noqa: E402
 
 app.include_router(resume_editor_router)

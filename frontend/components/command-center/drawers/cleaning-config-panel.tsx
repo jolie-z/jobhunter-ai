@@ -11,6 +11,14 @@ interface CleaningConfigPanelProps {
   onSaved: () => void
 }
 
+function formatApiError(data: any): string {
+  // pydantic 422 的 detail 是数组（CR-B2-R1-P2）：取首条 msg，避免 toast 显示 [object Object]
+  const d = data?.detail
+  if (Array.isArray(d)) return String(d[0]?.msg || d[0] || "配置校验失败")
+  if (d && typeof d === "object") return JSON.stringify(d)
+  return String(d || data?.message || "配置校验失败")
+}
+
 export function CleaningConfigPanel({ onSaved }: CleaningConfigPanelProps) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -38,30 +46,34 @@ export function CleaningConfigPanel({ onSaved }: CleaningConfigPanelProps) {
     setLoading(true)
     try {
       const res = await fetch(`${API_BASE}/api/strategy/active`)
-      if (res.ok) {
-        const data = await res.json()
-        if (data) {
-          // 只认精确哨兵值（999/99/0）为「不限」：用户真实设置的 100K 薪资上限、
-          // 20 年经验上限都是合法值，用 >= 100 之类的范围判断会在保存→读取→再保存
-          // 的往返中把合法值静默篡改回「不限」
-          setMinSalary(!data.min_salary_k || data.min_salary_k === 0 ? "" : data.min_salary_k)
-          setMaxSalary(
-            !data.max_salary_k || data.max_salary_k === 999 ? "" : data.max_salary_k
-          )
-          setMaxExp(
-            !data.experience_years_max || data.experience_years_max === 99
-              ? ""
-              : data.experience_years_max
-          )
-          setCities(Array.from(new Set(data.allowed_cities || [])))
-          setEducationRequire(Array.from(new Set(data.require_education || [])))
-          setEducationExclude(Array.from(new Set(data.exclude_education || [])))
-          setRawSafePhrases(Array.isArray(data.safe_phrases) ? data.safe_phrases : [])
-          setRawKeywordRules(Array.isArray(data.keyword_rules) ? data.keyword_rules : [])
-          setAiScoutRules(Array.isArray(data.ai_scout_rules) ? data.ai_scout_rules : [])
-          setScoutIsExample(Boolean(data.ai_scout_rules_is_example))
-          setExampleSnapshot(Array.isArray(data.ai_scout_rules) ? data.ai_scout_rules : [])
-        }
+      if (!res.ok) {
+        // 加载失败显式报错（审计 P2-21）：此前 5xx 错误 body 也是 truthy，薪资/学历被
+        // 重置为本地默认值，用户点保存即覆盖线上真实配置
+        toast.error(`加载清洗策略失败（HTTP ${res.status}），已保持当前面板值；请勿在此时保存`)
+        return
+      }
+      const data = await res.json()
+      if (data) {
+        // 只认精确哨兵值（999/99/0）为「不限」：用户真实设置的 100K 薪资上限、
+        // 20 年经验上限都是合法值，用 >= 100 之类的范围判断会在保存→读取→再保存
+        // 的往返中把合法值静默篡改回「不限」
+        setMinSalary(!data.min_salary_k || data.min_salary_k === 0 ? "" : data.min_salary_k)
+        setMaxSalary(
+          !data.max_salary_k || data.max_salary_k === 999 ? "" : data.max_salary_k
+        )
+        setMaxExp(
+          !data.experience_years_max || data.experience_years_max === 99
+            ? ""
+            : data.experience_years_max
+        )
+        setCities(Array.from(new Set(data.allowed_cities || [])))
+        setEducationRequire(Array.from(new Set(data.require_education || [])))
+        setEducationExclude(Array.from(new Set(data.exclude_education || [])))
+        setRawSafePhrases(Array.isArray(data.safe_phrases) ? data.safe_phrases : [])
+        setRawKeywordRules(Array.isArray(data.keyword_rules) ? data.keyword_rules : [])
+        setAiScoutRules(Array.isArray(data.ai_scout_rules) ? data.ai_scout_rules : [])
+        setScoutIsExample(Boolean(data.ai_scout_rules_is_example))
+        setExampleSnapshot(Array.isArray(data.ai_scout_rules) ? data.ai_scout_rules : [])
       }
     } catch {
       toast.error("加载求职策略配置失败，已使用本地默认值")
@@ -111,7 +123,7 @@ export function CleaningConfigPanel({ onSaved }: CleaningConfigPanelProps) {
         toast.success("清洗规则已成功保存并实时生效！")
         onSaved()
       } else {
-        const errorMsg = result.message || result.detail || "保存失败"
+        const errorMsg = formatApiError(result)  // pydantic 422 detail 数组取首条 msg（CR-B2-R2-P2）
         setSaveMsg(`保存失败: ${errorMsg}`)
         toast.error(`保存失败: ${errorMsg}`)
       }

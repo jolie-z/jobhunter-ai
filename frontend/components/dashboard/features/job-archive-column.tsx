@@ -8,6 +8,7 @@ import { splitTagString, formatDateMaybeTimestamp } from "@/lib/utils/text-forma
 import { getStatusBadgeColor } from "../job-detail-workspace"
 import { PlatformBadge } from "@/components/dashboard/platform-badge"
 import { normalizePlatform } from "@/lib/job-data"
+import { JobDescriptionView } from "./job-description-view"
 
 export function JobArchiveColumn({ job }: { job: JobData | null }) {
   if (!job) return null
@@ -141,9 +142,7 @@ export function JobArchiveColumn({ job }: { job: JobData | null }) {
           {/* Job description */}
           <section className="mt-6">
             <SectionLabel icon={<Briefcase className="h-3.5 w-3.5" />} title="岗位详情" />
-            <div className="rounded-xl border border-border bg-muted/50 p-4 text-sm leading-relaxed text-foreground/90 whitespace-pre-line">
-              {job.jobDescription || "暂无岗位详情"}
-            </div>
+            <JobDescriptionView text={job.jobDescription} />
           </section>
         </div>
       </ScrollArea>

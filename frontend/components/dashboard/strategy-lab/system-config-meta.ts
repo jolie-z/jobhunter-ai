@@ -20,6 +20,10 @@ export interface GroupMeta {
   note?: string
   tutorial?: Tutorial
   diagnose?: boolean  // 该分组支持「检测/测试连通性」（LLM 大模型 / 飞书）
+  /** 默认折叠：选填且不常用的分组首次进入时收起，用户按需展开 */
+  defaultCollapsed?: boolean
+  /** 组内必填字段优先展示，其余选填字段收进「更多选填配置」折叠区 */
+  splitOptionalFields?: boolean
 }
 
 export const GROUP_META: Record<string, GroupMeta> = {
@@ -33,7 +37,7 @@ export const GROUP_META: Record<string, GroupMeta> = {
         { title: "获取 API Key", desc: "前往模型服务商控制台创建密钥。例如，\n小米 Mimo：platform.xiaomimimo.com\nOpenAI：platform.openai.com/api-keys\nDeepSeek：platform.deepseek.com\nQwen：bailian.console.aliyun.com\nKimi：platform.moonshot.cn/console/api-keys" },
         { title: "填写 Base URL", desc: "填入对应的 OpenAI 兼容端点，通常以 /v1 结尾。例如，\n小米 Mimo：https://api.xiaomimimo.com/v1\nOpenAI：https://api.openai.com/v1\nDeepSeek：https://api.deepseek.com/v1\nQwen：https://dashscope.aliyuncs.com/compatible-mode/v1\nKimi：https://api.moonshot.cn/v1" },
         { title: "填写推理模型", desc: "填入主力对话模型名，如 mimo-v2.5-pro、gpt-4o、deepseek-chat。岗位评估、简历改写、飞书聊天助理等都走这个模型。" },
-        { title: "填写视觉模型", desc: "填入支持图片输入的模型名，如 mimo-v2.5、gpt-4o。用于简历图片解析等场景。" },
+        { title: "视觉能力（选填）", desc: "截图识别 / 图文清洗需要视觉模型。请到下方「视觉通道」分组填写视觉模型；只要主通道支持图片输入，Key 与 Base URL 留空即可复用。" },
       ],
       tip: "推理模型与视觉模型可以是同一家服务商的不同模型，也可以混搭不同服务商（只要各自的 Key 与 Base URL 对应）。保存后即时生效，无需重启。",
     },
@@ -41,17 +45,31 @@ export const GROUP_META: Record<string, GroupMeta> = {
 
   "视觉通道 (可选)": {
     required: false,
-    note: "独立视觉（图片识别）通道。主 LLM 网关不支持图片输入时，把这里指向支持视觉模型的供应商即可；不填则默认复用「LLM 大模型」的 Key 与 Base URL。",
+    defaultCollapsed: true,
+    note: "独立视觉（图片识别）通道。视觉模型是截图识别、图文清洗、飞书发图录入岗位的硬前提；Key 与 Base URL 留空则复用「LLM 大模型」通道，主网关不支持图片输入时再单独指向支持视觉的供应商。",
+    tutorial: {
+      title: "视觉通道配置教程",
+      intro: "极速录入截图识别、小红书图文清洗、飞书群里发图录入岗位都依赖视觉模型。主 LLM 通道支持图片输入时，只填视觉模型即可；不支持时再单独配置 Key 与 Base URL。",
+      steps: [
+        { title: "填写视觉模型", desc: "填入支持图片输入的模型名，如 gpt-4o、mimo-v2.5、qwen-vl-max、glm-4v。用于简历图片解析、截图识别等场景。" },
+        { title: "复用主通道（默认）", desc: "API Key 与 Base URL 留空时，系统自动复用「LLM 大模型」的 Key 与 Base URL。大多数 OpenAI 兼容网关都适用。" },
+        { title: "单独配置通道（可选）", desc: "主 LLM 网关不支持图片输入时，把「视觉通道」的 Key 与 Base URL 指向支持视觉模型的供应商即可。" },
+        { title: "验证视觉链路", desc: "保存后点击「LLM 大模型」分组右上角的「测试连通性」，系统会发一张测试图验证视觉模型是否可正常读图。" },
+      ],
+      tip: "视觉模型与推理模型可以是同一家服务商的不同模型，也可以混搭；视觉通道的 Key/Base URL 只影响视觉请求，不影响主推理链路。",
+    },
   },
 
   "数据清洗 LLM": {
     required: false,
+    defaultCollapsed: true,
     note: "如不填写默认走「LLM 大模型」。用于爬虫数据清洗，可单独配置更便宜的模型以节省主力模型额度。也可在 .env 设 USE_MAIN_LLM_FOR_CLEANER=true 强制走主通道。",
   },
 
   "飞书": {
     required: true,
     diagnose: true,
+    splitOptionalFields: true,
     tutorial: {
       title: "飞书密钥与数据表配置教程",
       intro: "飞书多维表格（Bitable）是系统的数据中枢，岗位、简历、策略、偏好都存在这里。需要先创建一个飞书应用拿到凭证，再拿到各张表的 ID。新手点下方「打开完整图文教程」，从零到 ping 通约 10–15 分钟（含逐字段字典与排错 FAQ）。",
@@ -63,7 +81,7 @@ export const GROUP_META: Record<string, GroupMeta> = {
         { title: "把应用加为协作者", desc: "打开你的多维表格文档 → 右上角「分享」→ 把刚创建的应用添加为协作者并给可编辑权限，否则应用无法读写。" },
         { title: "拿 App Token", desc: "打开多维表格文档，浏览器地址栏中 /base/ 后面那串字符就是 App Token（如 CFkBYourAppTokenPlaceholder）。" },
         { title: "拿各数据表 ID", desc: "在多维表格里切换到对应的表（岗位/策略/简历等），地址栏 table= 后面的就是该表 Table ID（如 tblyYourTableIdPlaceholder），逐张复制填入。" },
-        { title: "检测连通性", desc: "填写完成后点击「飞书」分组的「检测连通性」按钮，系统会逐项验证凭证、文档、数据表、群机器人与长连接，并给出每项的修复指引。" },
+        { title: "检测连通性", desc: "填写完成后前往「飞书集成中心」点击「检测连通性」，系统会逐项验证凭证、文档、数据表、群机器人与长连接，并给出每项的修复指引。" },
       ],
       tip: "App Token 是整个文档的标识，所有表共用；Table ID 是每张表各自的标识，需要分别获取。保存后即时生效（飞书长连接会自动用新凭证重连）。",
     },
@@ -71,22 +89,24 @@ export const GROUP_META: Record<string, GroupMeta> = {
 
   "搜索/情报": {
     required: false,
-    note: "用于公司岗位的外部情报联网搜索（AI 初评背调、面试 Copilot 靶向刷新、面试前自动调研公司动态）。Serper 为主引擎，Tavily 为降级备用：Serper 未配置或请求失败时自动切换 Tavily；两个都不填则跳过情报增强，不影响主流程。",
+    note: "用于公司岗位的外部情报联网搜索（AI 初评背调、面试 Copilot 靶向刷新、面试前自动调研公司动态）。博查国内直连，注册后需在控制台领取 1000 次免费资源包（未领取或额度用尽时接口返回 403 quota），推荐优先配置；Serper / Tavily 需要境外网络，作为可选备用。三者都不可用时跳过情报增强，不影响主流程。",
     tutorial: {
-      title: "公司情报引擎配置教程（Serper 主 + Tavily 备）",
-      intro: "Serper 是 Google 搜索的官方管道，系统用它 4 路并发侦察公司情报（核心业务 / 竞品地位 / AI 技术布局 / 近一个月融资裁员财报新闻）并让 LLM 汇总成简报。Tavily 是为 LLM 设计的网页抓取管道，无时间过滤、易混入工商信息类档案页噪声，仅在 Serper 不可用时降级使用。",
+      title: "公司情报引擎配置教程（博查国内直连 / Serper / Tavily）",
+      intro: "博查是国内可直接访问的 AI 搜索 API，注册后可领取 1000 次免费调用，无需 VPN。系统用它 4 路并发侦察公司情报（核心业务 / 竞品地位 / AI 技术布局 / 近一个月融资裁员财报新闻）并让 LLM 汇总成简报。Serper 与 Tavily 需要境外网络，仅在博查未配置或不可用时兜底。",
       steps: [
-        { title: "注册 Serper（主引擎，必配）", desc: "前往 serper.dev 注册，免费赠送 2500 次查询额度。" },
-        { title: "复制 API Key", desc: "登录后进入 Dashboard → API Key 页面，点击复制。" },
-        { title: "填入配置", desc: "把 Key 粘贴到「Serper API Key（主引擎）」输入框并保存，初评背调与面试情报即刻生效。" },
-        { title: "配置 Tavily（可选，降级备用）", desc: "前往 tavily.com 注册（每月约 1000 次免费额度，Key 以 tvly- 开头），填入「Tavily API Key（降级备用）」。未配置时 Serper 故障将直接跳过情报增强。" },
+        { title: "注册博查开放平台（推荐）", desc: "前往 open.bochaai.com 注册，然后在控制台领取 1000 次免费资源包。注意：只创建 Key 不领取资源包时，调用会返回 403 quota（额度不足）。" },
+        { title: "创建 API Key", desc: "登录博查控制台 → API Key 页面创建并复制密钥（sk- 开头）。" },
+        { title: "填入配置", desc: "把 Key 粘贴到「博查 API Key（国内直连，推荐）」输入框并保存，初评背调与面试情报即刻生效。" },
+        { title: "配置 Serper（可选，境外网络）", desc: "前往 serper.dev 注册，免费赠送 2500 次查询额度，但国内直连通常需要 VPN。填入「Serper API Key」后作为第二优先级。" },
+        { title: "配置 Tavily（可选，境外网络兜底）", desc: "前往 tavily.com 注册（每月约 1000 次免费额度，Key 以 tvly- 开头），需要境外网络。填入后作为最后兜底。" },
       ],
-      tip: "两者怎么选：要查公司近期动态（新闻、融资、业务）用 Serper——Google 排序 + 时间窗 + 干净摘要；Tavily 适合整页内容抽取（RAG 场景），作为兜底保底可用。",
+      tip: "优先级：博查 → Serper → Tavily。国内网络环境只配博查即可；已有 Serper/Tavily 的继续保留，配置博查后会自动优先使用博查。博查按次计费约 0.036 元/次，免费额度用完后可自行充值。",
     },
   },
 
   "语音识别 (火山引擎)": {
     required: false,
+    defaultCollapsed: true,
     note: "用于所有语音按钮下的语音流式输入（边说边转文字）。不填则默认调用网页自带的语音输入。保存后需重启后端生效。",
     tutorial: {
       title: "火山引擎语音识别配置教程",
@@ -103,6 +123,7 @@ export const GROUP_META: Record<string, GroupMeta> = {
 
   "地图 (高德)": {
     required: false,
+    defaultCollapsed: true,
     note: "用于面试卡片提醒的路线规划（地理编码面试地址）。不填则面试卡片不显示地图路线。",
     tutorial: {
       title: "高德地图 API 配置教程",
@@ -126,7 +147,7 @@ export interface ChatOpsChecklistItem {
   label: string
   detail: string
   configKey?: string  // 对应后端配置字段，用于自动检测是否已填写
-  autoKey?: string    // 对应诊断接口 checks[].key：credentials / chats / ws，检测后自动点亮
+  autoKey?: string    // 对应诊断接口 checks[].key：credentials / chats / ws / write_resumes / write_jobs，检测后自动点亮
 }
 
 export const FEISHU_CHATOPS_CHECKLIST: ChatOpsChecklistItem[] = [
@@ -136,6 +157,8 @@ export const FEISHU_CHATOPS_CHECKLIST: ChatOpsChecklistItem[] = [
   { label: "添加消息事件", detail: "事件配置 → 添加事件 → im.message.receive_v1（接收消息）" },
   { label: "开通 IM 权限", detail: "权限管理 → 搜索 im:message → 开通读写权限 → 创建版本并发布", autoKey: "chats" },
   { label: "把机器人拉入群聊", detail: "打开目标飞书群 → 设置 → 群机器人 → 添加你的应用", autoKey: "chats" },
+  { label: "简历表可写（保存简历依赖）", detail: "文档协作者须为「可编辑」；检测时系统会写入并删除一条探针记录验证", autoKey: "write_resumes" },
+  { label: "岗位表可写（状态回写依赖）", detail: "同上；投递结果/跟进状态自动回写岗位总表，协作者只给「可阅读」会导致全绿但回写 403", autoKey: "write_jobs" },
   { label: "后端服务运行中", detail: "uvicorn app.main:app --port 8000（启动后自动建立 WebSocket 长连接）", autoKey: "ws" },
 ]
 

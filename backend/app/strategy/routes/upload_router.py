@@ -277,6 +277,18 @@ async def upload_avatar(record_id: Annotated[str, Form(...)], file: Annotated[Up
             resp = await client.put(url, headers=headers, json=payload, timeout=15)
             data = resp.json()
             if resp.status_code == 200 and data.get("code") == 0:
+                # 照片变了，「照片」字段是渲染的单一可信源；结构化数据/缓存里烘焙的
+                # 旧 avatar_url 必须全部失效，否则物料永远渲染第一张。
+                # clean_id 归一与 render_router.get_resume_data 的 cache_key 同口径
+                # （extract_record_id("recXXX") 原样透传，带前缀复合 ID 时剥前缀）
+                try:
+                    from app.services.feishu_service import extract_record_id
+                    from app.services.redis_service import redis_service
+
+                    clean_id = extract_record_id(record_id)
+                    await redis_service.delete(f"cache:resume_ast:resume:{clean_id}")
+                except Exception as cache_err:
+                    logger.warning(f"[upload_avatar] 清理简历 AST 缓存失败（非致命）: {cache_err}")
                 return {"status": "success", "file_token": file_token}
             raise ValueError(f"更新多维表格失败: {data.get('msg')}")
 

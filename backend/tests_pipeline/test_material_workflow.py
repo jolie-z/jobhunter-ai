@@ -13,6 +13,7 @@ async def test_rewrite_node_official_skill_auto_renders_custom_pdf():
         "jd_text": "负责 AI 智能体产品设计",
         "resume_text": "# 个人总结\n熟悉 Python 与 AI 产品",
         "diagnosis_dict": {"grade": "A", "score": 92},
+        "deep_diagnosis": {"dream_picture": "AI 产品负责人画像", "strong_fit_assessment": "主导过 AI 产品落地"},
         "feishu_fields": {"PDF备份": [{"file_token": "old_generic_token"}]},
     }
 
@@ -65,6 +66,7 @@ async def test_rewrite_node_custom_skill_clears_materials_for_safety():
         "jd_text": "负责系统架构",
         "resume_text": "# 原简历",
         "diagnosis_dict": {"grade": "B", "score": 85},
+        "deep_diagnosis": {"dream_picture": "架构师画像", "strong_fit_assessment": "高并发架构经验"},
         "feishu_fields": {"PDF备份": [{"file_token": "old_generic_token"}]},
     }
 

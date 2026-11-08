@@ -362,6 +362,14 @@ export function useGlobalTaskStream({
           ) {
             flushPendingSseMsgs()
             finishStream()
+            // task_expired 分诊（2026-11-05 重连风暴根治）：任务在服务端已不存在
+            // （后端重启/登记延迟清理），不能走 finalizeTaskStream 的完成语义——
+            // 岗位标记 interrupted 并终止流，与 onerror 的「探活判中断」同口径
+            if (parsedData.reason === "task_expired") {
+              console.warn(`🪦 [SSE] 任务 ${taskId} 已在服务端过期，标记中断并停止重连`)
+              markTaskInterrupted(jobIds)
+              return
+            }
             finalizeTaskStream(taskId, jobIds)
             return
           }

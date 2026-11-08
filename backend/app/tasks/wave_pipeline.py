@@ -21,9 +21,11 @@ from ai_agents.ai_scorer import deep_evaluate_resume, warmup_deep_eval_cache
 from ai_agents.engine_facade import process_greeting_generation, process_resume_rewrite
 from ai_agents.markdown_to_json import convert_and_stitch_resume
 from ai_agents.skill_rewrite import warmup_rewrite_cache
-from app.core.feishu_utils import grade_meets_threshold
+from app.automation.services.reject_sync_service import sync_eval_reject_to_raw
+from app.core.feishu_utils import extract_feishu_text, grade_meets_threshold
+from app.core.utils import build_rewrite_failure_reason, is_valid_greeting
+from app.services.delivery_ledger import STEP_RESUME_GREETING, record_delivery_failure
 from app.services.feishu_service import (
-    extract_feishu_text,
     extract_record_id,
     get_job_record_from_feishu,
     update_feishu_record,
@@ -44,6 +46,12 @@ FIELD_HIGH_LEV = "高杠杆匹配点"
 FIELD_RED_FLAGS = "致命硬伤与毒点"
 FIELD_ACTION_PLAN = "破局行动计划"
 STATUS_MANUAL_REVIEW = "简历人工复核"
+
+
+def _resume_output_ok(md: str | None) -> bool:
+    """改写结果有效性闸门：空串与 ❌ 前缀错误串（skill_rewrite 检出截断/空输出时的
+    失败返回，非空真值）都视为失败。与 app/automation/workflow.py 同款判断。"""
+    return bool(md) and not md.lstrip().startswith("❌")
 
 
 async def send_sse_msg(queue: asyncio.Queue, msg_type: str, message: str, **kwargs):
@@ -226,6 +234,23 @@ async def run_wave_evaluation_pipeline(
         it, grade, score = r["item"], r["grade"], r["ai_score"]
         status_name = "清洗淘汰" if grade == "F" else "已完成初步评估"
         success_count += 1
+        # 初评淘汰回写 raw 生命周期（2026-11-02 审计 P1-6）：wave 链只写飞书不回写
+        # raw，回收站「确认淘汰」的 REJECTED_STATUSES 归档 guard 撞上'已同步'必然
+        # 409。匹配键=岗位链接字段中的网页 URL（extract_feishu_text 对 url 型字段
+        # 提取 link），与 raw_jobs.job_link 同款。仅 F 档触发（五档契约下 E 不会产出，
+        # 且 F 的跟进状态口径=清洗淘汰，与 REJECT_AI 语义一致）；幂等；回写失败仅
+        # 告警不阻断归档主链（归档体验增强，非数据正确性依赖）
+        if grade == "F":
+            try:
+                _job_link = extract_feishu_text(it.get("fields", {}).get("岗位链接", "")).strip()
+                if _job_link:
+                    _synced = await asyncio.to_thread(
+                        sync_eval_reject_to_raw, _job_link, f"初评F级淘汰({score}分)"
+                    )
+                    if not _synced:
+                        logger.info("ℹ️ [Wave 1] 岗位 %s raw 回写跳过（无匹配行或已属淘汰终态）", it["job_id"])
+            except Exception as _sync_e:
+                logger.warning("⚠️ [Wave 1] 岗位 %s raw 回写失败（不影响归档）: %s", it["job_id"], _sync_e)
         await send_sse_msg(queue, "success", f"✓ {it['job_id']} 初评就地归档 ({score}分/{grade}级，未达自动深评门槛，止步初评)", job_id=it["job_id"], job_updates={"followStatus": status_name, "aiScore": score, "grade": grade})
 
     await send_sse_msg(queue, "info", f"🚪 【漏斗门禁】初评完毕！🎯 筛选出 {len(high_tier_jobs)} 个优质岗进入深度定制轨道，⏹️ {len(low_tier_jobs)} 个普通岗已就地归档（0 算力浪费）。")
@@ -371,13 +396,56 @@ async def run_wave_evaluation_pipeline(
             logger.info("✍️ [Wave 3] 正在生成简历与破冰语: %s - %s (%s)", company, job_title, jid)
             await send_sse_msg(queue, "progress", "💬 [4/4] 正在并发重塑定制简历与高情商打招呼语...", job_id=jid, record_id=rid, sub_stage=4, total_stages=4, stage_title="定制改写中")
             start_t = time.time()
+
+            # on_event 桥接（worker 线程 → SSE 队列）：facade 层的截断自动重试事件
+            # 透传给前端，保持「自动重试」可见性（同 Wave 1 _pcb 的线程安全桥接模式）
+            loop = asyncio.get_running_loop()
+
+            def _rewrite_event_bridge(event_type: str, payload: dict) -> None:
+                if event_type != "rewrite_retry":
+                    return
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        send_sse_msg(
+                            queue, "info",
+                            f"  ⚠️ [{company} - {job_title}] {payload.get('message', '')}",
+                            job_id=jid,
+                        ),
+                        loop,
+                    )
+                except Exception:
+                    pass
+
             (md_resume, rewrite_usage), (greeting, greeting_usage) = await asyncio.gather(
-                asyncio.to_thread(process_resume_rewrite, full_jd, deep_res, job_title, "skill", resume_text),
+                asyncio.to_thread(
+                    process_resume_rewrite, full_jd, deep_res, job_title, "skill", resume_text,
+                    on_event=_rewrite_event_bridge,
+                ),
                 asyncio.to_thread(process_greeting_generation, full_jd, deep_res, resume_text, job_title),
             )
+
+            # ❌ 错误串闸门（2026-11-01 线上输出截断复盘）：截断自动重试已统一收敛在
+            # engine_facade（全链路唯一重试点）；走到这里仍是 ❌/空 = 重试耗尽，
+            # 残缺内容绝不写回飞书标「简历人工复核」，按岗位失败显式抛出。
+            # 打招呼语与简历同等闸门强度（2026-11-02 审计 P1-2）：is_valid_greeting
+            # 拦截空值与 ❌ 错误文本，失败登记当日台账（执行失败 Tab 可见可重试）
             cost_s = time.time() - start_t
-            if not md_resume or not greeting:
-                raise RuntimeError("AI 改写简历或打招呼语返回为空")
+            greeting_ok = is_valid_greeting(greeting)
+            _resume_ok = _resume_output_ok(md_resume)
+            if not _resume_ok or not greeting_ok:
+                reason = build_rewrite_failure_reason(md_resume, greeting, _resume_ok, greeting_ok)
+                try:
+                    record_delivery_failure(
+                        jid,
+                        error=f"AI 改写简历失败: {reason}"[:200],
+                        step=STEP_RESUME_GREETING,
+                        company=company, job_name=job_title,
+                        platform=item_ctx["item"].get("platform", ""),
+                        grade=str(item_ctx.get("grade") or ""),
+                    )
+                except Exception as _ledger_e:
+                    logger.warning("⚠️ [Wave 3] 岗位 %s 失败台账登记异常（不影响失败判定）: %s", jid, _ledger_e)
+                raise RuntimeError(f"AI 改写简历失败: {reason}")
 
             fields_to_update = {
                 "打招呼语": greeting, "AI改写JSON": convert_and_stitch_resume(md_resume),

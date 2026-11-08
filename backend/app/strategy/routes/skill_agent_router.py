@@ -127,6 +127,8 @@ async def skill_rewrite_preflight_api(payload: SkillRewriteAndSaveRequest):
 @router.post("/skill_rewrite_and_save")
 async def skill_rewrite_and_save_api(payload: SkillRewriteAndSaveRequest):
     """正式版 Skill 简历改写（解析 + 对账 + 归档 + 写回完全共用流水线）。"""
+    from app.core import usage_counters
+    usage_counters.bump("strategy_rewrite")
     try:
         outcome = await run_skill_rewrite_pipeline(payload)
         return {

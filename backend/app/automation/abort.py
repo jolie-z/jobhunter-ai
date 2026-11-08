@@ -8,7 +8,7 @@
 import threading
 
 _lock = threading.Lock()
-_state = {"aborted": False, "pipeline_task_id": ""}
+_state = {"aborted": False, "pipeline_task_id": "", "aborted_at": 0.0}
 # 平台级终止登记：flag 只负责当轮急刹，这里负责拦截后续轮次
 # （各 controller 入口会 set_stop_flag(False) 重置 flag，登记不会被重置）
 _platform_aborted: set = set()
@@ -16,22 +16,49 @@ _platform_aborted: set = set()
 KNOWN_PLATFORMS = ("boss", "51job", "zhilian", "liepin", "xiaohongshu")
 
 
+class PipelineAbortedError(RuntimeError):
+    """终止检查点异常（2026-11-05 僵尸链路事故）。
+
+    preflight/编排片段间的终止检查点命中后抛出，与「窗口耗尽按跳过处理」的温和
+    语义不同：整轮已被用户终止，片段结果无意义，必须快速向上传播让编排器按
+    「手动终止」语义收口（_execute_pipeline 单列 except，不发失败告警）。
+    放在 abort 模块：异常与旗子同源（架构归属），编排器/预检统一从此导入。
+    """
+    pass
+
+
 def begin_pipeline(pipeline_task_id: str) -> None:
     """链路启动时调用：清掉上一轮的全局与平台级终止标记并登记当前任务。"""
     with _lock:
         _state["aborted"] = False
         _state["pipeline_task_id"] = pipeline_task_id
+        _state["aborted_at"] = 0.0
         _platform_aborted.clear()
 
 
 def request_abort(pipeline_task_id: str = "") -> bool:
     """请求终止。传入 task_id 时仅当与当前运行任务一致才生效。返回是否生效。"""
+    import time
+
     with _lock:
         if pipeline_task_id and _state["pipeline_task_id"] and \
                 pipeline_task_id != _state["pipeline_task_id"]:
             return False
-        _state["aborted"] = True
+        if not _state["aborted"]:
+            _state["aborted"] = True
+            _state["aborted_at"] = time.monotonic()
         return True
+
+
+def aborted_at() -> float:
+    """终止旗子置位时刻（monotonic 秒；未终止返回 0.0）。
+
+    供编排器终止看门狗计时：优雅终止预期秒级~分钟级收口，超时未收口即视为
+    协程挂死，触发强制收尾（2026-11-05 僵尸链路事故：preflight CDP 探测无超时
+    挂死 → 终止旗子无人检查 → automation_logs 永久 running、占坑不释放）。
+    """
+    with _lock:
+        return _state["aborted_at"]
 
 
 def is_aborted() -> bool:
@@ -74,10 +101,15 @@ def end_pipeline() -> None:
     with _lock:
         _state["pipeline_task_id"] = ""
         _state["aborted"] = False
+        _state["aborted_at"] = 0.0
         # code-review R2-P2：平台终止登记与单岗取消标记同为「一次性」语义，链路收尾一并清——
         # 「先单岗取消、后全局终止」时投递节点的全局分支会提前 return 跳过 clear，若不在此
         # 兜底，陈旧单岗标记会残留到下一轮，造成同岗位首次投递被误拦一次。
         _platform_aborted.clear()
+        # 单岗取消标记维持链路收尾全局清空（2026-11-02 审计 P2-25 评估后保守保留）：
+        # 更精细的按任务归属清理涉及投递主链语义，列第四批。已知取舍：若用户恰在
+        # 链路收尾瞬间对批量投递 worker 中的岗位下终止，该标记会被本次清空抹掉
+        # （窗口极小）；残留风险由消费侧每岗 clear 兜底。
         _cancelled_job_deliveries.clear()
 
 

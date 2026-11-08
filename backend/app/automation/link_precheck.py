@@ -97,31 +97,39 @@ def check_zhilian_link_sync(job_url: str):
 
 
 async def precheck_boss_link(job_url: str):
-    """异步入口：True=活链 / False=确定死链 / None=无法判定（保留岗位，不误杀）。设置 6s 熔断保护。"""
+    """异步入口：True=活链 / False=确定死链 / None=无法判定（保留岗位，不误杀）。
+
+    外审 round2-P1 双重修正：
+    1. 非阻塞预探（wait_timeout_s=0）：引擎在飞立即返回 None，绝不逐条干等 90s
+       （批级预探只覆盖入口时刻，批中引擎占用的 TOCTOU 由本层 0 等待兜住，N×90s 从
+       机制上不可能发生）；
+    2. 无 wait_for 熔断（round2-P1-3）：aux 位持有到同步检测线程自然结束——线程
+       残留窗口（DrissionPage page_load=30s 级）与 aux 释放完全同步，引擎闸门在
+       线程结束前无法进入，导航共享标签页的窗口从机制上关闭。最坏延迟 ≈38s/条，
+       由批级预探与逐条 0 等待保证不会叠加。
+    """
     if not job_url:
         return False
-    try:
-        return await asyncio.wait_for(asyncio.to_thread(check_boss_link_sync, job_url), timeout=6.0)
-    except asyncio.TimeoutError:
-        logger.warning(f"[链接预检] 超时熔断（6s未响应，无法判定，保留岗位）: {job_url}")
-        return None
-    except Exception as e:
-        logger.warning(f"[链接预检] 异常（无法判定，保留岗位）: {e}")
-        return None
+    import hashlib
+
+    from app.automation import platform_mutex
+    owner = f"link_precheck:{hashlib.md5(job_url.encode()).hexdigest()[:12]}"
+    # run_with_aux（round4-P1-1'' 终版）：aux 释放挂线程 done-callback——线程活着
+    # aux 必在，引擎闸门在线程结束前无法进入；协程取消不放锁。R9 撞页窗三路径全关。
+    return await platform_mutex.run_with_aux(check_boss_link_sync, "boss", owner, job_url,
+                                             _wait_timeout_s=0)
 
 
 async def precheck_zhilian_link(job_url: str):
-    """智联异步入口：契约同 precheck_boss_link（True/False/None，熔断保护）。"""
+    """智联异步入口：契约同 precheck_boss_link（非阻塞预探 + aux 持有到线程结束）。"""
     if not job_url:
         return False
-    try:
-        return await asyncio.wait_for(asyncio.to_thread(check_zhilian_link_sync, job_url), timeout=15.0)
-    except asyncio.TimeoutError:
-        logger.warning(f"[链接预检] 智联超时熔断（15s未响应，无法判定，保留岗位）: {job_url}")
-        return None
-    except Exception as e:
-        logger.warning(f"[链接预检] 智联异常（无法判定，保留岗位）: {e}")
-        return None
+    import hashlib
+
+    from app.automation import platform_mutex
+    owner = f"link_precheck:{hashlib.md5(job_url.encode()).hexdigest()[:12]}"
+    return await platform_mutex.run_with_aux(check_zhilian_link_sync, "zhilian", owner, job_url,
+                                             _wait_timeout_s=0)
 
 
 async def build_checked_batch(new_jobs: list[dict[str, Any]], batch_limit: int, pipeline_task_id: str) -> list[dict[str, Any]]:
@@ -130,13 +138,32 @@ async def build_checked_batch(new_jobs: list[dict[str, Any]], batch_limit: int, 
     - 死链（确定无沟通入口）：剔除，并把飞书记录标记为「已下架」
     - 无法判定（浏览器异常等）：保留岗位，不误杀
     - 预检有预算上限（2×batch_limit），超预算后不再预检直接递补，避免链路长时间挂起
+    - 引擎在飞批级预探（外审 round1-P1 修正）：预检逐条经 auxiliary_gate 与引擎互斥，
+      投递在飞时逐条各等 90s 会把评估批次拖长 N×90s——故批首先探测一次，引擎忙则
+      整批跳过预检（全部按无法判定保留，与逐条拒绝同语义），不逐条干等。
     """
     from app.automation import pipeline_broadcast as pb
+    from app.automation import platform_mutex
     from app.services.feishu_service import update_feishu_record
 
     new_jobs.sort(key=lambda j: j.get("_created_time", 0), reverse=True)
     if batch_limit <= 0:
         return new_jobs
+
+    # 批级预探（round2-P2 按平台分别判定）：boss/zhilian 各自独立——boss 的存活检测
+    # 在飞只跳过 boss 预检，zhilian 岗位照常预检，不扩大未预检范围
+    involved_platforms = {j.get("platform", "") for j in new_jobs[: max(batch_limit * 2, 10)]}
+    skip_platforms = set()
+    for plat in involved_platforms:
+        key = "boss" if is_boss_platform(plat) else ("zhilian" if is_zhilian_platform(plat) else None)
+        if key and (platform_mutex.is_scrape_busy(key) or platform_mutex.is_delivery_busy(key)
+                    or platform_mutex.is_aux_busy(key)):
+            skip_platforms.add(key)
+    if skip_platforms:
+        names = "、".join("BOSS直聘" if p == "boss" else "智联招聘" for p in sorted(skip_platforms))
+        await pb.emit_log(
+            pipeline_task_id,
+            f"⏭️ {names} 抓取/投递/存活检测进行中，本轮跳过其链接预检（岗位全部保留，引擎空闲后自动补检）")
 
     max_checks = max(batch_limit * 2, 10)
     selected: list[dict[str, Any]] = []
@@ -148,7 +175,11 @@ async def build_checked_batch(new_jobs: list[dict[str, Any]], batch_limit: int, 
         if (is_boss_platform(platform_name) or is_zhilian_platform(platform_name)) and checked < max_checks:
             checked += 1
             url = extract_job_url(job.get("feishu_fields", {}))
-            if is_boss_platform(platform_name):
+            skip_key = "boss" if is_boss_platform(platform_name) else (
+                "zhilian" if is_zhilian_platform(platform_name) else None)
+            if skip_key in skip_platforms:
+                alive = None  # 批级预探判定该平台引擎在飞：直接保留，不进闸门
+            elif is_boss_platform(platform_name):
                 alive = await precheck_boss_link(url)
             else:
                 alive = await precheck_zhilian_link(url)

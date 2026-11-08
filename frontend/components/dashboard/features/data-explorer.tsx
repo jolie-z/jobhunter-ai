@@ -464,7 +464,7 @@ export function DataExplorer({ onTaskStarted }: DataExplorerProps) {
         open={xhsGate !== null}
         onClose={clearXhsGate}
         title="小红书图文清洗暂不可用"
-        description="多模态清洗需要「视觉模型」识别笔记截图，当前还未配置。前往 配置大盘 → 系统底层配置 → LLM 大模型，填写「视觉模型」后即可使用。"
+        description="多模态清洗需要「视觉模型」识别笔记截图，当前还未配置。前往 配置大盘 → 系统底层配置 → 视觉通道，填写「视觉模型」后即可使用。"
         missing={xhsGate ?? ["VISION_MODEL"]}
         onGoConfigure={() => router.push("/strategy?section=system")}
       />

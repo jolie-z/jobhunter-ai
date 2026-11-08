@@ -45,10 +45,12 @@ def test_serper_cache_load_save(tmp_path):
     assert hit_expired is None
 
 
-def test_search_company_ai_news_hits_cache(tmp_path):
+def test_search_company_ai_news_hits_cache(tmp_path, monkeypatch):
     """验证 search_company_ai_news 在命中缓存时不发起任何网络请求"""
     cache_file = tmp_path / "test_serper_cache.json"
     ci._SERPER_CACHE_PATH = cache_file
+    # 显式给 Key：测试不依赖本机 .env 是否配置 Serper（否则干净环境必失败）
+    monkeypatch.setattr(ci, "get_serper_api_key", lambda: "sk-serper-test")
     ci._serper_cache = {
         "广州图灵科技有限公司": {
             "ts": time.time(),

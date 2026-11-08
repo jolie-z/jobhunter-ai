@@ -38,6 +38,14 @@ backend/scratch_parse_*.py
 backend/boss_*.html
 backend/boss_api_response.json
 /scratch/
+# 一次性调试脚本 / 抓取现场 dump / 临时素材（本地保留，不入库）
+debug_*.py
+scratch_*
+dump_*.py
+*_page_dump.html
+backend/zhilian_scraper/*.html
+# 品牌素材忽略规则统一放 .git/info/exclude 本地忽略（本文件随仓公开）
+/sqlite_*_map.html
 
 # ===========================
 # Node / Frontend
@@ -56,7 +64,6 @@ landing/node_modules/
 .idea/
 .vscode/
 .zcode/
-.workbuddy/
 *.swp
 *.swo
 *~
@@ -130,6 +137,8 @@ backend/temp_print_data/
 *.docx
 *.png
 !docs/images/**
+# 物料模板选择卡的真实渲染示例图（脱敏虚构数据，frontend/public 随前端构建进包）
+!frontend/public/template-*.png
 preview_readme.html
 
 # runtime logs
@@ -197,10 +206,8 @@ docs/transcript_full.jsonl
 # ===========================
 # 归档隔离区（2026-09-23）
 # ===========================
-# new_jobhunter_boss 为已归档的独立副项目（BOSS直聘爬虫单机版，2026-08-05 抽取），
 # 现整仓移入 ../_archive/ 本地保留，永不入库、永不推送（含公开仓）。
 _archive/
-new_jobhunter_boss/
 
 # 桌面壳打包资源（图标）需入库
 !desktop/build/
@@ -226,3 +233,14 @@ telemetry/data/policy.json
 skill-rewrite-architecture.html
 # 本地演示动图（体积大，不入库）
 docs/demo-optimized.gif
+zhilian_failure_shots/
+
+# 存活检测运行时产物（含真实投递岗位记录，仅本地；2026-11-08 曾随同步漏入公开仓）
+scripts/.liveness_checked_rowids.txt
+scripts/.liveness_verdicts.jsonl
+
+# —— 发布卫生终审（2026-11-08 round16）运行时残留：本地保留、永不入库 ——
+backend/raw_output.txt
+backend/usage_output.json
+backend/job_processor/rule_config_backup.json
+backend/app/ai_agents/skills/custom_skill/

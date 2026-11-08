@@ -112,6 +112,9 @@ def test_split_statements_keeps_trigger_body_intact():
 
 def test_resolve_main_db_path_analytics_override_wins(tmp_path, monkeypatch):
     # ANALYTICS_DB_PATH 是显式覆盖：文件不存在也采纳（QA 隔离栈先指路径后建库）
+    # 2026-11-06：root conftest 的测试库阀门（JOBHUNTER_DB_PATH/JOBHUNTER_TEST_DB_DIR）
+    # 优先级更高，env 阶梯专项用例先清掉阀门再验证阶梯语义
+    _clear_valve_env(monkeypatch)
     missing = str(tmp_path / "not_yet.db")
     monkeypatch.setenv("ANALYTICS_DB_PATH", missing)
     monkeypatch.delenv("MAIN_PROJECT_DB", raising=False)
@@ -119,19 +122,35 @@ def test_resolve_main_db_path_analytics_override_wins(tmp_path, monkeypatch):
 
 
 def test_resolve_main_db_path_main_project_only_when_exists(tmp_path, monkeypatch):
+    _clear_valve_env(monkeypatch)
     monkeypatch.delenv("ANALYTICS_DB_PATH", raising=False)
     existing = tmp_path / "external.db"
     existing.write_text("")
     monkeypatch.setenv("MAIN_PROJECT_DB", str(existing))
     assert resolve_main_db_path() == str(existing)
-    # 文件不存在则回落仓内默认
+    # 文件不存在则回落仓内默认锚点。不得设 JOBHUNTER_DB_PATH 对齐 goal_service.DB_PATH：
+    # 它优先级最高，会把被测的「MAIN_PROJECT_DB 不存在 → 回落默认」分支短路架空
+    # （round2 P1）。保持 _clear_valve_env 后的无阀门状态，直接断言默认锚点。
     monkeypatch.setenv("MAIN_PROJECT_DB", str(tmp_path / "ghost.db"))
-    assert resolve_main_db_path() == goal_service.DB_PATH
+    assert resolve_main_db_path().endswith("backend/data/job_hunter.db")
 
 
 def test_resolve_main_db_path_default_matches_goal_service(monkeypatch):
-    # 单一真源：goal_service.DB_PATH 直接复用 resolve_main_db_path
+    # 单一真源：goal_service.DB_PATH 直接复用 resolve_main_db_path。
+    # 外审 R2-P1（C1）：不得 setenv 对齐常量再断言相等——JOBHUNTER_DB_PATH 优先级
+    # 最高，setenv(X) → f()==X 是同义反复，架空单一真源与测试库防逃逸护栏。
+    # root conftest 测试库阀门已在 import 期注入同源 env，直接断言 resolve
+    # 精确还原 import 期常量即可。
+    assert resolve_main_db_path() == str(goal_service.DB_PATH)
+
+    # 默认锚点断言（backend/data/job_hunter.db）则需先清掉阀门 env 单独验证。
+    _clear_valve_env(monkeypatch)
     monkeypatch.delenv("ANALYTICS_DB_PATH", raising=False)
     monkeypatch.delenv("MAIN_PROJECT_DB", raising=False)
     assert resolve_main_db_path().endswith("backend/data/job_hunter.db")
-    assert goal_service.DB_PATH == resolve_main_db_path()
+
+
+def _clear_valve_env(monkeypatch):
+    """清掉 root conftest 注入的测试库阀门 env（env 阶梯专项用例专用）。"""
+    monkeypatch.delenv("JOBHUNTER_DB_PATH", raising=False)
+    monkeypatch.delenv("JOBHUNTER_TEST_DB_DIR", raising=False)

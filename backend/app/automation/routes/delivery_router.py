@@ -27,6 +27,7 @@ from app.automation import scheduler, upload_quota
 from app.automation.db import mark_job_approved
 from app.core import feishu_utils
 from app.core.feishu_utils import extract_feishu_text as _txt
+from app.core.process_status import APPROVAL_FOLLOW_STATUSES
 from app.core.utils import sanitize_filename
 from app.services import feishu_service
 
@@ -615,6 +616,33 @@ async def auto_heal_and_approve(req: AutoHealRequest):
             raise HTTPException(status_code=404, detail=f"未找到飞书记录 {rid}")
 
         fields = rec.get("fields", {})
+
+        # 🌟 评估闸（2026-11-02 审计 P1-5 双端修·后端防线；CR-B2-R1-P1 收口）：
+        # 仅放行「已评估且处于人工审批断点」的岗位。放行集合=APPROVAL_FOLLOW_STATUSES
+        # （单一事实源，与快照第 4 段 is_waiting 完全一致，含疑似重复/海投/精投）
+        # + 快照兜底形态「跟进状态空但有评级」（该形态以 waiting/manual_review_node
+        # 出现在待审批 Tab，闸门不同步放行会形成"看得见放不了"的死角）。
+        # 评级读取与快照同源（extract_job_grade），读取异常向上抛 5xx（fail-closed）。
+        follow_status = _txt(fields.get("跟进状态", "")).strip()
+        grade = feishu_utils.extract_job_grade(fields) or ""
+        grade_norm = str(grade).strip().upper()
+        gate_ok = follow_status in APPROVAL_FOLLOW_STATUSES or (not follow_status and grade_norm in ("A", "B", "C", "D"))
+        if not gate_ok:
+            logger.warning(
+                "⛔ [auto_heal_and_approve] 评估闸拒绝 rid=%s follow=%r grade=%r",
+                rid, follow_status, grade_norm,
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=f"invalid_status: 跟进状态为「{follow_status or '空'}」，仅待审批集合（简历人工复核/海投人工复核/待审批/疑似重复/空状态+有评级）岗位可放行",
+            )
+        if not grade_norm:
+            logger.warning("⛔ [auto_heal_and_approve] 评估闸拒绝（无评级）rid=%s follow=%r", rid, follow_status)
+            raise HTTPException(
+                status_code=409,
+                detail="not_evaluated: 该岗位无综合评级（未经 AI 评估），不可放行；请等待下次链路启动自动补评估",
+            )
+
         job_title = _txt(fields.get("岗位名称", "")) or "未知岗位"
         company_name = _txt(fields.get("公司名称", "")) or "未知公司"
         raw_plat = _txt(fields.get("招聘平台", "")).lower()
@@ -660,8 +688,11 @@ async def auto_heal_and_approve(req: AutoHealRequest):
         )
 
         async def _call_render_custom(data: dict, name: str, need_img: bool):
+            # 物料模板与 rewrite_node 同源（公共读取口统一兜底+告警）：补渲染的定制简历跟随改写规则面板的模板选择
+            from app.automation.materials import get_configured_material_skin
+            skin = get_configured_material_skin()
             try:
-                return await _render_custom_resume_materials(data, name, need_image=need_img)
+                return await _render_custom_resume_materials(data, name, skin=skin, need_image=need_img)
             except TypeError:
                 return await _render_custom_resume_materials(data, name)
 

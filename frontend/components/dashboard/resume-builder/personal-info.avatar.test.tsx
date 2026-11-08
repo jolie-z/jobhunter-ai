@@ -21,9 +21,10 @@ vi.mock("@/hooks/use-strategy-store", () => ({
   useOptionalStrategyStore: () => storeRef.current,
 }))
 
-// stub 全局 fetch：自动读取启用底稿照片的链路不允许打到真实后端
+// stub 全局 fetch：自动读取启用底稿照片的链路不允许打到真实后端。
+// ok: true 必须携带——fetchActiveResumeAvatar 三态语义（URL/""=确认无照片/null=失败）以 res.ok 分流
 const fetchMock = vi.fn(() =>
-  Promise.resolve({ json: () => Promise.resolve({ status: "success", resumes: [] }) } as any)
+  Promise.resolve({ ok: true, json: () => Promise.resolve({ status: "success", resumes: [] }) } as any)
 )
 
 describe("PersonalInfo 未保存提醒误报回归（挂载期不得写 store 破坏基线）", () => {
@@ -65,6 +66,7 @@ describe("PersonalInfo 未保存提醒误报回归（挂载期不得写 store �
     // store 必须与基线保持相等（本用例即未保存误报的常驻回归门）
     fetchMock.mockImplementation(() =>
       Promise.resolve({
+        ok: true,
         json: () =>
           Promise.resolve({
             status: "success",
@@ -87,6 +89,7 @@ describe("PersonalInfo 未保存提醒误报回归（挂载期不得写 store �
     // 挂载即发起 config 请求（此时 store 尚为 null，模拟 workspace 装载 await 窗口）
     fetchMock.mockImplementation(() =>
       Promise.resolve({
+        ok: true,
         json: () =>
           Promise.resolve({
             status: "success",
@@ -127,6 +130,7 @@ describe("PersonalInfo 未保存提醒误报回归（挂载期不得写 store �
 
     fetchMock.mockImplementation(() =>
       Promise.resolve({
+        ok: true,
         json: () =>
           Promise.resolve({
             status: "success",
@@ -153,6 +157,7 @@ describe("PersonalInfo 未保存提醒误报回归（挂载期不得写 store �
 
     fetchMock.mockImplementation(() =>
       Promise.resolve({
+        ok: true,
         json: () =>
           Promise.resolve({
             status: "success",
@@ -184,6 +189,7 @@ describe("fetchActiveResumeAvatar 同源 helper（基线回填与组件展示共
   it("启用简历有照片：原样返回该 URL（与 workspace 基线回填严格同形）", async () => {
     fetchMock.mockImplementation(() =>
       Promise.resolve({
+        ok: true,
         json: () =>
           Promise.resolve({
             status: "success",
@@ -197,16 +203,19 @@ describe("fetchActiveResumeAvatar 同源 helper（基线回填与组件展示共
     await expect(fetchActiveResumeAvatar()).resolves.toBe("http://x/active_token")
   })
 
-  it("无启用简历或照片字段为空：返回 null", async () => {
-    fetchMock.mockImplementation(() =>
-      Promise.resolve({ json: () => Promise.resolve({ status: "success", resumes: [{ status: "启用" }] }) } as any)
-    )
-    await expect(fetchActiveResumeAvatar()).resolves.toBeNull()
-  })
-
-  it("全部简历均非启用（find 落空）：返回 null", async () => {
+  it("无启用简历或照片字段为空：返回 \"\"（确认无照片，调用方可安全清除烘焙旧值）", async () => {
     fetchMock.mockImplementation(() =>
       Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ status: "success", resumes: [{ status: "启用" }] }) } as any)
+    )
+    await expect(fetchActiveResumeAvatar()).resolves.toBe("")
+  })
+
+  it("全部简历均非启用（find 落空）：返回 \"\"（确认无照片）", async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
         json: () =>
           Promise.resolve({
             status: "success",
@@ -214,11 +223,26 @@ describe("fetchActiveResumeAvatar 同源 helper（基线回填与组件展示共
           }),
       } as any)
     )
+    await expect(fetchActiveResumeAvatar()).resolves.toBe("")
+  })
+
+  it("请求失败不抛错：返回 null（未知态，调用方必须保留现状不得删除照片）", async () => {
+    fetchMock.mockImplementation(() => Promise.reject(new Error("network down")))
     await expect(fetchActiveResumeAvatar()).resolves.toBeNull()
   })
 
-  it("请求失败不抛错：返回 null", async () => {
-    fetchMock.mockImplementation(() => Promise.reject(new Error("network down")))
+  it("HTTP 非 2xx（配置大盘异常）：返回 null（未知态，与确认无照片严格区分）", async () => {
+    // 一次网络抖动不得把有照片画布洗成裸脸——失败态回归门（agy code review R2）
+    fetchMock.mockImplementation(() =>
+      Promise.resolve({ ok: false, status: 502, json: () => Promise.resolve({}) } as any)
+    )
+    await expect(fetchActiveResumeAvatar()).resolves.toBeNull()
+  })
+
+  it("响应体异常（status 非 success）：返回 null（未知态）", async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve({ ok: true, json: () => Promise.resolve({ status: "error" }) } as any)
+    )
     await expect(fetchActiveResumeAvatar()).resolves.toBeNull()
   })
 })

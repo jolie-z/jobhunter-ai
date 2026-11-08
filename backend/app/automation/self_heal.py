@@ -44,9 +44,11 @@ async def restart_platform_browser(platform: str) -> tuple:
         (是否成功, 说明)。平台未知/未配置返回 (False, 原因)。
     """
     from app.session.browser import close_edge, launch_edge
-    from app.session.registry import resolve_platform
+    from app.session.registry import platform_display_to_key, resolve_platform
 
-    cfg = resolve_platform((platform or "").lower())
+    # 调用方普遍传飞书展示名（「猎聘」「BOSS直聘」「前程无忧」），resolve_platform 只认
+    # 规范键/短别名——不归一化会一律落到「未知平台，无法重启浏览器」，L2 自愈形同虚设。
+    cfg = resolve_platform(platform_display_to_key(platform))
     if not cfg:
         return False, f"未知平台 {platform}，无法重启浏览器"
 

@@ -21,9 +21,9 @@ SCRAPER_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.pa
 if SCRAPER_DIR not in sys.path:
     sys.path.append(SCRAPER_DIR)
 
-# 公司情报走 backend 原生 Serper 引擎（外部 company_searcher 与本项目 common 包撞名，
-# 在 backend 进程内 import 必然失败，故不再从那里导入）
-from ai_agents.company_intel import search_company_ai_news  # noqa: E402
+# 公司情报统一走调度器（博查国内直连主引擎 → Serper → Tavily），避免只配博查时此处失效。
+# 外部 company_searcher 与本项目 common 包撞名，在 backend 进程内 import 必然失败，故不再从那里导入。
+from ai_agents.company_intel import fetch_company_intel  # noqa: E402
 
 
 async def get_core_job_keywords(raw_title: str) -> list:
@@ -120,10 +120,7 @@ async def generate_handbook_action(job_id: str):
         print("⚠️ 检测到面试情报为空，正在自动呼叫 AI 间谍网络进行全网拉取...")
 
         try:
-            if inspect.iscoroutinefunction(search_company_ai_news):
-                company_intel = await search_company_ai_news(company_name)
-            else:
-                company_intel = await asyncio.to_thread(search_company_ai_news, company_name)
+            company_intel = await asyncio.to_thread(fetch_company_intel, company_name)
         except Exception as e:
             print(f"❌ 公司情报抓取失败: {e}")
             company_intel = "> ⚠️ 网络波动或代理拦截，公司情报抓取失败。"

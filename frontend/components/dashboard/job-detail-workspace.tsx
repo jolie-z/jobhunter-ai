@@ -423,26 +423,33 @@ export function JobDetailWorkspace({
               ...(p?.title ? { title: p.title } : {}),
             };
           }
-        } else if (!p?.avatar_url) {
-          // 🌟 即使姓名不是候选人占位，若当前简历缺失照片但默认母本有照片，一次性对齐，杜绝子组件挂载后异步写 store 污染撤销栈
-          const defaultV2 = await fetchDefaultResumeData();
-          if (defaultV2?.personalInfo?.avatar_url) {
-            finalDataV2.personalInfo = {
-              ...finalDataV2.personalInfo,
-              avatar_url: defaultV2.personalInfo.avatar_url,
-            };
-          }
         }
-        // 🌟 照片基线兜底（2026-10-22 未保存误报根因修复）：画布缺照片时按 PersonalInfo
-        // 同源（启用底稿照片，lib/resume-avatar）在基线建立前回填——基线与组件将展示的
-        // 照片严格同形，组件侧同步写退化为等值 no-op，从源头消除「零编辑即 dirty」。
-        // 仅画布 personalInfo 存在且缺照片时多发一次请求（personalInfo 整体缺失不凭空造结构），常规路径零开销
-        if (finalDataV2.personalInfo && !finalDataV2.personalInfo.avatar_url) {
-          const activeAvatar = await fetchActiveResumeAvatar()
-          if (activeAvatar) {
+        // 🌟 照片单一可信源（「永远第一张照片」根因修复）：画布照片一律对齐启用底稿
+        // 「照片」字段的当前值（lib/resume-avatar 同源 helper，实时读配置大盘列表），
+        // 覆盖改写 JSON / 母本结构化数据里烘焙的历史 avatar_url——那类值是首次上传
+        // 后的快照，换照片不更新，放任优先会让物料永远渲染第一张。
+        // personalInfo 与顶层 avatar_url 双写同步：resume-color / classic-markdown 等
+        // 未翻转优先级的模板读顶层，双处一致才能保证旧值无死角（personalInfo 缺失时
+        // 也做顶层兜底，镜像后端 apply_feishu_avatar 的无结构分支）。
+        // 三态语义：string=对齐覆写 / ""=确认无照片→两处烘焙旧值剔除 /
+        // null=请求失败未知→保留现状，绝不因一次抖动把有照片画布洗成裸脸。
+        // 基线在此之后同事务建立（setResumeDataWithBaseline），覆写落在基线前，
+        // 组件侧同步写退化为等值 no-op，不会引入「零编辑即 dirty」误报
+        const activeAvatar = await fetchActiveResumeAvatar()
+        if (activeAvatar) {
+          if (finalDataV2.personalInfo) {
             finalDataV2.personalInfo = { ...finalDataV2.personalInfo, avatar_url: activeAvatar }
           }
+          finalDataV2.avatar_url = activeAvatar
+        } else if (activeAvatar === "") {
+          // 启用底稿当前无照片（用户已删除/清空）：两处烘焙旧值都剔除，按缺照片渲染
+          if (finalDataV2.personalInfo?.avatar_url) {
+            const { avatar_url: _staleAvatar, ...restPersonal } = finalDataV2.personalInfo
+            finalDataV2.personalInfo = restPersonal
+          }
+          delete finalDataV2.avatar_url
         }
+        // activeAvatar === null（拉取失败）：两处旧值原样保留，按烘焙值渲染
         finalDataV2 = injectDynamicJobTitleV2(finalDataV2);
         // 🌟 基线快照与 store 写入同事务、同形态（转换后）；保存/导出成功会经 onUpdateJob 改
         // aiRewriteJson/manualRefinedResume 触发本 effect 重装载，从而自然刷新基线

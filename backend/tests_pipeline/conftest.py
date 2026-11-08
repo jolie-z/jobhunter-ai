@@ -15,6 +15,13 @@ import pytest
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
+@pytest.fixture(autouse=True)
+def _isolate_cdp_lock_dir(tmp_path, monkeypatch):
+    """跨进程端口锁目录逐用例隔离：测试不得锁住真实 ~/.jobhunter-cdp-locks。"""
+    monkeypatch.setenv("JOBHUNTER_CDP_LOCK_DIR", str(tmp_path / "cdp-locks"))
+    yield
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _bootstrap_test_databases():
     # 1) autopilot.db：automation_configs / automation_logs / platform_status

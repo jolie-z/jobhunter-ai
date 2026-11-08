@@ -173,6 +173,8 @@ def extract_feishu_text(value):
 # 岗位评级字段候选名（按优先级）：评估器写入的是「综合评级 (A-F)」，
 # 「综合等级」「评级」为历史字段名，仅老记录可能有值
 _GRADE_FIELD_CANDIDATES = ("综合等级", "评级", "综合评级 (A-F)")
+# 锚点：frontend/components/command-center/stepper-stats.ts `gradeMeetsThreshold`
+# 使用同一套 A/B/C 阈值语义，改动需两端同步。
 _GRADE_THRESHOLDS = {
     "A": {"A"},
     "B": {"A", "B"},
@@ -216,10 +218,27 @@ def is_custom_record(fields: dict[str, Any]) -> bool:
     return (extract_job_grade(fields) or "").upper() in ("A", "B")
 
 
+def has_rewrite_output(fields: dict[str, Any]) -> bool:
+    """飞书「AI改写JSON」是否有真实产物。
+
+    与 is_custom_record 的区别：本函数只认改写产物，不把「评级 A/B」当成改写证据。
+    用于导轨区分「评级 A/B 但走海投轨」与真正进入精投改写的岗位。
+    """
+    return bool(extract_feishu_text(fields.get("AI改写JSON", "")).strip())
+
+
 TERMINAL_FOLLOW_STATUSES = {
     "已投递", "已放弃投递", "清洗淘汰", "已拒绝", "已下架",
     "一面", "二面", "三面", "HR面", "面试", "Offer", "录用"
 }
+
+# 投递后段跟进状态（CR-R3-P2 词表同源）：批量回写/淘汰标记绝不触碰的岗位——
+# 已过投递安检或进入面试流程，历史残留的旧评级不足以推翻其当前阶段。
+# 注意：本词表用于「精确匹配」场景（如回填脚本守卫）；模糊/兜底判定用
+# is_terminal_or_post_delivery_status（子串匹配），raw 侧另有白名单第二道防线
+POST_DELIVERY_FOLLOW_STATUSES = frozenset({
+    "待投递", "已投递", "一面", "二面", "三面", "HR面", "面试", "Offer", "录用",
+})
 
 # 跟进状态：AI 评估失败（2026-10-10 词表收敛——Windows agent 排查报告建议：
 # 新状态词绝不散落硬编码。语义=8维评估未产出有效评级，待重试，非终态（可重新流转））
@@ -277,3 +296,20 @@ def download_feishu_file(file_token: str, save_path: str) -> bool:
     except OSError as e:
         print(f"❌ download_feishu_file 文件写入异常：{e}")
         return False
+
+
+def parse_feishu_json(resp: Any, context: str = "飞书") -> dict:
+    """解析飞书响应 JSON；失败时抛**带现场**的 ValueError，绝不裸抛 JSONDecodeError。
+
+    2026-10-28 起因：简历库保存报 `Extra data: line 1 column 5 (char 4)` 却无法取证——
+    响应体非合法 JSON 时 resp.json() 的裸异常只进了 500 detail，原始 body 从未落任何
+    日志（最终查明是用户填错数据表 ID，但当时响应体里到底是什么已永久不可追溯）。
+    此后所有飞书响应解析统一走本入口，报错自带 HTTP 状态码 + body 前 200 字节快照。
+    兼容 httpx/requests 两家 Response（均有 .json()/.status_code/.content）。
+    """
+    try:
+        return resp.json()
+    except ValueError as e:  # json.JSONDecodeError 是 ValueError 子类
+        # body 快照用 bytes 容错解码：非 UTF-8 异常流（网关/代理篡改）不得在此二次抛点掩盖原始现场
+        snapshot = resp.content[:200].decode("utf-8", errors="replace")
+        raise ValueError(f"{context}响应非JSON（HTTP {resp.status_code}）: {snapshot!r}") from e

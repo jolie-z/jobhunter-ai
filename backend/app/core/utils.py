@@ -1,7 +1,18 @@
 
 import re
+import sys
 
 from fastapi import HTTPException
+
+
+def ensure_import_path(directory: str) -> None:
+    """把目录追加到 sys.path，供跨目录惰性导入兜底（幂等）。
+
+    统一使用 append 而非 insert(0)：不抢占最高优先级，避免目录内同名模块
+    造成全进程 import 遮蔽。投递预检与投递工具共用本函数，杜绝两处各写一份。
+    """
+    if directory and directory not in sys.path:
+        sys.path.append(directory)
 
 
 def _require_env(name: str, value: str | None) -> str:
@@ -31,6 +42,18 @@ def is_valid_greeting(greeting: str | None) -> bool:
     if not g or g.startswith("❌"):
         return False
     return not any(marker in g for marker in ("生成失败", "服务未配置", "策略文件"))
+
+
+def build_rewrite_failure_reason(md_resume: str | None, greeting: str | None,
+                                 resume_ok: bool, greeting_ok: bool) -> str:
+    """改写失败原因拼装（2026-11-02 审计第一批 P1-2 配套）——wave_pipeline 与
+    executor 的唯一实现，避免双份文案漂移（CR-R3-P2 Duplicated Code）。"""
+    reasons = []
+    if not resume_ok:
+        reasons.append(f"简历: {(md_resume or '返回为空').lstrip()[:120]}")
+    if not greeting_ok:
+        reasons.append(f"打招呼语: {(greeting or '返回为空').lstrip()[:80]}")
+    return "；".join(reasons) or "返回为空"
 
 
 GREETING_SUPPORTED_PLATFORMS = {"boss", "zhilian", "liepin"}

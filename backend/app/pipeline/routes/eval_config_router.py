@@ -37,6 +37,7 @@ class SetMassApplyResumeBody(BaseModel):
 class RewriteConfigBody(BaseModel):
     skill_id: str | None = None
     include_diagnosis: bool | None = None
+    material_skin: str | None = None
 
 
 @router.get("/eval-config")
@@ -218,6 +219,7 @@ async def get_rewrite_config_endpoint():
     cfg = get_autopilot_config()
     current_skill_id = cfg.get("rewrite_skill_id") or manager.current_skill_id or "resume_rewrite"
     include_diagnosis = cfg.get("rewrite_include_diagnosis", True)
+    material_skin = cfg.get("rewrite_material_skin") or "classic"
 
     prompt_rules = [
         "🚫 严禁 AI 腥味黑话（自动拦截赋能、闭环、抓手、对齐、拉通、助力等 12+ 虚词）",
@@ -232,6 +234,7 @@ async def get_rewrite_config_endpoint():
             "current_skill_id": current_skill_id,
             "skills": rewrite_skills,
             "include_diagnosis": include_diagnosis,
+            "material_skin": material_skin,
             "prompt_rules": prompt_rules,
         },
     }
@@ -253,6 +256,7 @@ async def save_rewrite_config_endpoint(body: RewriteConfigBody):
     if not update_autopilot_config(
         rewrite_skill_id=body.skill_id,
         rewrite_include_diagnosis=body.include_diagnosis,
+        rewrite_material_skin=body.material_skin,
     ):
         raise HTTPException(status_code=500, detail="保存配置失败：数据库写入异常，请重试")
     return {"code": 0, "msg": "简历改写规则已保存生效"}

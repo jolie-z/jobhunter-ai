@@ -40,7 +40,7 @@ _in_governed_passage: ContextVar[bool] = ContextVar("_in_governed_passage", defa
 def _cooldown_rejection(gate: LLMGate) -> LLMGateTimeoutError:
     rem = gate.get_cooldown_remaining()
     return LLMGateTimeoutError(
-        f"系统处于全局 429 冷却期（剩余 {rem:.1f}s），已拒绝放行以阻断雪崩", retry_after=rem
+        f"系统处于上游限流/熔断冷却期（剩余 {rem:.1f}s），已拒绝放行以阻断雪崩", retry_after=rem
     )
 
 
@@ -52,10 +52,15 @@ def _slot_rejection(caller: str) -> LLMGateTimeoutError:
     return LLMGateTimeoutError(f"并发槽位已满（caller={caller}），等待超时被闸门拒绝", retry_after=2.0)
 
 
-def _notify_upstream_rate_limit(gate: LLMGate, err: Exception, kind: LLMErrorKind, retry_after: float | None) -> None:
-    """仅上游响应型 429 才触发全局冷却窗，闸门内部背压异常不污染上游拦截计数。"""
-    if kind == LLMErrorKind.rate_limited and not isinstance(err, LLMGateTimeoutError):
+def _notify_upstream_failure(gate: LLMGate, err: Exception, kind: LLMErrorKind, retry_after: float | None) -> None:
+    """上游响应型故障回喂闸门：429 触发限流冷却窗，5xx/服务端故障累计触发熔断冷却窗。
+    闸门内部背压异常（LLMGateTimeoutError）不是上游故障，不污染上游计数。"""
+    if isinstance(err, LLMGateTimeoutError):
+        return
+    if kind == LLMErrorKind.rate_limited:
         gate.notify_rate_limited(retry_after)
+    elif kind == LLMErrorKind.server:
+        gate.notify_server_error()
 
 
 def _resolve_invocation_context(
@@ -100,7 +105,7 @@ def governed_llm_passage(caller: str = "", timeout: float = 60.0):
         gate.record_success()
     except Exception as e:
         kind, _msg, retry_after = classify_llm_error(e)
-        _notify_upstream_rate_limit(gate, e, kind, retry_after)
+        _notify_upstream_failure(gate, e, kind, retry_after)
         raise
     finally:
         guard.release()
@@ -132,7 +137,7 @@ async def async_governed_llm_passage(caller: str = "", timeout: float = 60.0):
         gate.record_success()
     except Exception as e:
         kind, _msg, retry_after = classify_llm_error(e)
-        _notify_upstream_rate_limit(gate, e, kind, retry_after)
+        _notify_upstream_failure(gate, e, kind, retry_after)
         raise
     finally:
         guard.release()
@@ -320,7 +325,7 @@ def govern_sync_call(
 
         # 3. 出闸后分类异常并决定重试（槽位已完全释放，重试休眠绝不占用并发位）
         kind, msg, retry_after = classify_llm_error(err)
-        _notify_upstream_rate_limit(gate, err, kind, retry_after)
+        _notify_upstream_failure(gate, err, kind, retry_after)
 
         if not effective_policy.is_enabled() or kind not in effective_policy.retry_kinds or attempt.is_last:
             err.kind = kind
@@ -392,7 +397,7 @@ async def govern_async_call(
 
         # 3. 出闸后分类异常并决定重试
         kind, msg, retry_after = classify_llm_error(err)
-        _notify_upstream_rate_limit(gate, err, kind, retry_after)
+        _notify_upstream_failure(gate, err, kind, retry_after)
 
         if not effective_policy.is_enabled() or kind not in effective_policy.retry_kinds or attempt.is_last:
             err.kind = kind

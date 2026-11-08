@@ -98,34 +98,50 @@ export function ReviewConfigPanel({ onSaved }: ReviewConfigPanelProps) {
     return Array.from(map.values())
   }, [feishuPendingJobs, storeJobs])
 
-  // 单岗位审批
+  // 单岗位审批（2026-11-02 审计 P1-10 同源迁移）：放行改走 /auto-heal-and-approve
+  // （补料+放行一体，与主看板同端点——裸 /resume 只改状态不问物料，会放出缺物料岗位）；
+  // 拒绝无物料语义，保持裸 /resume。本地口径与主看板对齐：放行写 ready_to_deliver 节点，
+  // 拒绝写 manual_rejected 节点 + reject_type（修复此前缺 node 导致最长 12s 仍留待审批计数）
   const handleApprove = async (jobId: string, action: "approve" | "reject") => {
     try {
-      const res = await fetch(`${API_BASE}/api/automation/resume`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ thread_id: jobId, action }),
-      })
-      const data = await res.json()
-      if (res.ok) {
-        toast.success(action === "approve" ? "岗位已放行至待投递队列" : "岗位已拒绝投递")
-        // 更新本地 store（对齐主看板口径：放行进入 ready_to_deliver，拒绝进入 rejected_manual）
-        handleEvent({
-          type: "job",
-          job_id: jobId,
-          status: action === "approve" ? "ready_to_deliver" : "rejected_manual",
+      if (action === "approve") {
+        const res = await fetch(`${API_BASE}/api/automation/auto-heal-and-approve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ record_id: jobId }),
         })
-        // 移除已处理记录
-        setFeishuPendingJobs((prev) => prev.filter((j) => j.job_id !== jobId))
+        const data = await res.json().catch(() => ({} as any))
+        if (res.ok && (data.status === "success" || data.status === "processing")) {
+          toast.success(data.message || "岗位已补料放行至待投递队列")
+          handleEvent({ type: "job", job_id: jobId, status: "ready_to_deliver", node: "ready_to_deliver" })
+          setFeishuPendingJobs((prev) => prev.filter((j) => j.job_id !== jobId))
+        } else {
+          toast.error("放行中止: " + (data.detail || data.message || "未知错误"))
+        }
       } else {
-        toast.error(data.detail || data.message || "审批操作失败")
+        const res = await fetch(`${API_BASE}/api/automation/resume`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: jobId, action }),
+        })
+        const data = await res.json().catch(() => ({} as any))
+        if (res.ok) {
+          toast.success("岗位已拒绝投递")
+          handleEvent({ type: "job", job_id: jobId, status: "rejected_manual", node: "manual_rejected", reject_type: "manual" })
+          setFeishuPendingJobs((prev) => prev.filter((j) => j.job_id !== jobId))
+        } else {
+          toast.error(data.detail || data.message || "审批操作失败")
+        }
       }
     } catch {
       toast.error("无法连接审批接口服务")
     }
   }
 
-  // 批量审批
+  // 批量审批（2026-11-02 审计 P1-10）：放行逐岗走 /auto-heal-and-approve（同源+逐条
+  // 读结果，/resume_batch 恒 200+明细 曾把部分失败报成全部成功、失败岗位被乐观置
+  // 「待投递」成幽灵卡）；拒绝保持 /resume_batch 但消费 success/failed/details 明细。
+  // 本地状态只对真实成功者乐观更新，失败者留抽屉逐个处理
   const handleBatchApprove = async (
     action: "approve" | "reject",
     targetJobs: PendingReviewJob[]
@@ -134,32 +150,60 @@ export function ReviewConfigPanel({ onSaved }: ReviewConfigPanelProps) {
     if (threadIds.length === 0) return
 
     try {
-      const res = await fetch(`${API_BASE}/api/automation/resume_batch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ thread_ids: threadIds, action }),
-      })
-      const data = await res.json()
-      if (res.ok) {
-        toast.success(
-          action === "approve"
-            ? `已成功批量放行 ${threadIds.length} 个就绪岗位至待投递队列`
-            : `已批量拒绝 ${threadIds.length} 个岗位`
-        )
-        // 更新本地 store（对齐主看板口径）
-        threadIds.forEach((id) => {
-          handleEvent({
-            type: "job",
-            job_id: id,
-            status: action === "approve" ? "ready_to_deliver" : "rejected_manual",
-          })
-        })
-        // 移除已处理记录
-        setFeishuPendingJobs((prev) =>
-          prev.filter((j) => !threadIds.includes(j.job_id))
-        )
+      if (action === "approve") {
+        const okIds: string[] = []
+        let failCount = 0
+        toast.info(`批量放行进行中（0/${threadIds.length}）...`)
+        for (const id of threadIds) {
+          try {
+            const res = await fetch(`${API_BASE}/api/automation/auto-heal-and-approve`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ record_id: id }),
+            })
+            const data = await res.json().catch(() => ({} as any))
+            if (res.ok && (data.status === "success" || data.status === "processing")) {
+              okIds.push(id)
+              handleEvent({ type: "job", job_id: id, status: "ready_to_deliver", node: "ready_to_deliver" })
+            } else {
+              failCount += 1
+              console.warn(`批量放行中止 ${id}:`, data.detail || data.message)
+            }
+          } catch {
+            failCount += 1
+          }
+        }
+        setFeishuPendingJobs((prev) => prev.filter((j) => !okIds.includes(j.job_id)))
+        if (okIds.length > 0 && failCount === 0) toast.success(`🎉 批量放行完成：${okIds.length} 个岗位已补料放行至待投递队列`)
+        if (okIds.length > 0 && failCount > 0) toast.warning(`${failCount} 个放行中止（物料缺失/未评估/记录异常），已留在列表，请单独处理`)
+        if (okIds.length === 0 && failCount > 0) toast.error(`批量放行全部中止（${failCount} 个），请检查岗位状态`)
       } else {
-        toast.error(data.message || "批量审批失败")
+        const res = await fetch(`${API_BASE}/api/automation/resume_batch`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_ids: threadIds, action }),
+        })
+        const data = await res.json().catch(() => ({} as any))
+        if (res.ok && data.status !== "error") {
+          const ok = Number(data.data?.success ?? threadIds.length)
+          const failed = Number(data.data?.failed ?? 0)
+          // 失败明细剔除法（CR-B2-R1-P2）：details 若带岗位标识则精确剔除；仅无标识时
+          // 才退化为保守口径（成功数==全集时全剔，否则全部留在抽屉人工核对）
+          const failIds: string[] = (data.data?.details || [])
+            .map((d: any) => d?.thread_id || d?.job_id || d?.record_id || "")
+            .filter(Boolean)
+          const okIds: string[] = failIds.length > 0
+            ? threadIds.filter((id) => !failIds.includes(id))
+            : (ok === threadIds.length ? [...threadIds] : [])
+          if (okIds.length > 0) {
+            okIds.forEach((id) => handleEvent({ type: "job", job_id: id, status: "rejected_manual", node: "manual_rejected", reject_type: "manual" }))
+            toast.success(`已批量拒绝 ${okIds.length} 个岗位`)
+          }
+          if (failed > 0) toast.warning(`${failed} 个拒绝失败：${(data.data?.details || []).slice(0, 3).map((d: any) => d?.error || d?.detail || "").filter(Boolean).join("；")}`)
+          setFeishuPendingJobs((prev) => prev.filter((j) => !okIds.includes(j.job_id)))
+        } else {
+          toast.error(data.message || "批量审批失败")
+        }
       }
     } catch {
       toast.error("网络异常，无法执行批量审批")

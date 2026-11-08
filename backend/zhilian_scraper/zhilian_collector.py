@@ -19,6 +19,21 @@ PARENT_DIR = os.path.dirname(CURRENT_DIR)
 if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 from app.core.db_paths import job_hunter_db_path, writable_path  # noqa: E402
+from app.session.registry import get_platform_port  # noqa: E402
+from engine_guard import cross_process_port_lock  # noqa: E402
+
+ZHILIAN_DEBUG_PORT = get_platform_port("zhilian")
+
+# C2b 薪资筛选失败中止的进程退出码（调度器按非零退出码判定本轮失败；
+# 不可与 engine_guard.PORT_LOCK_BUSY_EXIT_CODE=75 冲突，2 为本文件专属）
+SALARY_FILTER_ABORT_EXIT_CODE = 2
+
+# 智联招聘原生薪资选项集合（用于动态识别已激活或默认态的薪资筛选框）
+ZHILIAN_SALARY_NAMES = {
+    '薪资', '薪资待遇', '薪资要求',
+    '4K以下', '4K-6K', '6K-8K', '8K-10K', '10K-15K',
+    '15K-25K', '25K-35K', '35K-50K', '50K以上',
+}
 
 # db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
 DB_PATH = job_hunter_db_path(os.path.join(PARENT_DIR, 'data', 'job_hunter.db'))
@@ -194,32 +209,202 @@ def _build_zhilian_jobs_url(city: str, keyword: str, page_num: int = 1) -> str:
         return f"https://www.zhaopin.com/jobs?jl={city_code}&kw={kw_encoded}&p={page_num}"
     return f"https://www.zhaopin.com/jobs?jl={city_code}&kw={kw_encoded}"
 
-def _apply_salary_filter(page, salary):
+def _save_salary_filter_diagnostics(page, salary: str) -> None:
+    """薪资筛选最终失败时留存现场（截图 + HTML），区分「面板没打开」vs「面板开了没渲染」。
+
+    落盘 zhilian_failure_shots/（与投递侧 _save_failure_shot 同一目录约定）；
+    任何保存异常都只打印告警，绝不影响中止流程。
+    """
+    try:
+        shot_dir = str(writable_path(
+            os.path.join(PARENT_DIR, "zhilian_failure_shots"), "zhilian_failure_shots"
+        ))
+        os.makedirs(shot_dir, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_salary = re.sub(r'[\/\\:\*\?"<>\|\s]+', "_", (salary or "filter").strip())[:40]
+        shot_path = os.path.join(shot_dir, f"{stamp}_salary_filter_{safe_salary}.png")
+        page.get_screenshot(path=shot_path)
+        html_path = os.path.join(shot_dir, f"{stamp}_salary_filter_{safe_salary}.html")
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(str(getattr(page, "html", "") or ""))
+        print(f"   📸 薪资筛选失败现场已留存: {shot_path}")
+        print(f"   📄 页面 HTML 快照已留存: {html_path}")
+    except Exception as e:
+        print(f"   ⚠️ 薪资筛选失败现场留存异常（不影响中止流程）: {e}")
+
+
+def _apply_salary_filter(page, salary, abort_on_failure: bool = False) -> bool:
+    """点击薪资筛选下拉框。返回 True=筛选已生效，False=筛选失败。
+
+    2026-10-31/11-01 稳定性重构：
+    1. 状态自愈与幂等性检查：若当前页面已处于目标薪资（URL 包含 sl 参数或筛选标签已是该薪资），直接生效放行，消除已筛选状态下的重复点击与假死；
+    2. 动态标签适配：智联生效后按钮文字会从“薪资”变为具体档位（如“15K-25K”），支持按全部薪资档位动态识别薪资筛选框；
+    3. 强制页面刷新（page.refresh）：若首轮未命中，在重试时执行强制页面刷新以重置 Vue SPA 前端状态机，消除遮罩/假死；
+    4. CDP 真实点击 + JS 点击双保险：优先真实鼠标事件触发完整的 mousedown/mouseup 事件链。
+    """
     if not salary or salary == "不限":
-        return
+        return True
     print(f"🎯 正在尝试通过模拟点击进行薪资筛选: {salary}")
     try:
-        filter_label = (
-            page.ele('text:薪资待遇', timeout=2)
-            or page.ele('text:薪资要求', timeout=2)
-            or page.ele('text:薪资', timeout=2)
-            or page.ele('.joblist-box__filter-title', timeout=2)
-        )
-        if filter_label:
-            try: page.scroll.to_see(filter_label)
-            except Exception: pass
-            filter_label.click(by_js=True)
+        # 等文档就绪
+        try:
+            if hasattr(page, 'wait') and hasattr(page.wait, 'doc_loaded'):
+                page.wait.doc_loaded(timeout=15)
+        except Exception:
+            pass
+
+        # 0. 快速就绪检查（幂等）：若当前筛选栏已处于目标薪资，直接放行
+        try:
+            if hasattr(page, 'eles'):
+                for b in page.eles('.filter-select-box', timeout=0.5) or []:
+                    lbl = b.ele('.filter-select-box__label', timeout=0.1) if hasattr(b, 'ele') else None
+                    txt = (getattr(lbl, 'text', '') if lbl else getattr(b, 'text', '')).strip()
+                    if txt == salary:
+                        print(f"      ✅ 当前页面已处于目标薪资筛选状态: {salary}")
+                        return True
+        except Exception:
+            pass
+
+        salary_ele = None
+        for attempt in (1, 2, 3):
+            if attempt > 1:
+                print(f"      🔄 第 {attempt} 次重试：执行强制页面刷新以重置前端状态...")
+                try:
+                    if hasattr(page, 'refresh'):
+                        page.refresh()
+                        if hasattr(page, 'wait') and hasattr(page.wait, 'doc_loaded'):
+                            page.wait.doc_loaded(timeout=10)
+                        time.sleep(2)
+                except Exception as ref_e:
+                    print(f"      ⚠️ 刷新异常: {ref_e}")
+
+                # 刷新后再次检查是否已生效
+                try:
+                    if hasattr(page, 'eles'):
+                        for b in page.eles('.filter-select-box', timeout=0.5) or []:
+                            lbl = b.ele('.filter-select-box__label', timeout=0.1) if hasattr(b, 'ele') else None
+                            txt = (getattr(lbl, 'text', '') if lbl else getattr(b, 'text', '')).strip()
+                            if txt == salary:
+                                print(f"      ✅ 页面刷新后已处于目标薪资筛选状态: {salary}")
+                                return True
+                except Exception:
+                    pass
+
+                # 防下拉残留
+                try:
+                    body = page.ele('tag:body', timeout=1) if hasattr(page, 'ele') else None
+                    if body and hasattr(body, 'click'):
+                        body.click(by_js=True)
+                        time.sleep(0.3)
+                except Exception:
+                    pass
+
+            # 定位薪资筛选入口：支持“薪资”以及各已选中档位文本
+            filter_label = None
+            try:
+                if hasattr(page, 'eles'):
+                    boxes = page.eles('.filter-select-box', timeout=1) or []
+                    for b in boxes:
+                        lbl = b.ele('.filter-select-box__label', timeout=0.2) if hasattr(b, 'ele') else None
+                        txt = (getattr(lbl, 'text', '') if lbl else getattr(b, 'text', '')).strip()
+                        if txt in ZHILIAN_SALARY_NAMES or any(k in txt for k in ('薪资', '待遇', '月薪')):
+                            filter_label = b.ele('.filter-select-box__trigger', timeout=0.2) if hasattr(b, 'ele') else b
+                            break
+            except Exception:
+                pass
+
+            if not filter_label:
+                for sel in (
+                    'tag:span@class:filter-select-box__label@text:薪资',
+                    'tag:div@class:filter-select-box__trigger',
+                    '.joblist-box__filter-title',
+                    'text:薪资待遇',
+                    'text:薪资要求',
+                    'text:薪资',
+                ):
+                    try:
+                        el = page.ele(sel, timeout=1) if hasattr(page, 'ele') else None
+                        if el and getattr(el, 'tag', '') not in ('script', 'style'):
+                            if hasattr(el, 'parent'):
+                                try:
+                                    trig = el.parent('.filter-select-box__trigger') or el.parent('.filter-select-box')
+                                    if trig:
+                                        filter_label = trig
+                                        break
+                                except Exception:
+                                    pass
+                            filter_label = el
+                            break
+                    except Exception:
+                        continue
+
+            if not filter_label:
+                print(f"      ⚠️ 第 {attempt} 次未找到薪资筛选入口（页面未就绪或站点改版），等待后重试...")
+                time.sleep(2)
+                continue
+
+            try:
+                if hasattr(page, 'scroll') and hasattr(page.scroll, 'to_see'):
+                    page.scroll.to_see(filter_label)
+            except Exception:
+                pass
+
+            # 优先 CDP 真实鼠标点击，失败回退 JS 点击
+            try:
+                filter_label.click()
+            except Exception:
+                try:
+                    filter_label.click(by_js=True)
+                except Exception:
+                    pass
             time.sleep(1)
-            
-            salary_ele = page.ele(f'text:{salary}', timeout=3)
-            if salary_ele:
-                salary_ele.click(by_js=True)
-                print(f"      ✅ 成功点击薪资过滤: {salary}")
-                time.sleep(3)
-            else:
-                print(f"      ⚠️ 未能在下拉框中找到薪资选项: {salary}")
+
+            # 在展开的面板或页面中查找目标薪资选项
+            salary_ele = None
+            try:
+                if hasattr(filter_label, 'parent'):
+                    box = filter_label.parent('.filter-select-box')
+                    if box and hasattr(box, 'ele'):
+                        salary_ele = box.ele(f'text:{salary}', timeout=3)
+            except Exception:
+                pass
+
+            if not salary_ele and hasattr(page, 'ele'):
+                salary_ele = page.ele(f'text:{salary}', timeout=6)
+
+            if salary_ele and getattr(salary_ele, 'tag', '') not in ('script', 'style'):
+                break
+
+            salary_ele = None
+            if attempt < 3:
+                print(f"      ⚠️ 第 {attempt} 次未能在下拉框中找到薪资选项: {salary}，重开下拉重试...")
+
+        if salary_ele:
+            try:
+                salary_ele.click()
+            except Exception:
+                try:
+                    salary_ele.click(by_js=True)
+                except Exception:
+                    pass
+            print(f"      ✅ 成功点击薪资过滤: {salary}")
+            time.sleep(2.5)
+            return True
+
+        print(f"      ⚠️ 未能在下拉框中找到薪资选项: {salary}")
+        _save_salary_filter_diagnostics(page, salary)
     except Exception as e:
         print(f"      ⚠️ 薪资筛选模拟点击出错: {e}")
+        try:
+            _save_salary_filter_diagnostics(page, salary)
+        except Exception:
+            pass
+
+    if abort_on_failure:
+        print("🛑 [薪资筛选失败中止] 本轮薪资筛选未生效，继续抓取会把越档岗位整批灌入数据库。")
+        print("🛑 [薪资筛选失败中止] 本轮智联抓取中止（宁缺毋滥），请稍后重试或检查站点是否改版。")
+        sys.exit(SALARY_FILTER_ABORT_EXIT_CODE)
+    return False
 
 def _jump_to_page(page, city, keyword, target_page, salary):
     if target_page <= 1:
@@ -892,8 +1077,9 @@ def collect_waterfall(keyword, city, salary, start_page, target=0):
     url = _build_zhilian_jobs_url(city, keyword, start_page)
     print(f"🌐 访问初始目标页: {url}")
     page.get(url)
-    
-    _apply_salary_filter(page, salary)
+
+    # C2b：本轮首次薪资筛选守护整轮数据面——失败即中止，绝不让未过滤瀑布流入库
+    _apply_salary_filter(page, salary, abort_on_failure=True)
 
     # 解析搜索总数（分母）：首屏拦截包先消一次，循环结束后再补消兜底
     search_total = _drain_search_total(page)
@@ -945,6 +1131,7 @@ def collect_waterfall(keyword, city, salary, start_page, target=0):
 
     print(f"🎯 瀑布流抓取结束。总计新增入库 {success_count} 个，跳过 {skip_count} 个。")
 
+@cross_process_port_lock(ZHILIAN_DEBUG_PORT, "zhilian", on_busy="exit")
 def start_auto_patrol(start_page, keyword=None, city=None, salary=None, target=0):
     """主控引擎：按平台执行抓取"""
     print("🚀 启动 [智联招聘] 精准采集矩阵 (DrissionPage瀑布流引擎)")

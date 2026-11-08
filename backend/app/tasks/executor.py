@@ -13,7 +13,12 @@ from ai_agents.engine_facade import process_resume_rewrite
 
 # 🌟 修复 2：从底层 utils 导入文本提取工具
 from app.core.feishu_utils import extract_feishu_text, is_custom_record
-from app.core.utils import sanitize_filename
+from app.core.utils import (
+    build_rewrite_failure_reason,
+    is_valid_greeting,
+    sanitize_filename,
+)
+from app.services.delivery_ledger import STEP_RESUME_GREETING, record_delivery_failure
 
 # 🌟 修复 1：去掉不存在的 feishu_api，导入真实的独立函数
 from app.services.feishu_service import (
@@ -197,6 +202,13 @@ async def _handle_rewrite(job_id: str, record_id: str, job_name: str, jd_text: s
         await send_sse_msg(queue, "error", ERR_AI_FORMAT, job_id=job_id)
         raise RuntimeError(f"AI 返回格式异常: {ve}") from ve
 
+    # ❌ 前缀错误串闸（2026-11-01 线上输出截断复盘，与 workflow/wave_pipeline 同款）：
+    # 截断等失败返回非空 ❌ 串，仅判空会放行残缺内容写回飞书。截断重试已在
+    # engine_facade 统一收敛，走到这里仍是 ❌ = 重试耗尽，按岗位失败显式抛出
+    if not md_resume or md_resume.lstrip().startswith("❌"):
+        await send_sse_msg(queue, "error", ERR_AI_FORMAT, job_id=job_id)
+        raise RuntimeError(f"AI 改写简历失败: {(md_resume or '返回为空').lstrip()[:120]}")
+
     from ai_agents.engine_facade import process_greeting_generation
     try:
         greeting, greeting_usage = await asyncio.to_thread(
@@ -221,7 +233,10 @@ async def _handle_rewrite(job_id: str, record_id: str, job_name: str, jd_text: s
 
     await send_sse_msg(queue, "info", f"📈 Token 消耗 → 提示: {rw_pt} / 补全: {rw_ct} / 总计: {rw_tt}", job_id=job_id)
 
-    if md_resume and greeting:
+    # 打招呼语与简历同等闸门强度（2026-11-02 审计 P1-2）：is_valid_greeting 拦截
+    # 空值与 ❌ 错误文本，失败登记当日台账（执行失败 Tab 可见可重试）再抛出
+    greeting_ok = is_valid_greeting(greeting)
+    if md_resume and greeting_ok:
         await send_sse_msg(
             queue,
             "info",
@@ -254,7 +269,17 @@ async def _handle_rewrite(job_id: str, record_id: str, job_name: str, jd_text: s
             # B5：回写飞书失败必须按岗位失败处理并抛出，主循环虚报 success 会瞒报丢结果
             raise RuntimeError("改写结果回写飞书失败，本岗位改写结果未保存")
     else:
-        raise RuntimeError("AI 生成打招呼语或简历失败")
+        reason = build_rewrite_failure_reason(md_resume, greeting, bool(md_resume), greeting_ok)
+        try:
+            record_delivery_failure(
+                job_id,
+                error=f"AI 生成打招呼语或简历失败: {reason}"[:200],
+                step=STEP_RESUME_GREETING,
+                job_name=job_name,
+            )
+        except Exception as _ledger_e:
+            logger.warning("⚠️ 岗位 %s 失败台账登记异常（不影响失败判定）: %s", job_id, _ledger_e)
+        raise RuntimeError(f"AI 生成打招呼语或简历失败: {reason}")
 
 async def _handle_deep_evaluate(job_id: str, record_id: str, jd_text: str, salary: str, city: str, experience: str, education: str, fields: dict, resume_text: str, queue: asyncio.Queue):
     await send_sse_msg(queue, "info", "  🧠 正在进行深度评估与破局计划生成...")
@@ -398,10 +423,13 @@ async def _dispatch_to_platform(queue: asyncio.Queue, platform: str, job_data: d
 async def _handle_deliver(record_id: str, platform: str, fields: dict, scheduled_at: str | None, queue: asyncio.Queue):
     if scheduled_at:
         timestamp_ms = _parse_scheduled_time(scheduled_at)
-        ok = update_feishu_record(record_id, {
-            "定时投递时间": timestamp_ms,
-            "跟进状态": STATUS_TO_DELIVER
-        }, _ccfg.FEISHU_TABLE_ID_JOBS)
+        # 同步 HTTP 下沉线程（2026-11-02 审计 P2-20）：定时投递登记此前直接在协程内
+        # 调飞书写回，接口慢时整个事件循环卡住（同文件其余写回均已 to_thread）
+        ok = await asyncio.to_thread(
+            update_feishu_record, record_id, {
+                "定时投递时间": timestamp_ms,
+                "跟进状态": STATUS_TO_DELIVER
+            }, _ccfg.FEISHU_TABLE_ID_JOBS)
         if not ok:
             raise RuntimeError(f"双保险写入失败：无法将 {record_id} 的定时投递信息写入飞书，请重试")
         await send_sse_msg(queue, "info", f"  ⏰ 定时投递已登记：{scheduled_at}，调度器将在到达时间后自动执行")
@@ -723,10 +751,24 @@ async def _run_batch_ai_task_body(
     queue: asyncio.Queue,
     scheduled_at: str | None = None
 ):
+    from app.tasks.state import clear_batch_stop, is_batch_stop_requested
+
     if global_task_lock.locked():
         await send_sse_msg(queue, "info", "系统繁忙，正在排队等待执行...")
 
     async with global_task_lock:
+        # pending 窗口内被停止（CR-B3-R1；CR-B3-R2-P0-2 修正：早退必须在写入
+        # is_processing/current_task_id 之前——原版先置 True 再 return 跳过 finally，
+        # is_processing 永久滞留 True，此后所有批量任务 409 死锁至重启）
+        if is_batch_stop_requested(task_id):
+            if task_id in task_status:
+                task_status[task_id]["status"] = "failed"
+                task_status[task_id]["error"] = "任务在启动前被手动停止"
+            await send_sse_msg(queue, "warning", "⏹️ 任务已按停止指令取消（尚未开始处理岗位）")
+            await queue.put('data: {"type": "end"}\n\n')
+            schedule_task_cleanup(task_id)
+            clear_batch_stop()
+            return
         GLOBAL_TASK_STATE["is_processing"] = True
         GLOBAL_TASK_STATE["current_task_id"] = task_id
         try:
@@ -868,6 +910,11 @@ async def _run_batch_ai_task_body(
                 task_status[task_id]["completed"] = total_jobs
             else:
                 for index, job_id in enumerate(job_ids, start=1):
+                    if is_batch_stop_requested(task_id):
+                        # 岗位边界优雅退出（2026-11-02 审计 P2-15）：已完成部分照常统计
+                        skipped_count += total_jobs - index + 1
+                        await send_sse_msg(queue, "warning", f"⏹️ 批量任务已停止：剩余 {total_jobs - index + 1} 个岗位未处理")
+                        break
                     print(f"\n🔍 [正在处理] 第 {index} 个岗位: {job_id}")
                     _sent_terminal = False
                     job_updates = {}
@@ -963,6 +1010,8 @@ async def _run_batch_ai_task_body(
             await send_sse_msg(queue, "error", f"❌ 批量任务执行失败: {str(e)}")
         finally:
             GLOBAL_TASK_STATE["is_processing"] = False
+            from app.tasks.state import clear_batch_stop
+            clear_batch_stop()
             GLOBAL_TASK_STATE["last_completed_task_id"] = task_id
             if GLOBAL_TASK_STATE.get("current_task_id") == task_id:
                 GLOBAL_TASK_STATE["current_task_id"] = None

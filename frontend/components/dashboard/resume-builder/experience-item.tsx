@@ -53,6 +53,14 @@ const ITEM_STANDARD_KEYS = new Set([
   "description", "originalContent", "_key", "id",
 ])
 
+// 自定义模块条目的标准字段行（2026-10-28）：后端归一化后新条目这三项为空、不画行；
+// 存量老条目非空时按此表画行并按 stdKey 回写。字段构建与回写清空两处共用，避免两份硬编码漂移
+const CUSTOM_LEGACY_STD_FIELDS = [
+  { stdKey: "company", label: "标题", placeholder: "标题（打印左列）" },
+  { stdKey: "title", label: "副标题", placeholder: "副标题（打印中列）" },
+  { stdKey: "years", label: "时间", placeholder: "如: 2020-2023" },
+] as const
+
 function extractExtraKvFields(item: Record<string, any> | null | undefined): Array<{ key: string; value: string }> {
   if (!item) return []
   return Object.entries(item)
@@ -152,6 +160,13 @@ export function ExperienceItem({ item, index, type, moduleKey, onUpdate, onDelet
         { id: ++fid, key: "学历", value: item.degree || "", valuePlaceholder: "学历" },
         { id: ++fid, key: "时间", value: item.years || "", valuePlaceholder: "如: 2020-2023" }
       ]
+    } else if (type === 'custom') {
+      // 自定义模块：仅当老条目的标准字段有实质内容时才画行（纯空白视为空，与后端归一化口径一致），
+      // 清空后行随之消失；新条目经归一化三项为空 → 不画任何标准字段行
+      CUSTOM_LEGACY_STD_FIELDS.forEach(({ stdKey, label, placeholder }) => {
+        const val = String((item as Record<string, unknown>)[stdKey] ?? "").trim()
+        if (val) newFields.push({ id: ++fid, key: label, value: val, valuePlaceholder: placeholder, stdKey })
+      })
     }
     // 追加用户自定义 KV 字段（第 4+ 列），确保「新增字段」的内容在重挂载后依然可见
     extractExtraKvFields(item).forEach(extra => {
@@ -176,6 +191,16 @@ export function ExperienceItem({ item, index, type, moduleKey, onUpdate, onDelet
       patch.major = newFields[1]?.value || ""
       patch.degree = newFields[2]?.value || ""
       patch.years = newFields[3]?.value || ""
+    } else if (type === 'custom') {
+      // 仅回写条目本就携带的标准字段（stdKey 行），不凭空造新的标准键
+      const presentStdKeys = new Set(newFields.map(f => f.stdKey).filter(Boolean))
+      newFields.forEach(f => {
+        if (f.stdKey) patch[f.stdKey] = f.value || ""
+      })
+      // 被用户 X 掉的老字段行：数据同步清空，否则 UI 已消失、数据仍在、重挂载又冒出来
+      for (const { stdKey } of CUSTOM_LEGACY_STD_FIELDS) {
+        if (!presentStdKeys.has(stdKey) && (item as Record<string, unknown>)[stdKey]) patch[stdKey] = ""
+      }
     }
 
     // 自定义 KV 字段持久化：以字段名作为条目上的额外 key 写入 patch；
@@ -183,6 +208,7 @@ export function ExperienceItem({ item, index, type, moduleKey, onUpdate, onDelet
     const standardFieldCount = type === 'education' ? 4 : type === 'custom' ? 0 : 3
     const seenExtraKeys = new Set<string>()
     newFields.slice(standardFieldCount).forEach(f => {
+      if (f.stdKey) return // 标准字段行已在上方按原键回写，不得再当作自定义字段落盘
       const k = (f.key || "").trim()
       // 守卫：字段名撞标准键（如 description/company）时拒绝写入，防止覆盖条目核心字段
       if (!k || seenExtraKeys.has(k) || ITEM_STANDARD_KEYS.has(k)) return

@@ -10,6 +10,9 @@ if _PROJECT_ROOT not in sys.path:
 from .skill_rewrite import run_skill_based_rewrite
 
 EXPECTED_ARTIFACT_COUNT = 11
+# 简历改写截断/空输出的自动重试次数（首次请求之外）。全链路唯一重试点见
+# process_resume_rewrite_detailed 官方引擎分支——截断是上游瞬时故障，重试命中率高
+_REWRITE_MAX_RETRIES = 2
 
 
 @dataclass
@@ -176,15 +179,38 @@ def process_resume_rewrite_detailed(
             )
 
         print("💡 [Engine Facade] 路由至 -> 基于 Skill 的标准 Prompt 重构引擎")
-        markdown, usage = run_skill_based_rewrite(
-            original_resume=original_resume,
-            jd_text=jd_text,
-            diagnosis_dict=diagnosis_dict,
-            job_name=job_name,
-            skill_id=skill_id,
-            include_diagnosis=include_diagnosis,
-            on_event=on_event,
-        )
+
+        # 截断/空输出自动重试（2026-11-01 根因排查）：上游 deepseek-v4.1-flash 经 上游聚合网关
+        # 聚合后偶发「正常收尾但正文半截」的静默截断（finish_reason 非 length，约 12.5% 命中），
+        # 属瞬时故障、重试命中率高。统一收敛在 Facade 层——5 个批量调用方与 router 路径
+        # 一次修复；这是全链路唯一重试点，调用方（wave_pipeline 等）只做闸门判定不再重试，
+        # 避免重试叠加放大调用量。
+        markdown, usage = "", {}
+        for attempt in range(_REWRITE_MAX_RETRIES + 1):
+            markdown, usage = run_skill_based_rewrite(
+                original_resume=original_resume,
+                jd_text=jd_text,
+                diagnosis_dict=diagnosis_dict,
+                job_name=job_name,
+                skill_id=skill_id,
+                include_diagnosis=include_diagnosis,
+                on_event=on_event,
+            )
+            if markdown and not markdown.lstrip().startswith("❌"):
+                break
+            if attempt < _REWRITE_MAX_RETRIES:
+                reason_preview = (markdown or "改写引擎返回空内容").lstrip()[:100]
+                print(f"⚠️ [Engine Facade] 简历改写输出异常（{reason_preview}），自动重试 ({attempt + 1}/{_REWRITE_MAX_RETRIES})...")
+                if on_event:
+                    try:
+                        on_event("rewrite_retry", {
+                            "message": f"⚠️ 简历改写输出被截断或为空，自动重试 ({attempt + 1}/{_REWRITE_MAX_RETRIES})...",
+                            "attempt": attempt + 1,
+                            "max_retries": _REWRITE_MAX_RETRIES,
+                        })
+                    except Exception:
+                        pass
+
         error_reason = ""
         if not markdown or markdown.lstrip().startswith("❌"):
             error_reason = (markdown or "改写引擎返回空内容")[:300]

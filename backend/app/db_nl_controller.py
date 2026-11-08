@@ -10,7 +10,6 @@ import sqlite3
 import sys
 import time
 
-import pandas as pd
 from openai import OpenAI
 
 # 🌟 修复为基于新架构的引入
@@ -85,6 +84,22 @@ def _is_dangerous_sql(sql: str) -> bool:
     upper = sql.upper()
     return any(kw in upper for kw in _DANGEROUS_KEYWORDS)
 
+
+def _export_excel(results, columns) -> bytes:
+    """查询结果导出 xlsx（同步助手，由 asyncio.to_thread 调用）。
+
+    pandas/numpy 是启动 import 链上最重的二进制依赖（Windows 冷启动/杀软扫描可放大到
+    分钟级），只有导出 Excel 需要；在 worker 线程内惰性导入，既不进启动链，也不阻塞事件循环。
+    """
+    import pandas as pd
+
+    df = pd.DataFrame(results, columns=columns)
+    excel_buffer = io.BytesIO()
+    df.to_excel(excel_buffer, index=False, engine="openpyxl")
+    excel_buffer.seek(0)
+    return excel_buffer.read()
+
+
 async def process_db_query(chat_id: str, user_query: str):
     print(f"\n{'=' * 50}\n🕵️ [DEBUG] 飞书请求已进入数据库查询 Agent！问题: {user_query}")
 
@@ -132,11 +147,7 @@ async def process_db_query(chat_id: str, user_query: str):
             await asyncio.to_thread(send_feishu_message, chat_id, "📬 报告老板，根据您的条件，数据库中没有查到数据。", "chat_id")
             return
 
-        df = pd.DataFrame(results, columns=columns)
-        excel_buffer = io.BytesIO()
-        await asyncio.to_thread(df.to_excel, excel_buffer, index=False, engine="openpyxl")
-        excel_buffer.seek(0)
-        excel_bytes = excel_buffer.read()
+        excel_bytes = await asyncio.to_thread(_export_excel, results, columns)
 
         answer_prompt = f"""请结合以下信息，向老板汇报：
 问题: {user_query}\n执行SQL: {sql_query}\n结果(前30行): {results[:30]}

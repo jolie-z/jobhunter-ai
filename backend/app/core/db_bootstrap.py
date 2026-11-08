@@ -148,6 +148,8 @@ CREATE TABLE IF NOT EXISTS scrape_sessions (
     predicted_total INTEGER NOT NULL DEFAULT 0,
     scraped_count INTEGER NOT NULL DEFAULT 0,
     ttl_updated_at TEXT DEFAULT '',
+    exhausted_at TEXT DEFAULT '',
+    no_new_rounds INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (keyword, city, salary, platform)
 );
 CREATE TABLE IF NOT EXISTS token_log (
@@ -292,9 +294,32 @@ def ensure_main_db_schema(db_path: str | None = None) -> list[str]:
                 logger.warning(f"⚠️ [db_bootstrap] 语句跳过（{e}）: {stmt[:60]}...")
         conn.commit()
         after = _user_objects(conn)
+
+        # 幂等列迁移（2026-11-02 审计 CR-B2-R1-P2；CR-B2-R2-P1 修正：必须在本 try 块内、
+        # conn.close() 之前执行——原版写在 finally 之后，对已关闭连接 execute 必抛
+        # ProgrammingError 且被 except 吞掉，迁移 100% 不生效）。BOOTSTRAP 建表语句含
+        # require_education，但历史安装的库是旧窄表时 CREATE TABLE IF NOT EXISTS 不补列
+        # ——SELECT/UPDATE 硬引用该列会以 "no such column" 静默降级（策略读取整表回落
+        # 默认值）。此处逐列 PRAGMA 检查后 ADD COLUMN 并提交，缺列场景一次性补齐。
+        idempotent_columns = [
+            ("job_strategies", "require_education", "TEXT"),
+        ]
+        migrated: list[str] = []
+        for table, column, col_type in idempotent_columns:
+            try:
+                cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                if cols and column not in cols:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+                    migrated.append(f"{table}.{column}")
+            except sqlite3.Error as e:
+                logger.warning(f"⚠️ [db_bootstrap] 幂等迁移检查跳过（{e}）: {table}.{column}")
+        if migrated:
+            conn.commit()
+            logger.info(f"✅ [db_bootstrap] 幂等迁移完成，已补列: {migrated}")
     finally:
         conn.close()
     created = sorted(after - before)
+
     if created:
         logger.info(f"✅ [db_bootstrap] 主库建表引导完成，本次新建: {created}")
     if skipped:

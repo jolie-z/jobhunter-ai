@@ -1,7 +1,9 @@
 import asyncio
 import json
 import logging
+import math
 import os
+import time
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -22,6 +24,55 @@ _PLATFORM_STOP_MODULES = {
     "xiaohongshu": ("xiaohongshu_scraper", "xhs_drission_scraper"),
     "zhilian": ("zhilian_scraper", "zhilian_nl_controller"),
 }
+
+# 平台每页条数（仅用于续抓游标合理性校验；未列出的平台不做校验）。
+# 51job 来自 2026-10-31 日志实测「本页捕获到 20 个岗位」；代码没有 pageSize 参数，
+# 若平台改版需同步校准。
+_PLATFORM_PAGE_SIZE = {
+    "51job": 20,
+}
+
+
+def _resume_start_page(platform: str, keyword: str, city: str, salary: str) -> int:
+    """按平台续抓语义计算起点，并对明显越界的陈旧游标做兜底重置。
+
+    - ``resume_mode="rescan_last"``：从最后触碰页重扫（51job 的语义；该页可能
+      因达标/急停只扫了一部分，重扫一页的判重成本很低）。
+    - ``resume_mode="next_page"``：从最后触碰页 + 1 开始（0.4.1 的非 51job 语义）。
+
+    51job 曾因旧采集器守卫裸 return（退出码 0）被逐页空转推到 last_page=122，
+    而该条件预测总数只有 644（约 33 页）。越界游标会触发“到底”并把条件误标抓尽，
+    所以这里在派发前做一次 ``last_page > ceil(predicted/page_size)+1`` 的硬校验。
+    """
+    from app.session.registry import resolve_platform
+    from app.session.scrape_sessions import get_condition_state, get_last_page
+
+    last_page = get_last_page(keyword, city, salary, platform)
+    if last_page <= 0:
+        return 1
+
+    page_size = _PLATFORM_PAGE_SIZE.get(platform)
+    if page_size:
+        state = get_condition_state(keyword, city, salary, platform)
+        # get_condition_state 会在 TTL 到期时惰性 clear_exhaustion（把 last_page 归零）；
+        # 必须用返回的 last_page，不能沿用上面读到的旧值，否则会从过期末页继续抓空页。
+        last_page = int(state.get("last_page") or 0)
+        if last_page <= 0:
+            return 1
+        predicted = int(state.get("predicted") or 0)
+        if predicted > 0:
+            max_page = math.ceil(predicted / page_size)
+            if last_page > max_page + 1:
+                logger.warning(
+                    "[Dispatch] %s 续抓页码 %s 超出预测页数 %s"
+                    "（predicted=%s, page_size=%s），判定为陈旧游标，重置为第 1 页",
+                    platform, last_page, max_page, predicted, page_size,
+                )
+                return 1
+
+    config = resolve_platform(platform)
+    resume_mode = getattr(config, "resume_mode", "rescan_last") if config else "rescan_last"
+    return last_page if resume_mode == "rescan_last" else last_page + 1
 
 
 def stop_platform(platform: str) -> bool:
@@ -61,6 +112,36 @@ running_platform_tasks: dict = {}
 def _track_platform_task(platform: str, task) -> None:
     running_platform_tasks.setdefault(platform, set()).add(task)
     task.add_done_callback(lambda t: running_platform_tasks.get(platform, set()).discard(t))
+
+
+# 平台级抓取↔投递互斥（2026-10-29 沙箱事故根治）：抓取任务在 _run_*_task 内经
+# platform_mutex.scrape_gate 登记，同平台投递在飞时限时等待，超时跳过本轮派发。
+# 编排层（scrape_runner worker）另有派发前的长冷静等待，此处闸门是竞态兜底 +
+# 手动 /run 通道的统一入口，等待窗取短值（2 分钟）：手动点击不该静默干等 10 分钟。
+_SCRAPE_GATE_TIMEOUT_S = 120.0
+
+
+class _ScrapeSkipped:
+    """闸门拒绝哨兵：_run_*_task 返回它时 _run_and_track 不回写续抓页码。
+
+    外审 round2 P1：非 51job 平台的续抓起点 = last_page+1，若拒绝路径走既有
+    "final_page 缺失 → 回写 start_page" 兜底，下轮从 start_page+1 开始，
+    被跳过的 start_page 那一页将永久漏抓。
+    """
+
+
+_SCRAPE_SKIPPED = _ScrapeSkipped()
+
+
+async def _push_scrape_skipped(task_id: str, cn: str, reason: str) -> None:
+    """闸门未放行时向任务 SSE 队列推跳过原因（结束帧由任务 finally 统一补发，避免双 end）。"""
+    from app.tasks.state import task_queues
+    queue = task_queues.get(task_id)
+    if queue is None:
+        return
+    msg = json.dumps({"type": "error", "message": f"🚧 {cn}{reason}"}, ensure_ascii=False)
+    await queue.put(f"data: {msg}\n\n")
+
 
 class SpiderRunRequest(BaseModel):
     platform: str = Field(..., description="平台名称：boss, liepin, 51job, xiaohongshu, zhilian")
@@ -234,8 +315,20 @@ async def cancel_crawler(task_id: str):
 
 # --- 爬虫异步调度包装函数 ---
 
-async def _run_boss_task(task_id: str, city: str, keyword: str, salary: str, start_page: int, target_jobs: int):
+async def _run_boss_task(task_id: str, city: str, keyword: str, salary: str, start_page: int, target_jobs: int,
+                         ledger_keyword: str | None = None, ledger_city: str | None = None,
+                         ledger_salary: str | None = None):
+    from app.automation import platform_mutex
+    _gate_token = ""  # 闸门未放行时为空：release 按空 token no-op（token 精确校验语义）
+    result_meta: dict = {}
     try:
+        # 平台级抓取↔投递互斥：同平台投递在飞时限时等待，超时跳过本轮派发。
+        # 检查放在 try 内——派发方已预写 _platform_running_tasks 登记，只有 finally 能清
+        _gate_token = await platform_mutex.acquire_scrape("boss", owner=task_id, timeout_s=_SCRAPE_GATE_TIMEOUT_S)
+        if not _gate_token:
+            logger.warning(f"[ScrapeGate] BOSS直聘 投递进行中，抓取任务 {task_id} 跳过本轮派发")
+            await _push_scrape_skipped(task_id, "BOSS直聘", " 正在投递中，本轮抓取已跳过（投递结束后可重试）")
+            return _SCRAPE_SKIPPED
         # 使用动态导入以避免全局依赖问题
         import sys
         boss_dir = os.path.join(PROJECT_ROOT, "boss_scraper")
@@ -250,15 +343,28 @@ async def _run_boss_task(task_id: str, city: str, keyword: str, salary: str, sta
             salary=salary,
             start_page=start_page,
             target_jobs=target_jobs,
-            sse_task_id=task_id
+            sse_task_id=task_id,
+            ledger_keyword=ledger_keyword,
+            ledger_city=ledger_city,
+            ledger_salary=ledger_salary,
+            result_meta=result_meta,
         )
+        return result_meta
     except Exception as e:
         logger.error(f"❌ BOSS爬虫异常崩溃: {str(e)}")
         from app.tasks.state import task_queues
         if task_id in task_queues:
             err_msg = json.dumps({"type": "error", "message": f"BOSS爬虫异常崩溃: {str(e)}"}, ensure_ascii=False)
             await task_queues[task_id].put(f"data: {err_msg}\n\n")
+        # 异常路径也返回 result_meta：控制器抛错前可能已写入 fail_reason/success，
+        # 丢弃会让 _run_and_track 误判为正常收尾、漏发平台失败通知。
+        # 外审 R1-P1：崩溃轮必须显式标记失败——控制器抛错前未必写过 success=False，
+        # 缺省 True 会让 _run_and_track 把崩溃轮误判为成功并错误推进续抓游标
+        result_meta["success"] = False
+        result_meta.setdefault("fail_reason", f"BOSS爬虫异常崩溃: {str(e)[:200]}")
+        return result_meta
     finally:
+        await platform_mutex.release_scrape("boss", owner=task_id, token=_gate_token)
         if _platform_running_tasks.get("boss") == task_id:
             _platform_running_tasks.pop("boss", None)
         from app.tasks.state import schedule_task_cleanup, task_queues
@@ -266,8 +372,18 @@ async def _run_boss_task(task_id: str, city: str, keyword: str, salary: str, sta
             await task_queues[task_id].put('data: {"type": "end"}\n\n')
         schedule_task_cleanup(task_id, delay_seconds=300)
 
-async def _run_liepin_task(task_id: str, city: str, keyword: str, salary: str, start_page: int, target_jobs: int):
+async def _run_liepin_task(task_id: str, city: str, keyword: str, salary: str, start_page: int, target_jobs: int,
+                           ledger_keyword: str | None = None, ledger_city: str | None = None,
+                           ledger_salary: str | None = None):
+    from app.automation import platform_mutex
+    _gate_token = ""  # 闸门未放行时为空：release 按空 token no-op（token 精确校验语义）
+    result_meta: dict = {}
     try:
+        _gate_token = await platform_mutex.acquire_scrape("liepin", owner=task_id, timeout_s=_SCRAPE_GATE_TIMEOUT_S)
+        if not _gate_token:
+            logger.warning(f"[ScrapeGate] 猎聘 投递进行中，抓取任务 {task_id} 跳过本轮派发")
+            await _push_scrape_skipped(task_id, "猎聘", " 正在投递中，本轮抓取已跳过（投递结束后可重试）")
+            return _SCRAPE_SKIPPED
         import sys
         liepin_dir = os.path.join(PROJECT_ROOT, "liepin_scraper")
         if liepin_dir not in sys.path:
@@ -281,15 +397,25 @@ async def _run_liepin_task(task_id: str, city: str, keyword: str, salary: str, s
             salary=salary,
             start_page=start_page,
             target_jobs=target_jobs,
-            sse_task_id=task_id
+            sse_task_id=task_id,
+            ledger_keyword=ledger_keyword,
+            ledger_city=ledger_city,
+            ledger_salary=ledger_salary,
+            result_meta=result_meta,
         )
+        return result_meta
     except Exception as e:
         logger.error(f"❌ 猎聘爬虫异常崩溃: {str(e)}")
         from app.tasks.state import task_queues
         if task_id in task_queues:
             err_msg = json.dumps({"type": "error", "message": f"猎聘爬虫异常崩溃: {str(e)}"}, ensure_ascii=False)
             await task_queues[task_id].put(f"data: {err_msg}\n\n")
+        # 外审 R1-P1：崩溃轮显式标记失败（同 BOSS——缺省 success=True 会掩盖崩溃）
+        result_meta["success"] = False
+        result_meta.setdefault("fail_reason", f"猎聘爬虫异常崩溃: {str(e)[:200]}")
+        return result_meta
     finally:
+        await platform_mutex.release_scrape("liepin", owner=task_id, token=_gate_token)
         if _platform_running_tasks.get("liepin") == task_id:
             _platform_running_tasks.pop("liepin", None)
         from app.tasks.state import schedule_task_cleanup, task_queues
@@ -297,8 +423,18 @@ async def _run_liepin_task(task_id: str, city: str, keyword: str, salary: str, s
             await task_queues[task_id].put('data: {"type": "end"}\n\n')
         schedule_task_cleanup(task_id, delay_seconds=300)
 
-async def _run_51job_task(task_id: str, city: str, keyword: str, salary: str, start_page: int, target_jobs: int):
+async def _run_51job_task(task_id: str, city: str, keyword: str, salary: str, start_page: int, target_jobs: int,
+                          ledger_keyword: str | None = None, ledger_city: str | None = None,
+                          ledger_salary: str | None = None):
+    from app.automation import platform_mutex
+    _gate_token = ""  # 闸门未放行时为空：release 按空 token no-op
+    result_meta: dict = {}
     try:
+        _gate_token = await platform_mutex.acquire_scrape("51job", owner=task_id, timeout_s=_SCRAPE_GATE_TIMEOUT_S)
+        if not _gate_token:
+            logger.warning(f"[ScrapeGate] 51job 投递进行中，抓取任务 {task_id} 跳过本轮派发")
+            await _push_scrape_skipped(task_id, "51job", " 正在投递中，本轮抓取已跳过（投递结束后可重试）")
+            return _SCRAPE_SKIPPED
         import sys
         job51_dir = os.path.join(PROJECT_ROOT, "51job_scraper")
         if job51_dir not in sys.path:
@@ -306,24 +442,35 @@ async def _run_51job_task(task_id: str, city: str, keyword: str, salary: str, st
         import importlib
         job51_nl = importlib.import_module("51job_nl_controller")
 
-        # 返回本轮最后触碰页码（异常时为 None），供 _run_and_track 续抓回写
-        return await job51_nl.process_51job_scraping_request(
+        # 返回本轮最后触碰页码/到底信号，供 _run_and_track 续抓回写
+        last_touched = await job51_nl.process_51job_scraping_request(
             chat_id="agent_cli",
             city=city,
             keyword=keyword,
             salary=salary,
             start_page=start_page,
             target_jobs=target_jobs,
-            sse_task_id=task_id
+            sse_task_id=task_id,
+            ledger_keyword=ledger_keyword,
+            ledger_city=ledger_city,
+            ledger_salary=ledger_salary,
+            result_meta=result_meta,
         )
+        if "last_page" not in result_meta and isinstance(last_touched, int):
+            result_meta["last_page"] = last_touched
+        return result_meta
     except Exception as e:
         logger.error(f"❌ 51job爬虫异常崩溃: {str(e)}")
         from app.tasks.state import task_queues
         if task_id in task_queues:
             err_msg = json.dumps({"type": "error", "message": f"51job爬虫异常崩溃: {str(e)}"}, ensure_ascii=False)
             await task_queues[task_id].put(f"data: {err_msg}\n\n")
-        return None
+        # 外审 R1-P1：崩溃轮显式标记失败（同 BOSS——缺省 success=True 会掩盖崩溃）
+        result_meta["success"] = False
+        result_meta.setdefault("fail_reason", f"51job爬虫异常崩溃: {str(e)[:200]}")
+        return result_meta
     finally:
+        await platform_mutex.release_scrape("51job", owner=task_id, token=_gate_token)
         if _platform_running_tasks.get("51job") == task_id:
             _platform_running_tasks.pop("51job", None)
         from app.tasks.state import schedule_task_cleanup, task_queues
@@ -341,7 +488,7 @@ async def _run_xhs_task(task_id: str, keyword: str, target_jobs: int, sort_by: s
             logger.warning(f"🚧 [xhs] {warn_msg}")
             from app.tasks.state import task_queues as _tq
             await _tq[task_id].put(f"data: {json.dumps({'type': 'error', 'message': warn_msg}, ensure_ascii=False)}\n\n")
-            return
+            return {"success": False, "fail_reason": warn_msg}
 
         import sys
         xhs_dir = os.path.join(PROJECT_ROOT, "xiaohongshu_scraper")
@@ -376,6 +523,7 @@ async def _run_xhs_task(task_id: str, keyword: str, target_jobs: int, sort_by: s
         if task_id in task_queues:
             err_msg = json.dumps({"type": "error", "message": f"小红书爬虫异常崩溃: {str(e)}"}, ensure_ascii=False)
             await task_queues[task_id].put(f"data: {err_msg}\n\n")
+        return {"success": False, "fail_reason": f"小红书爬虫异常崩溃: {str(e)}"}
     finally:
         if _platform_running_tasks.get("xiaohongshu") == task_id:
             _platform_running_tasks.pop("xiaohongshu", None)
@@ -384,8 +532,18 @@ async def _run_xhs_task(task_id: str, keyword: str, target_jobs: int, sort_by: s
             await task_queues[task_id].put('data: {"type": "end"}\n\n')
         schedule_task_cleanup(task_id, delay_seconds=300)
 
-async def _run_zhilian_task(task_id: str, city: str, keyword: str, salary: str, start_page: int, target_jobs: int):
+async def _run_zhilian_task(task_id: str, city: str, keyword: str, salary: str, start_page: int, target_jobs: int,
+                            ledger_keyword: str | None = None, ledger_city: str | None = None,
+                            ledger_salary: str | None = None):
+    from app.automation import platform_mutex
+    _gate_token = ""  # 闸门未放行时为空：release 按空 token no-op
+    result_meta: dict = {}
     try:
+        _gate_token = await platform_mutex.acquire_scrape("zhilian", owner=task_id, timeout_s=_SCRAPE_GATE_TIMEOUT_S)
+        if not _gate_token:
+            logger.warning(f"[ScrapeGate] 智联招聘 投递进行中，抓取任务 {task_id} 跳过本轮派发")
+            await _push_scrape_skipped(task_id, "智联招聘", " 正在投递中，本轮抓取已跳过（投递结束后可重试）")
+            return _SCRAPE_SKIPPED
         import sys
         zhilian_dir = os.path.join(PROJECT_ROOT, "zhilian_scraper")
         if zhilian_dir not in sys.path:
@@ -399,15 +557,25 @@ async def _run_zhilian_task(task_id: str, city: str, keyword: str, salary: str, 
             salary=salary,
             start_page=start_page,
             target_jobs=target_jobs,
-            sse_task_id=task_id
+            sse_task_id=task_id,
+            ledger_keyword=ledger_keyword,
+            ledger_city=ledger_city,
+            ledger_salary=ledger_salary,
+            result_meta=result_meta,
         )
+        return result_meta
     except Exception as e:
         logger.error(f"❌ 智联爬虫异常崩溃: {str(e)}")
         from app.tasks.state import task_queues
         if task_id in task_queues:
             err_msg = json.dumps({"type": "error", "message": f"智联爬虫异常崩溃: {str(e)}"}, ensure_ascii=False)
             await task_queues[task_id].put(f"data: {err_msg}\n\n")
+        # 外审 R1-P1：崩溃轮显式标记失败（同 BOSS——缺省 success=True 会掩盖崩溃）
+        result_meta["success"] = False
+        result_meta.setdefault("fail_reason", f"智联爬虫异常崩溃: {str(e)[:200]}")
+        return result_meta
     finally:
+        await platform_mutex.release_scrape("zhilian", owner=task_id, token=_gate_token)
         if _platform_running_tasks.get("zhilian") == task_id:
             _platform_running_tasks.pop("zhilian", None)
         from app.tasks.state import schedule_task_cleanup, task_queues
@@ -490,7 +658,6 @@ async def run_dispatch_collect(keyword: str, city: str, salary: str, target_jobs
     返回 sub_tasks 列表（含每个平台的 task_id / 翻译后参数 / 起始页）。
     """
     from app.session.salary_mapper import adapt_keyword, map_salary
-    from app.session.scrape_sessions import get_last_page
     from app.tasks.state import task_queues
 
     sub_tasks = []
@@ -511,13 +678,12 @@ async def run_dispatch_collect(keyword: str, city: str, salary: str, target_jobs
         platform_keyword = adapt_keyword(p_keyword, platform)
 
         # 3. 续抓页码（同条件才续，否则从第 1 页开始）
-        # 51job 的 last_page 是「最后触碰页码」（末页可能未抓满），从该页重爬兜底；
-        # 其余平台仍是旧语义（回写任务起始页），暂保持 last+1 不变，待逐个修复
-        last_page = get_last_page(p_keyword, p_city, p_salary, platform)
-        if last_page > 0:
-            start_page = last_page if platform == "51job" else last_page + 1
-        else:
-            start_page = 1
+        # 平台语义差异显式化（registry.resume_mode）：
+        # - rescan_last：从最后触碰页重扫（51job 的“最后触碰页”可能只扫了一部分，
+        #   重扫一页的判重成本很低，却能让页尾在下一轮自愈）；
+        # - next_page：从最后触碰页 +1 开始（0.4.1 的非 51job 语义）。
+        # 另对 51job 做过期游标硬校验，避免历史污染把整轮带到越界页后误判抓尽。
+        start_page = _resume_start_page(platform, p_keyword, p_city, p_salary)
 
         # 4. 创建子任务并登记并发锁（防止批量分发与调试面板同平台任务互相踩踏）
         task_id = f"spider_{platform}_{uuid.uuid4().hex[:8]}"
@@ -527,28 +693,37 @@ async def run_dispatch_collect(keyword: str, city: str, salary: str, target_jobs
         # 5. 并发分发到对应平台（asyncio.create_task 实现真并行）
         if platform == "boss":
             _task = asyncio.create_task(
-                _run_and_track(_run_boss_task(task_id, p_city, platform_keyword, platform_salary, start_page, platform_target),
-                               task_id, p_keyword, p_city, p_salary, platform, start_page)
+                _run_and_track(_run_boss_task(task_id, p_city, platform_keyword, platform_salary, start_page, platform_target,
+                                              ledger_keyword=p_keyword, ledger_city=p_city, ledger_salary=p_salary),
+                               task_id, p_keyword, p_city, p_salary, platform, start_page,
+                               master_task_id=master_task_id)
             )
         elif platform == "liepin":
             _task = asyncio.create_task(
-                _run_and_track(_run_liepin_task(task_id, p_city, platform_keyword, platform_salary, start_page, platform_target),
-                               task_id, p_keyword, p_city, p_salary, platform, start_page)
+                _run_and_track(_run_liepin_task(task_id, p_city, platform_keyword, platform_salary, start_page, platform_target,
+                                                ledger_keyword=p_keyword, ledger_city=p_city, ledger_salary=p_salary),
+                               task_id, p_keyword, p_city, p_salary, platform, start_page,
+                               master_task_id=master_task_id)
             )
         elif platform == "51job":
             _task = asyncio.create_task(
-                _run_and_track(_run_51job_task(task_id, p_city, platform_keyword, platform_salary, start_page, platform_target),
-                               task_id, p_keyword, p_city, p_salary, platform, start_page)
+                _run_and_track(_run_51job_task(task_id, p_city, platform_keyword, platform_salary, start_page, platform_target,
+                                               ledger_keyword=p_keyword, ledger_city=p_city, ledger_salary=p_salary),
+                               task_id, p_keyword, p_city, p_salary, platform, start_page,
+                               master_task_id=master_task_id)
             )
         elif platform == "zhilian":
             _task = asyncio.create_task(
-                _run_and_track(_run_zhilian_task(task_id, p_city, platform_keyword, platform_salary, start_page, platform_target),
-                               task_id, p_keyword, p_city, p_salary, platform, start_page)
+                _run_and_track(_run_zhilian_task(task_id, p_city, platform_keyword, platform_salary, start_page, platform_target,
+                                                 ledger_keyword=p_keyword, ledger_city=p_city, ledger_salary=p_salary),
+                               task_id, p_keyword, p_city, p_salary, platform, start_page,
+                               master_task_id=master_task_id)
             )
         elif platform == "xiaohongshu":
             _task = asyncio.create_task(
                 _run_and_track(_run_xhs_task(task_id, platform_keyword, platform_target, "time_descending"),
-                               task_id, p_keyword, p_city, p_salary, platform, start_page)
+                               task_id, p_keyword, p_city, p_salary, platform, start_page,
+                               master_task_id=master_task_id)
             )
         else:
             _task = None
@@ -591,6 +766,9 @@ async def _forward_subtask_events(sub_task_id: str, platform: str, master_task_i
     - 子任务的 end / terminated / complete 事件均为本平台结束信号，不转发到主流
       （complete 是爬虫的终结帧，若转发进主队列会被 /logs 端点误判为全链路结束而提前断流）
     - heartbeat 事件只用于给本协程保活（防长静默被误判为结束），不转发
+    - error 事件降级为 warning：单平台崩溃是局部失败，不代表整条链路失败。
+      原样转发会让 pipeline-store 的 "error" 分支把全局状态置为 error，而其他平台
+      仍在继续抓取/评估（2026-10-30 真机事故：页面显示任务失败，猎聘/智联却继续跑完）。
     - progress 事件补充 stage="scraping" 字段
 
     退出判据（按优先级）：abort 信号 / 结束帧 / 子任务真实结束且队列排空 /
@@ -641,31 +819,167 @@ async def _forward_subtask_events(sub_task_id: str, platform: str, master_task_i
             continue
 
         # 打标签 + 补阶段字段后转发到主队列
-        data["platform"] = platform
-        if msg_type == "progress":
-            data["stage"] = "scraping"
+        if msg_type == "error":
+            # 单平台错误 → 局部告警：保留原事件其余字段（当前/总数等），在保留
+            # 原字段的基础上覆盖 type/message/platform/stage/platform_error，绝不
+            # 把全局状态置为 error（其他平台 worker 仍在飞，整条链路仍在推进）。
+            raw_message = data.get("message") or "(无消息)"
+            logger.warning(
+                "[Forward] 平台 %s 子任务错误降级为 warning（不阻断全链路）: %s",
+                platform, raw_message,
+            )
+            data = {
+                **data,
+                "type": "warning",
+                "message": (
+                    f"⚠️ {raw_message}；"
+                    "该平台本轮提前结束，其他平台与后续阶段继续执行。"
+                ),
+                "platform": platform,
+                "stage": "scraping",
+                "platform_error": True,
+            }
+        else:
+            data["platform"] = platform
+            if msg_type == "progress":
+                data["stage"] = "scraping"
         master_queue.put_nowait(f'data: {_json.dumps(data, ensure_ascii=False)}\n\n')
 
 
-async def _run_and_track(coro, _task_id: str, keyword: str, city: str, salary: str, platform: str, start_page: int):
+async def _run_and_track(coro, _task_id: str, keyword: str, city: str, salary: str, platform: str, start_page: int,
+                         master_task_id: str | None = None):
     """
     包装爬虫任务：运行完成后回写续抓页码。
     不再从 SSE 队列读事件（避免和前端抢事件导致进度条丢失）。
 
-    回写值优先级：爬虫返回的真实「最后触碰页码」（目前仅 51job 返回，
-    下次从该页重爬兜底，防末页未抓满）→ 兜底用任务起始页（旧行为，
-    未返回真实页码的平台保持现状，待逐个修复）。
+    2026-10-30 重构：爬虫 task 返回 dict（inserted/search_total/hit_bottom/last_page），
+    这里统一回写真实末页；hit_bottom 时回写 0，下次从第 1 页重新开始（避免越过末页后
+    继续 last_page+1 抓空页）。兼容旧的 int/None 返回（测试替身/旁路调用）。
+
+    2026-10-31 新增平台失败通知（全平台通用）：result.success=False 且带 fail_reason
+    （或 runner 异常）时，向全链路看板发 platform_failure 事件（指挥中心右下角
+    手动关闭弹窗的数据源）并同步发飞书通知；手动急刹不产生 fail_reason → 不通知。
     """
     from app.session.scrape_sessions import update_last_page
-    final_page = None
+    result = None
+    runner_error: str | None = None
     try:
-        final_page = await coro
+        result = await coro
     except Exception as e:
+        runner_error = f"爬虫任务异常: {e}"
         logger.error(f"[Dispatch] {platform} 任务异常: {e}")
     finally:
-        if isinstance(final_page, int) and final_page > 0:
-            resume_page = final_page
+        if result is _SCRAPE_SKIPPED:
+            # 投递闸门拒绝：本轮什么都没抓，续抓页码不推进——回写 start_page 会让
+            # 非 51job 平台（续抓起点=last_page+1）永久漏掉被跳过的那一页
+            logger.info(f"[Dispatch] {platform} 本轮被投递闸门跳过，续抓页码不推进")
         else:
-            resume_page = start_page
-        update_last_page(keyword, city, salary, platform, resume_page)
-        logger.info(f"[Dispatch] {platform} 完成，续抓页码已更新为 {resume_page}")
+            final_page = None
+            hit_bottom = False
+            stale_cursor = False
+            success = True
+            if isinstance(result, dict):
+                final_page = result.get("last_page")
+                hit_bottom = bool(result.get("hit_bottom"))
+                stale_cursor = bool(result.get("stale_cursor"))
+                success = bool(result.get("success", True))
+            elif isinstance(result, int) and result > 0:
+                final_page = result
+            if stale_cursor:
+                # 陈旧游标/非首页加载失败：强制从第 1 页重开，不能把 start_page 写回
+                # （否则下一轮继续撞越界页，形成“每轮 0 条”死循环）。
+                resume_page = 0
+            elif not success:
+                # 失败轮不推进页码：下一轮从本轮起点重扫，避免跳过崩溃/验证码页
+                resume_page = start_page
+            elif hit_bottom:
+                resume_page = 0
+            elif isinstance(final_page, int) and final_page > 0:
+                resume_page = final_page
+            else:
+                resume_page = start_page
+            update_last_page(keyword, city, salary, platform, resume_page)
+            logger.info(
+                f"[Dispatch] {platform} 完成，续抓页码已更新为 {resume_page}"
+                + ("（已到平台底部，下次从第 1 页重开）" if hit_bottom and success else "")
+                + ("（续抓游标越界/首页加载失败，已重置为第 1 页）" if stale_cursor else "")
+                + ("（本轮失败，保留起点重扫）" if not success and not stale_cursor else "")
+            )
+
+            # 平台失败通知（全链路看板弹窗 + 飞书）：只在引擎显式上报失败原因时触发，
+            # 手动急刹/投递闸门跳过/正常收尾都不会走到这里。
+            failure_reason = None
+            if runner_error:
+                failure_reason = runner_error
+            elif isinstance(result, dict) and not result.get("success", True):
+                failure_reason = result.get("fail_reason")
+            if failure_reason:
+                cursor_note = (
+                    "续抓游标已重置，下轮从第 1 页重扫" if stale_cursor
+                    else "续抓起点已保留，下轮自动重试"
+                )
+                await _emit_platform_failure(
+                    platform, failure_reason, keyword, city, salary,
+                    _task_id, master_task_id, cursor_note,
+                )
+
+
+# 指挥中心弹窗/飞书通知用的平台展示名（registry.display_name 的兜底镜像）
+_PLATFORM_DISPLAY_NAMES = {
+    "boss": "BOSS直聘",
+    "zhilian": "智联招聘",
+    "51job": "前程无忧",
+    "liepin": "猎聘",
+    "xiaohongshu": "小红书",
+}
+
+
+async def _emit_platform_failure(platform: str, reason: str, keyword: str, city: str, salary: str,
+                                 task_id: str, master_task_id: str | None, cursor_note: str) -> None:
+    """平台抓取失败通知：SSE platform_failure 事件（前端右下角弹窗，手动关闭）+ 飞书消息。
+
+    任何一环失败都只降级打日志，绝不影响调度主流程。
+    """
+    try:
+        from app.session.registry import resolve_platform
+        _cfg = resolve_platform(platform)
+        display_name = (_cfg.display_name if _cfg else None) or _PLATFORM_DISPLAY_NAMES.get(platform, platform)
+    except Exception:
+        display_name = _PLATFORM_DISPLAY_NAMES.get(platform, platform)
+
+    event = {
+        "type": "platform_failure",
+        "platform": platform,
+        "platform_name": display_name,
+        "reason": reason,
+        "keyword": keyword,
+        "city": city,
+        "salary": salary,
+        "cursor_note": cursor_note,
+        "stage": "scraping",
+        # 发射时刻毫秒：TaskChannel 断线重连会回放历史消息（同载荷二次投递），
+        # 前端以 ts 做精确去重——重放件被吞，新一轮失败的全新 ts 正常弹出
+        "ts": int(time.time() * 1000),
+    }
+    try:
+        from app.tasks.state import task_queues
+        # 全自动链路直推主队列（此时子任务 end 帧已发出、转发协程可能已退出，
+        # 走子队列会被丢失）；手动模式落回子任务队列（调试/控制台面板监听处）。
+        target_task_id = master_task_id if (master_task_id and master_task_id in task_queues) else task_id
+        if target_task_id in task_queues:
+            await task_queues[target_task_id].put(
+                f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            )
+    except Exception as e:
+        logger.warning(f"[Dispatch] platform_failure 事件推送失败（不影响主流程）: {e}")
+
+    try:
+        from app.automation.pipeline_report import send_pipeline_report
+        await send_pipeline_report(
+            f"🚨 {display_name}抓取任务失败\n"
+            f"失败原因：{reason}\n"
+            f"搜索条件：{keyword or '不限'} | {city or '不限'} | {salary or '不限'}\n"
+            f"{cursor_note}"
+        )
+    except Exception as e:
+        logger.warning(f"[Dispatch] 平台失败飞书通知发送失败（不影响主流程）: {e}")

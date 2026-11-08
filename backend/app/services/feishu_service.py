@@ -11,6 +11,7 @@ from app.core.feishu_utils import (
     extract_job_grade,
     feishu_field_to_plain_str,
     get_tenant_access_token,
+    has_rewrite_output,
     is_custom_record,
     safe_feishu_request,
 )
@@ -99,6 +100,77 @@ def get_active_resume_record_id() -> str:
     except Exception as e:
         print(f"❌ 读取启用简历记录 ID 失败: {e}")
         return ""
+
+def get_resume_photo_url(record_id: str = "") -> str | None:
+    """读取指定简历记录（缺省=启用简历）「照片」附件字段并解析成代理 URL。
+
+    渲染照片的单一可信源：结构化数据里烘焙的 personalInfo.avatar_url 是首次
+    上传后的历史快照（换照片不更新它），渲染链路又普遍 personalInfo 优先，
+    导致物料永远渲染第一张照片。所有渲染入口必须从本函数取当前照片，再经
+    avatar_injection.apply_feishu_avatar 覆写进渲染数据。
+
+    返回值三态：
+    - "https://..." — 确认有照片，返回当前代理 URL
+    - ""            — 记录确认无照片（调用方应据此清除烘焙旧值）
+    - None          — 读取失败（token 缺失/网络/记录不存在；调用方保留现状，
+                      按烘焙值渲染，绝不因一次抖动把有照片渲染成无照片）
+    """
+    try:
+        from app.strategy.avatar_injection import extract_photo_url
+
+        token = get_tenant_access_token()
+        if not token:
+            return None
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        if record_id:
+            url = (f"https://open.feishu.cn/open-apis/bitable/v1/apps/{settings.FEISHU_APP_TOKEN}"
+                   f"/tables/{settings.FEISHU_TABLE_ID_RESUMES}/records/{record_id}")
+            resp = safe_feishu_request("GET", url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            fields = resp.json().get("data", {}).get("record", {}).get("fields", {}) or {}
+            return extract_photo_url(fields.get("照片"))
+        url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{settings.FEISHU_APP_TOKEN}/tables/{settings.FEISHU_TABLE_ID_RESUMES}/records/search"
+        payload = {
+            "filter": {
+                "conjunction": "and",
+                "conditions": [{"field_name": "当前状态", "operator": "is", "value": ["启用"]}]
+            }
+        }
+        resp = safe_feishu_request("POST", url, headers=headers, json=payload, timeout=15)
+        resp.raise_for_status()
+        items = resp.json().get("data", {}).get("items", [])
+        if not items:
+            return ""
+        return extract_photo_url(items[0].get("fields", {}).get("照片"))
+    except Exception as e:
+        print(f"❌ 读取简历照片字段失败: {e}")
+        return None
+
+def apply_resume_photo(resume_dict: dict[str, Any], record_id: str = "") -> None:
+    """把「照片」字段的当前 URL 覆写进渲染数据（就地修改，失败仅告警不阻断渲染）。
+
+    与 avatar_injection.apply_feishu_avatar 的分工：本函数面向「渲染引擎直接
+    拿到一份简历 dict」的链路（本地 HTML 引擎、精投定制渲染），自动取照片字段
+    并覆写；已有 record 上下文的链路（打印路由按 record 取照片）直接用
+    apply_feishu_avatar 即可。
+
+    三态语义（调用方不得在照片读取成功前剔除烘焙旧值，「保留现状」才成立）：
+    - URL / ""（确认无照片）→ apply_feishu_avatar 覆写或清除烘焙旧值
+    - None（读取失败）→ 不动 resume_dict，烘焙旧值按原样渲染兜底，
+      绝不因一次抖动把有照片渲染成无照片
+    record_id 传入时读该记录的照片（如海投母本并非当前启用简历的场景）。
+    """
+    if not isinstance(resume_dict, dict):
+        return
+    try:
+        photo_url = get_resume_photo_url(record_id)
+        if photo_url is None:
+            return
+        from app.strategy.avatar_injection import apply_feishu_avatar
+
+        apply_feishu_avatar(resume_dict, photo_url)
+    except Exception as e:
+        print(f"⚠️ 注入当前简历照片失败（按烘焙值渲染）: {e}")
 
 def get_active_resume_meta() -> dict[str, Any]:
     """返回当前启用的简历元信息：ID、版本名称、字数、状态等"""
@@ -653,7 +725,12 @@ def get_delivery_result_jobs():
 
 
 def get_pending_review_jobs_from_feishu(max_pages: int = 3):
-    """获取处于【简历人工复核】、【已完成初步评估】或【待投递】状态的待审批岗位，并提取物料就绪状态与公司规模。
+    """获取真正停在人工审批断点的岗位（【简历人工复核】/【海投人工复核】）。
+
+    2026-10-30 状态口径修复：此前把【已完成初步评估】【待投递】也塞进「待审批」查询，
+    导致刚评完、正在装配话术/改写简历的岗位被 jobs-snapshot 误判成 waiting，待审批
+    数量随 12 秒轮询乱跳。已完成初步评估由快照第 4 段映射为 done，待投递由第 2.5 段
+    的 scheduled 列表消费，二者都不属于审批断点。
 
     注意：跟进状态是单选字段，is 过滤每条 condition 只能带 1 个值，
     多值必须拆成多条 condition 用 or 连接。
@@ -671,8 +748,9 @@ def get_pending_review_jobs_from_feishu(max_pages: int = 3):
         "conditions": [
             {"field_name": "跟进状态", "operator": "is", "value": ["简历人工复核"]},
             {"field_name": "跟进状态", "operator": "is", "value": ["海投人工复核"]},
-            {"field_name": "跟进状态", "operator": "is", "value": ["已完成初步评估"]},
-            {"field_name": "跟进状态", "operator": "is", "value": ["待投递"]}
+            # 疑似重复也是人工审批断点（action_service：人工改状态=复核放行并记白名单），
+            # 漏查曾让疑似重复岗位在指挥中心待审批池隐身、卡片无任何标记（2026-11-01）
+            {"field_name": "跟进状态", "operator": "is", "value": ["疑似重复"]},
         ]
     }
 
@@ -756,6 +834,8 @@ def get_pending_review_jobs_from_feishu(max_pages: int = 3):
                     "greeting_text": greeting_val,
                     "greeting_msg": greeting_val or "",
                     "is_custom": is_custom,
+                    # 真实改写产物证据：用于区分「评级 A/B 但走海投轨」与真正精投改写岗
+                    "has_rewrite": has_rewrite_output(fields),
                     "follow_status": follow_status,
                     "failure_info": failure_info,
                     "status": "error" if failure_info else "waiting",
@@ -847,6 +927,7 @@ def get_scheduled_delivery_jobs_from_feishu(max_pages: int = 5, respect_schedule
                     "grade": grade.upper(),
                     # 🌟 统一精投判定口径（is_custom_record），供看板 review_type 与发射前海投物料刷新共用
                     "is_custom": is_custom_record(fields),
+                    "has_rewrite": has_rewrite_output(fields),
                     "salary": extract_feishu_text(fields.get("薪资", "")) or "",
                     "city": extract_feishu_text(fields.get("城市", "")) or "",
                     "company_scale": company_scale,
@@ -924,6 +1005,7 @@ def get_manual_rejected_jobs_from_feishu(max_pages: int = 3):
                     "city": extract_feishu_text(fields.get("城市", "")) or "",
                     "job_url": extract_feishu_text(fields.get("岗位链接", "")),
                     "company_scale": extract_feishu_text(fields.get("公司规模", "")) or "",
+                    "has_rewrite": has_rewrite_output(fields),
                     "follow_status": "已拒绝",
                 })
 
@@ -1035,6 +1117,7 @@ def get_delivered_jobs_from_feishu(max_pages: int = 5, today_only: bool = True):
                     "job_url": extract_feishu_text(fields.get("岗位链接", "")),
                     # 🌟 与待投递/投递编排同口径：is_custom_record 统一判定精投/海投
                     "is_custom": bool(is_custom_record(fields)),
+                    "has_rewrite": has_rewrite_output(fields),
                     "greeting_msg": greeting_val,
                     "has_image": has_image,
                     "has_pdf": has_pdf,

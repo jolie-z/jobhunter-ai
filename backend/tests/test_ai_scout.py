@@ -99,6 +99,92 @@ async def test_ai_scout_engine_never_condition():
         assert result["status"] == "PASS"
 
 @pytest.mark.asyncio
+async def test_ai_scout_never_condition_appends_jd_quote():
+    """死因溯源：never 命中时死因必须带上「触发依据」摘录的 JD 原句。"""
+    strategy = {
+        "ai_scout_rules": [
+            {"keyword": "外包", "condition": "never", "desc": "劳务派遣/外派驻场"}
+        ]
+    }
+    engine = AIScoutEngine(strategy)
+    jd_text = "岗位职责：\n1. 负责产品动画制作\n2. 该岗位为劳务派遣用工，需驻场办公\n3. 双休"
+
+    class MockResponse:
+        def __init__(self, content):
+            self.choices = [MagicMock(message=MagicMock(content=content))]
+
+    # 1. 原句逐字命中 JD -> 标注「JD 原句」
+    verbatim_json = (
+        '{"外包": true, "触发依据": {"外包": "该岗位为劳务派遣用工，需驻场办公"}}'
+    )
+    mock_client = MagicMock()
+    async def mock_create(*args, **kwargs):
+        return MockResponse(verbatim_json)
+    mock_client.chat.completions.create = mock_create
+    with patch('job_processor.step1_rule_filter.get_cleaner_client', return_value=mock_client):
+        result = await engine.evaluate_job("动画师", jd_text)
+    assert result["status"] == "REJECT"
+    assert "触发绝不条件 [外包]" in result["reject_reason"]
+    assert "JD 原句: “该岗位为劳务派遣用工，需驻场办公”" in result["reject_reason"]
+
+    # 2. 摘录与原文不一致 -> 标注「模型转述」（提示人工回 JD 核对）
+    paraphrased_json = '{"外包": true, "触发依据": {"外包": "岗位属于派遣性质"}}'
+    mock_client2 = MagicMock()
+    async def mock_create2(*args, **kwargs):
+        return MockResponse(paraphrased_json)
+    mock_client2.chat.completions.create = mock_create2
+    with patch('job_processor.step1_rule_filter.get_cleaner_client', return_value=mock_client2):
+        result2 = await engine.evaluate_job("动画师", jd_text)
+    assert result2["status"] == "REJECT"
+    assert "JD 依据(模型转述): “岗位属于派遣性质”" in result2["reject_reason"]
+
+    # 3. 模型未返回触发依据（旧格式）-> 死因保持原样，不附加原句
+    mock_client3 = MagicMock()
+    async def mock_create3(*args, **kwargs):
+        return MockResponse('{"外包": true}')
+    mock_client3.chat.completions.create = mock_create3
+    with patch('job_processor.step1_rule_filter.get_cleaner_client', return_value=mock_client3):
+        result3 = await engine.evaluate_job("动画师", jd_text)
+    assert result3["status"] == "REJECT"
+    assert result3["reject_reason"] == "触发 AI 侦察兵排雷: 触发绝不条件 [外包]"
+
+
+@pytest.mark.asyncio
+async def test_ai_scout_evidence_key_does_not_affect_judgement():
+    """「触发依据」只是溯源附件：不得影响布尔判定，也不得把 must 条件误判。"""
+    strategy = {
+        "ai_scout_rules": [
+            {"keyword": "外包", "condition": "never", "desc": "外包"},
+            {"keyword": "双休", "condition": "must", "desc": "每周休息两天"},
+        ]
+    }
+    engine = AIScoutEngine(strategy)
+
+    class MockResponse:
+        def __init__(self, content):
+            self.choices = [MagicMock(message=MagicMock(content=content))]
+
+    # 全部 false + 空触发依据 -> PASS
+    mock_client = MagicMock()
+    async def mock_create(*args, **kwargs):
+        return MockResponse('{"外包": false, "双休": true, "触发依据": {}}')
+    mock_client.chat.completions.create = mock_create
+    with patch('job_processor.step1_rule_filter.get_cleaner_client', return_value=mock_client):
+        result = await engine.evaluate_job("开发", "双休，正式编制")
+    assert result["status"] == "PASS"
+
+    # must 未满足：即使模型多给了触发依据对象，死因也保持原句，不附加原句
+    mock_client2 = MagicMock()
+    async def mock_create2(*args, **kwargs):
+        return MockResponse('{"外包": false, "双休": false, "触发依据": {"双休": "无"}}')
+    mock_client2.chat.completions.create = mock_create2
+    with patch('job_processor.step1_rule_filter.get_cleaner_client', return_value=mock_client2):
+        result2 = await engine.evaluate_job("开发", "单休")
+    assert result2["status"] == "REJECT"
+    assert result2["reject_reason"] == "触发 AI 侦察兵排雷: 不满足必须条件 [双休]"
+
+
+@pytest.mark.asyncio
 async def test_cleaner_model_resolution_and_probe():
     import job_processor.step1_rule_filter as s1
     

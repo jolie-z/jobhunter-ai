@@ -28,6 +28,23 @@ logger = logging.getLogger(__name__)
 MAX_FILL_PER_RUN = 60          # 单轮最多挂载条数
 SCAN_PAGES = 3                 # 最多扫描 3 页新线索（每页 100）
 
+# 物料简历模板白名单（与 build_resume_html 支持的 skins 同源；db.update_autopilot_config 落库前同样收敛）
+ALLOWED_MATERIAL_SKINS = ("classic", "color_v1", "color_v2")
+
+
+def get_configured_material_skin() -> str:
+    """读取改写规则面板配置的物料模板；读取失败回落 classic（与历史行为一致）并告警。
+
+    改写节点渲染、auto_heal 补渲染两条定制物料链路与海投通用物料渲染共用，
+    保证精投/海投所有外发物料模板口径一致。"""
+    try:
+        from app.automation.db import get_autopilot_config
+        skin = get_autopilot_config().get("rewrite_material_skin") or "classic"
+    except Exception as e:
+        logger.warning(f"⚠️ [materials] 读取物料模板配置失败，回落 classic: {e}")
+        return "classic"
+    return skin if skin in ALLOWED_MATERIAL_SKINS else "classic"
+
 
 def _find_records_missing_materials(limit: int) -> list[str]:
     """找出缺 PDF备份 的新线索记录 ID（同步，内部走飞书搜索接口）。"""
@@ -72,7 +89,12 @@ def _find_records_missing_materials(limit: int) -> list[str]:
 # 🌟 海投通用物料内存缓存：(timestamp, mats_dict)，TTL 10 分钟，杜绝批量海投重复启动 Playwright 渲染与上传
 # key 必须带 need_image 维度：智联/51job/猎聘只渲染 PDF（无 img_token），若与 BOSS 共用同一条缓存，
 # 10 分钟 TTL 内 BOSS 岗会命中缺长图的物料导致挂载失败/投递中断
-_MASS_MATERIALS_CACHE: dict[tuple[str, bool], tuple[float, dict[str, str]]] = {}
+# key 还带 skin 维度：模板切换后新 key 必然未命中、即时重渲染，换模板即刻生效（无需清缓存或等 TTL 过期）
+_MASS_MATERIALS_CACHE: dict[tuple[str, bool, str], tuple[float, dict[str, str]]] = {}
+
+# 海投打印路由模板参数映射：/print/resume 只认 classic/color/color_v2（page.tsx 白名单），
+# 与 build_resume_html 的 skin 命名（color_v1）不同源——配置落库统一用 skin，出渲染口时映射
+_PRINT_ROUTE_TEMPLATE_MAP = {"classic": "classic", "color_v1": "color", "color_v2": "color_v2"}
 _MASS_MATERIALS_CACHE_TTL = 600
 
 
@@ -133,8 +155,10 @@ async def _render_mass_resume_materials_with_name_internal(resume_record_id: str
 
     # 🌟 海投通用物料批次复用（custom_pdf_name 为空时代表通用简历模板）
     # 避免在批量海投流水线中，多个缺物料岗位重复启动 Playwright 渲染和重复上传飞书
-    if not custom_pdf_name and resume_record_id:
-        cache_key = (resume_record_id, need_image)
+    # 海投物料模板与精投定制物料同源：改写规则面板的物料简历模板选择对双轨生效
+    material_skin = get_configured_material_skin()
+    cache_key = (resume_record_id, need_image, material_skin) if (not custom_pdf_name and resume_record_id) else None
+    if cache_key:
         cached = _MASS_MATERIALS_CACHE.get(cache_key)
         if cached:
             cached_time, cached_res = cached
@@ -215,7 +239,8 @@ async def _render_mass_resume_materials_with_name_internal(resume_record_id: str
 
         if target_rid:
             try:
-                url = f"{frontend_base}/print/resume?record_id={target_rid}&template=classic"
+                print_template = _PRINT_ROUTE_TEMPLATE_MAP.get(material_skin, "classic")
+                url = f"{frontend_base}/print/resume?record_id={target_rid}&template={print_template}"
                 logger.info(f"🎨 正在使用前端高保真打印路由渲染【{name}】物料: {url}")
                 if need_image:
                     pdf_bytes, img_bytes = await asyncio.gather(
@@ -227,10 +252,16 @@ async def _render_mass_resume_materials_with_name_internal(resume_record_id: str
             except Exception as e:
                 logger.warning(f"⚠️ 前端高保真路由渲染异常，自动回退本地引擎: {e}")
 
-        # 🌟 若前端路由渲染未成功，兜底采用本地纯净 HTML 引擎
+        # 🌟 若前端路由渲染未成功，兜底采用本地纯净 HTML 引擎（与打印路由同一模板口径）
         if not pdf_bytes or (need_image and not img_bytes):
             logger.info(f"🎨 回退使用纯净 HTML 引擎直接渲染【{name}】物料...")
-            html_str = build_resume_html(resume_dict or {})
+            # 照片单一可信源：结构化数据里烘焙的 avatar_url 是历史快照，渲染前用
+            # 「照片」字段的当前值覆写，杜绝物料永远渲染第一张照片；同步飞书请求
+            # 放线程池，避免阻塞事件循环（渲染路径本身可容忍该延迟）
+            from app.services.feishu_service import apply_resume_photo
+
+            await asyncio.to_thread(apply_resume_photo, resume_dict or {}, resume_record_id or "")
+            html_str = build_resume_html(resume_dict or {}, skin=material_skin)
             if need_image:
                 pdf_bytes, img_bytes = await asyncio.gather(
                     render_html_to_pdf(html_str, page_size="A4"),
@@ -257,8 +288,8 @@ async def _render_mass_resume_materials_with_name_internal(resume_record_id: str
                 return None
             res = {"pdf_token": pdf_token, "name": name}
 
-        if not custom_pdf_name and resume_record_id:
-            _MASS_MATERIALS_CACHE[(resume_record_id, need_image)] = (time.time(), res)
+        if cache_key:
+            _MASS_MATERIALS_CACHE[cache_key] = (time.time(), res)
         return res
     finally:
         for p in (tmp_pdf, tmp_img):
@@ -273,12 +304,28 @@ async def _render_custom_resume_materials(
     custom_pdf_name: str,
     skin: str = "classic",
     need_image: bool = True,
+    record_id: str = "",
 ) -> dict[str, str] | None:
-    """渲染定制简历结构体为 PDF (+可选长图) 并上传飞书，返回 {pdf_token, img_token, name}。"""
+    """渲染定制简历结构体为 PDF (+可选长图) 并上传飞书，返回 {pdf_token, img_token, name}。
+
+    record_id：定制 JSON 的母本简历记录 ID，照片按它取；缺省按「启用」简历取
+    （历史行为：定制改写 JSON 的母本=当时的启用底稿）。photo 母本与 JSON 母本
+    不一致的场景（切换启用简历后重渲染历史定制物料）由调用方显式传 record_id。
+    """
 
     from app.core.pdf_renderer import render_html_to_image, render_html_to_pdf
     from app.core.resume_html_builder import build_resume_html
     from app.services.export_service import upload_file_to_feishu_async
+
+    # 照片单一可信源：定制 JSON 的 personalInfo.avatar_url 是历史快照（缝合/改写时
+    # 可能带入旧值），渲染前统一注入当前值——所有精投定制物料（rewrite_node /
+    # auto_heal / 聊天录入 / 简历编辑会话）都经此处，一处收口。照片读取失败（None）
+    # 时不动 resume_dict、烘焙旧值按原样渲染兜底，绝不因一次抖动把有照片渲染成无
+    # 照片（因此上游缝合不得提前 strip parsed_json 的烘焙值）。同步飞书请求放线程池，
+    # 避免阻塞事件循环
+    from app.services.feishu_service import apply_resume_photo
+
+    await asyncio.to_thread(apply_resume_photo, resume_dict, record_id or "")
 
     name = custom_pdf_name[:-4] if custom_pdf_name.endswith(".pdf") else custom_pdf_name
     ts = int(time.time())

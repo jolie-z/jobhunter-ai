@@ -302,7 +302,14 @@ def run_skill_based_rewrite(
         elif re.search(r"<FINAL_RESUME>", final_md, re.IGNORECASE):
             # 有开标签无闭合 = 定稿没写完（截断/异常输出的铁证）——显式失败，
             # 不再把含半截内容的全文当正文（2026-10-23 工单根治项）
-            logger.error("❌ [Skill Executor] <FINAL_RESUME> 定稿标签未闭合（疑似输出被截断），拒绝使用残缺内容")
+            # 观测补强（2026-11-01 根因排查）：finish_reason 与原始内容尾部是区分
+            # 「上游流提前终止（stop/None）」与「输出预算撞顶（length）」的唯一现场证据，
+            # token_log 与网关 sync 日志都不记录 finish_reason，必须在此处留下
+            logger.error(
+                "❌ [Skill Executor] <FINAL_RESUME> 定稿标签未闭合（疑似输出被截断），拒绝使用残缺内容"
+                " | finish_reason=%r model=%s 耗时=%.1fs 输出=%d字 原始尾部=%r",
+                finish_reason, model_name, elapsed, len(final_md), final_md[-200:],
+            )
             return "❌ 简历定制失败：定稿标签 <FINAL_RESUME> 未闭合（输出疑似被截断），已拒绝使用残缺内容，请重试。", _empty_usage
         else:
             # 模型未按剧本用标签、直接输出 Markdown：走旧兜底（此时思考块已剔除，安全）

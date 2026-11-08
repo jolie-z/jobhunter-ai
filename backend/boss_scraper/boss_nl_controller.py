@@ -19,6 +19,7 @@ if PROJECT_ROOT not in sys.path:
 
 # 🌟 Windows 防闪窗：子进程统一走防闪窗包装（参照 engine_guard，收口见 backend/subprocess_utils.py）
 from subprocess_utils import popen_hidden
+from engine_guard import PORT_LOCK_BUSY_EXIT_CODE
 
 # 🌟 全局急刹车开关：被飞书 stop_scrape 指令拉高后，底层循环会检测并优雅退出
 GLOBAL_STOP_FLAG = False
@@ -47,6 +48,7 @@ def _ping_heartbeat():
 
 # 🌟 修复并精简导入：直接从新配置中心拉取变量
 from app.core.config import settings
+from app.automation.dup_skip_parse import count_duplicate_skip
 OPENAI_API_KEY = settings.OPENAI_API_KEY
 OPENAI_BASE_URL = settings.OPENAI_BASE_URL
 OPENAI_MODEL = settings.OPENAI_MODEL
@@ -125,14 +127,14 @@ def _build_crawler_cmd(crawler_path, keyword, city, current_page, remaining_targ
     cmd.extend(["--target", str(remaining_target)])
     return cmd
 
-def _process_crawler_output(process, total_inserted, current_page, on_page_done):
+def _process_crawler_output(process, total_inserted, current_page, on_page_done, skip_state=None, on_skip=None):
     """逐行解析终端输出流，实时处理推送与急刹车信号；顺带捕获搜索总数（分母）"""
     global GLOBAL_STOP_FLAG
     page_inserted = 0
     jobs_scraped_this_page = 0
     hit_bottom = False
     search_total = 0
-    
+
     try:
         for line in process.stdout:
             if GLOBAL_STOP_FLAG:
@@ -141,6 +143,13 @@ def _process_crawler_output(process, total_inserted, current_page, on_page_done)
                 break
             print(line, end="")
             _ping_heartbeat()  # 🌟 stdout 有活动即报平安（钩子内部 30s 节流）
+
+            # 重复岗位跳过计数（前置查重/落库兜底命中行，实况送前端横幅）
+            dup_n = count_duplicate_skip(line)
+            if dup_n and skip_state is not None:
+                skip_state["n"] += dup_n
+                if on_skip:
+                    on_skip(skip_state["n"])
 
             # 捕获搜索总数（分母）协议行
             if "搜索总数" in line and "个" in line:
@@ -170,13 +179,13 @@ def _process_crawler_output(process, total_inserted, current_page, on_page_done)
         
     return page_inserted, jobs_scraped_this_page, hit_bottom, search_total
 
-def _run_single_page(crawler_path, keyword, city, current_page, target_jobs, salary, total_inserted, on_page_done):
+def _run_single_page(crawler_path, keyword, city, current_page, target_jobs, salary, total_inserted, on_page_done, skip_state=None, on_skip=None):
     """提取单页抓取与调度逻辑"""
     global GLOBAL_STOP_FLAG
 
     if GLOBAL_STOP_FLAG:
         print("🛑 [急刹车触发] 收到全局中断信号，立即终止当前翻页循环！")
-        return total_inserted, True, 0, None
+        return total_inserted, True, 0, None, False
         
     print(f"\n{'='*50}")
     print(f"🎯 当前进度: 已入库 {total_inserted}/{target_jobs} 个 | 正在执行: 第 {current_page} 页")
@@ -197,55 +206,80 @@ def _run_single_page(crawler_path, keyword, city, current_page, target_jobs, sal
     )
     
     page_inserted, jobs_scraped, hit_bottom, page_search_total = _process_crawler_output(
-        process, total_inserted, current_page, on_page_done
+        process, total_inserted, current_page, on_page_done, skip_state, on_skip
     )
         
+    if process.returncode == PORT_LOCK_BUSY_EXIT_CODE:
+        # 跨进程端口锁被另一个 JobHunter 实例（dev / 桌面版）持有：协调性跳过，
+        # 不是环境故障——不得走下方 fatal_error 路径把整轮标红。
+        # 外审 R2-P1（B1）：第 6 位 port_busy 必须回传——端口占用跳过不是「正常
+        # 0 新增」，run_task 据此置 success=False，避免连续跳过污染判尽阈值
+        print("\n⏳ [调度器] BOSS 浏览器端口正被占用（本进程或另一个 JobHunter 实例），本轮抓取跳过（非环境故障）")
+        total_inserted += max(page_inserted, jobs_scraped)
+        if on_page_done:
+            on_page_done(total_inserted, current_page)
+        return total_inserted, True, page_search_total, None, hit_bottom, True
+
     if process.returncode != 0 and process.returncode is not None:
         err_msg = f"底层爬虫遭遇异常拦截中断（退出码: {process.returncode}）"
         print(f"\n🛑 [调度器异常熔断] {err_msg}，已自动切断翻页任务！")
         total_inserted += max(page_inserted, jobs_scraped)
         if on_page_done:
             on_page_done(total_inserted, current_page)
-        return total_inserted, True, page_search_total, err_msg
-        
+        return total_inserted, True, page_search_total, err_msg, hit_bottom, False
+
     if GLOBAL_STOP_FLAG:
         print("🛑 [急刹车触发] 当前页处理完毕，根据中断信号退出翻页循环。")
         total_inserted += max(page_inserted, jobs_scraped)
         if on_page_done:
             on_page_done(total_inserted, current_page)
-        return total_inserted, True, page_search_total, None
-    
+        return total_inserted, True, page_search_total, None, hit_bottom, False
+
     total_inserted += page_inserted
     if on_page_done:
         on_page_done(total_inserted, current_page)
-    
+
     if hit_bottom:
         print(f"\n>> ⚠️ 触发熔断：Boss直聘已无更多【{keyword}】相关数据。")
-        return total_inserted, True, page_search_total, None
-        
+        return total_inserted, True, page_search_total, None, True, False
+
     if total_inserted >= target_jobs:
         print(f"\n>> 🎉 目标达成！累计已成功入库 {total_inserted} 个岗位 (目标: {target_jobs})。程序停止下钻。")
-        return total_inserted, True, page_search_total, None
-        
+        return total_inserted, True, page_search_total, None, False, False
+
     wait_time = random.randint(180, 300)
     countdown_sleep(wait_time)
-    
-    return total_inserted, False, page_search_total, None
 
-def run_task(keyword, city, start_page, target_jobs, salary, on_page_done=None):
+    return total_inserted, False, page_search_total, None, False, False
+
+def run_task(keyword, city, start_page, target_jobs, salary, on_page_done=None, on_skip=None,
+             ledger_keyword=None, ledger_city=None, ledger_salary=None, result_meta=None):
     """🌟 核心修改 2：动态 While 循环，实时解析终端日志进行累加"""
+    if int(target_jobs or 0) <= 0:
+        # 0/负目标不是一次抓取轮次：不回报台账，避免连续空跑被误判抓尽
+        return 0
     crawler_path = os.path.join(CURRENT_DIR, "boss_collector.py")
-    
+
     total_inserted = 0
     current_page = start_page
+    last_touched = start_page
     search_total = 0
+    hit_bottom_any = False
     fatal_error = None
-    
+    port_busy_hit = False
+    skip_state = {"n": 0}  # 本轮重复跳过累计（可变盒跨页累加，on_skip 实况上报）
+
     # 只要已入库数量小于目标，就一直抓下一页
     while total_inserted < target_jobs:
-        total_inserted, should_break, page_search_total, err_msg = _run_single_page(
-            crawler_path, keyword, city, current_page, target_jobs, salary, total_inserted, on_page_done
+        total_inserted, should_break, page_search_total, err_msg, page_hit_bottom, port_busy = _run_single_page(
+            crawler_path, keyword, city, current_page, target_jobs, salary, total_inserted, on_page_done, skip_state, on_skip
         )
+        # 外审 R2-P1（B1）：端口被占用跳过的页并未真正抓取——不推进续抓游标，
+        # 避免漏页；也不得计入「连续 0 新增」判尽阈值
+        if not port_busy:
+            last_touched = current_page
+        port_busy_hit = port_busy_hit or port_busy
+        hit_bottom_any = hit_bottom_any or page_hit_bottom
         if page_search_total > 0:
             search_total = page_search_total
         if err_msg:
@@ -256,13 +290,36 @@ def run_task(keyword, city, start_page, target_jobs, salary, on_page_done=None):
 
     print(f"\n>> 本轮动态抓取指令已全部执行完毕。最终入库总数：{total_inserted}")
 
-    # 回写「条件×平台」进度台账：分子累加本轮入库；拿到搜索总数则校准分母
+    # 回写「条件×平台」进度台账：使用原始条件（不是平台映射后的薪资/关键词）
+    success = fatal_error is None and not GLOBAL_STOP_FLAG and not port_busy_hit
+    # 失败原因（供指挥中心弹窗/飞书通知下发）：手动急刹不产生失败通知
+    fail_reason = fatal_error if (fatal_error and not GLOBAL_STOP_FLAG) else None
+    if port_busy_hit and not fail_reason and not GLOBAL_STOP_FLAG:
+        fail_reason = "浏览器端口被占用（另一个 JobHunter 实例在使用），本轮抓取跳过"
     try:
         from app.session.scrape_sessions import report_condition_round
-        report_condition_round(keyword, city or "", salary or "", "boss",
-                               total_inserted, search_total or None)
+        report_condition_round(
+            ledger_keyword if ledger_keyword is not None else keyword,
+            ledger_city if ledger_city is not None else (city or ""),
+            ledger_salary if ledger_salary is not None else salary,
+            "boss",
+            total_inserted,
+            search_total or None,
+            hit_bottom=hit_bottom_any,
+            success=success,
+        )
     except Exception as e:
         print(f"⚠️ BOSS 条件台账回写失败: {e}")
+
+    if result_meta is not None:
+        result_meta.update({
+            "inserted": int(total_inserted or 0),
+            "search_total": int(search_total or 0),
+            "hit_bottom": bool(hit_bottom_any),
+            "last_page": 0 if hit_bottom_any else int(last_touched or 0),
+            "success": bool(success),
+            "fail_reason": fail_reason,
+        })
 
     # 🌟 若底层引擎异常崩溃且 0 入库，必须抛出异常由上层向前端标红告警，严禁假装“已完成”
     if fatal_error and total_inserted == 0:
@@ -310,14 +367,21 @@ def main():
 from app.services.feishu_service import send_feishu_message
 
 
-def run_scraping_task(keyword: str, city: str, salary: str, target_jobs: int = 15, start_page: int = 1, on_page_done=None) -> int:
+def run_scraping_task(keyword: str, city: str, salary: str, target_jobs: int = 15, start_page: int = 1,
+                      on_page_done=None, on_skip=None, ledger_keyword=None, ledger_city=None,
+                      ledger_salary=None, result_meta=None) -> int:
     """简化版抓取入口：从 start_page 起抓到目标入库数 target_jobs。
 
     薄包装层，与 CLI 用的 run_task 共享同一份底层执行逻辑（while 循环 + Popen），
     返回 total_inserted（本次累计入库数），方便异步入口回报飞书。
     """
     print(f"   [run_scraping_task] keyword={keyword}, city={city}, salary={salary}, start_page={start_page}, target={target_jobs}")
-    total = run_task(keyword, city, int(start_page), int(target_jobs), salary or "不限", on_page_done=on_page_done)
+    total = run_task(
+        keyword, city, int(start_page), int(target_jobs), salary or "不限",
+        on_page_done=on_page_done, on_skip=on_skip,
+        ledger_keyword=ledger_keyword, ledger_city=ledger_city,
+        ledger_salary=ledger_salary, result_meta=result_meta,
+    )
     return int(total or 0)
 
 
@@ -329,7 +393,10 @@ async def _notify_feishu(chat_id: str, message: str):
         print(f"📢 [控制台模式] {message}")
 
 
-async def process_boss_scraping_request(chat_id: str, city: str, keyword: str, salary: str, start_page: int = 1, target_jobs: int = 15, sse_task_id: str = None):
+async def process_boss_scraping_request(chat_id: str, city: str, keyword: str, salary: str, start_page: int = 1,
+                                        target_jobs: int = 15, sse_task_id: str = None,
+                                        ledger_keyword: str | None = None, ledger_city: str | None = None,
+                                        ledger_salary: str | None = None, result_meta: dict | None = None):
     # 🌟 每次启动新任务前，确保重置急刹车（避免上一轮残留的 True 干扰本轮）
     set_stop_flag(False)
 
@@ -429,6 +496,14 @@ async def process_boss_scraping_request(chat_id: str, city: str, keyword: str, s
             target_jobs,     # target_jobs (动态)
             start_page,      # start_page (动态)
             _sse_progress,   # on_page_done 回调
+            lambda skipped_count: _send_sse_event(
+                {"type": "scrape_progress", "skipped": skipped_count},
+                from_worker_thread=True,
+            ),  # on_skip 回调：重复跳过实况（工作线程 → call_soon_threadsafe 调度回主循环）
+            ledger_keyword=ledger_keyword,
+            ledger_city=ledger_city,
+            ledger_salary=ledger_salary,
+            result_meta=result_meta,
         )
 
         print(f"🕵️ [DEBUG 9] 抓取逻辑执行完毕，返回入库数: {total_inserted}")

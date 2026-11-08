@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import { Mail, Phone, MapPin, Globe, Linkedin, Github } from 'lucide-react';
 import { ResumeDataV2 } from '@/types/resume';
 import { stripConfidenceTags } from '@/lib/utils/text-formatters';
+import { extractItemPrintExtras, formatItemPrintExtras, joinDescriptionBlocks } from './custom-item-fields';
 import baseStyles from './styles/_base.module.css';
 import styles from './styles/classic.module.css';
 
@@ -218,39 +219,53 @@ export const ResumeClassic: React.FC<ResumeClassicProps> = ({ data }) => {
         // Handle custom modules
         const customItems = customModules?.[modKey];
         if (!customItems || customItems.length === 0) return null;
-        
+
         return (
           <div key={modKey} className={baseStyles['resume-section']}>
             <h3 className={baseStyles['resume-section-title']}>{title}</h3>
             <div className={baseStyles['resume-items']}>
-              {customItems.map((item, idx) => (
-                <div key={idx} className={baseStyles['resume-item']}>
-                  <div className={`grid grid-cols-[1fr_auto_1fr] items-baseline ${baseStyles['resume-row-tight']}`}>
-                    <h4 className={`${baseStyles['resume-item-title']} text-left`}>
-                      {item.company || ""}
-                    </h4>
-                    <h4 className={`${baseStyles['resume-item-title']} font-normal text-center px-4`}>
-                      {item.title || ""}
-                    </h4>
-                    <span className={`${baseStyles['resume-date']} text-right`}>
-                      {item.years}
-                    </span>
+              {customItems.map((item, idx) => {
+                // 2026-10-28 原文保真：表头行仅在有标准字段时渲染（归一化后新条目纯 description）；
+                // 用户自建 KV 字段拼行打印，杜绝「编辑器可见、PDF 消失」
+                const extrasLine = formatItemPrintExtras(extractItemPrintExtras(item));
+                const descStr = joinDescriptionBlocks(item.description);
+                const hasHeader = !!(item.company || item.title || item.years);
+                return (
+                  <div key={idx} className={baseStyles['resume-item']}>
+                    {hasHeader && (
+                      <div className={`grid grid-cols-[1fr_auto_1fr] items-baseline ${baseStyles['resume-row-tight']}`}>
+                        <h4 className={`${baseStyles['resume-item-title']} text-left`}>
+                          {item.company || ""}
+                        </h4>
+                        <h4 className={`${baseStyles['resume-item-title']} font-normal text-center px-4`}>
+                          {item.title || ""}
+                        </h4>
+                        <span className={`${baseStyles['resume-date']} text-right`}>
+                          {item.years}
+                        </span>
+                      </div>
+                    )}
+                    {item.location && (
+                      <div className={`flex justify-between items-center ${baseStyles['resume-row']} ${baseStyles['resume-item-subtitle']}`}>
+                        <span></span>
+                        <span>{item.location}</span>
+                      </div>
+                    )}
+                    {extrasLine && (
+                      <div className={`flex justify-center ${baseStyles['resume-row']} ${baseStyles['resume-item-subtitle']}`}>
+                        <span>{extrasLine}</span>
+                      </div>
+                    )}
+                    {descStr && (
+                      <div className={`mt-2 ${baseStyles['resume-text-sm']} ${baseStyles['resume-markdown']}`}>
+                        <ReactMarkdown components={{ p: ({node, ...props}) => <span className="block" {...props} /> }}>
+                          {stripConfidenceTags(descStr)}
+                        </ReactMarkdown>
+                      </div>
+                    )}
                   </div>
-                  {item.location && (
-                    <div className={`flex justify-between items-center ${baseStyles['resume-row']} ${baseStyles['resume-item-subtitle']}`}>
-                      <span></span>
-                      <span>{item.location}</span>
-                    </div>
-                  )}
-                  {item.description && item.description.length > 0 && (
-                    <div className={`mt-2 ${baseStyles['resume-text-sm']} ${baseStyles['resume-markdown']}`}>
-                      <ReactMarkdown components={{ p: ({node, ...props}) => <span className="block" {...props} /> }}>
-                        {stripConfidenceTags(item.description.join('\n'))}
-                      </ReactMarkdown>
-                    </div>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         );

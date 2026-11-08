@@ -53,23 +53,29 @@ def test_preflight_wait_breaks_on_abort_signal(tmp_path, monkeypatch):
     monkeypatch.setattr(preflight, "_poll_seconds", lambda: 1)
     monkeypatch.setattr(preflight, "check_liepin_login_evidence", lambda: False)
 
+    async def fake_browser_ready(cfg, emit_log=None, out_reason=None):  # 打桩防真机拉起；外审 R2-P1（C2）：签名对齐新增的 out_reason 参数，否则 TypeError
+        return True
+
+    monkeypatch.setattr(preflight, "_ensure_browser_ready", fake_browser_ready)
+
     import app.automation.abort as abort_mod
     monkeypatch.setattr(abort_mod, "is_aborted", lambda: True)  # 终止信号已在高位
 
     notified: list[int] = []
 
-    async def fake_notify(items, wait_s):
+    async def fake_notify(items, wait_s, launched=None):
         notified.append(len(items))
 
     monkeypatch.setattr(preflight, "_notify_login_needed", fake_notify)
 
     logs: list[str] = []
-    result = _run(preflight.ensure_platforms_ready(["liepin"], emit_log=_fake_emit_log(logs)))
+    # 2026-11-05 僵尸链路事故设计：终止检查点在平台循环边界快速失败——直接抛
+    # PipelineAbortedError 向上走终止收尾，不再为剩余平台拉浏览器/做登录判定。
+    # （旧契约「优雅跳过返回 False」已废弃，本测试同步更新，外审 R2 复核时确认）
+    with pytest.raises(abort_mod.PipelineAbortedError, match="platform_loop"):
+        _run(preflight.ensure_platforms_ready(["liepin"], emit_log=_fake_emit_log(logs)))
 
-    assert result == {"liepin": False}
-    assert notified == [1]  # 只通知一次，未进入长轮询
-    assert any("终止信号" in m for m in logs)
-    assert any("因任务终止被跳过" in m for m in logs)
+    assert notified == []  # 边界检查点先于登录判定，不进入登录等待通知
     assert not any("等待超时" in m for m in logs)  # 终止路径与超时路径文案分开
 
 
@@ -80,8 +86,18 @@ def test_preflight_no_abort_keeps_timeout_semantics(tmp_path, monkeypatch):
     monkeypatch.setattr(preflight, "_wait_seconds", lambda: 0)
     monkeypatch.setattr(preflight, "check_liepin_login_evidence", lambda: False)
 
+    async def fake_browser_ready(cfg, emit_log=None, out_reason=None):  # 打桩防真机拉起；外审 R2-P1（C2）：签名对齐新增的 out_reason 参数，否则 TypeError
+        return True
+
+    monkeypatch.setattr(preflight, "_ensure_browser_ready", fake_browser_ready)
+
     import app.automation.abort as abort_mod
     monkeypatch.setattr(abort_mod, "is_aborted", lambda: False)
+
+    async def fake_notify(items, wait_s, launched=None):
+        pass
+
+    monkeypatch.setattr(preflight, "_notify_login_needed", fake_notify)
 
     logs: list[str] = []
     result = _run(preflight.ensure_platforms_ready(["liepin"], emit_log=_fake_emit_log(logs)))

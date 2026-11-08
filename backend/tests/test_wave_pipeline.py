@@ -421,3 +421,58 @@ async def test_wave_pipeline_wave3_serial_on_small_batch():
 
 
 
+
+
+@pytest.mark.asyncio
+async def test_wave3_truncated_resume_error_string_fails_without_write():
+    """❌ 错误串闸门：改写返回截断错误串（非空真值）时岗位必须失败且绝不写回飞书。
+
+    2026-11-01 线上输出截断复盘：仅判空会放行「❌ 简历定制失败...」错误串进入
+    convert_and_stitch_resume，空壳简历被标「简历人工复核」且虚报成功。
+    截断自动重试已统一收敛在 engine_facade（唯一重试点），wave 层只做闸门判定：
+    这里拿到 ❌ 即重试耗尽，必须计入失败、不触发任何写回。
+    """
+    job_ids = ["boss-trunc1"]
+    queue = asyncio.Queue()
+    prefetched = {
+        "trunc1": {
+            "fields": {
+                "公司名称": "截断复现公司", "岗位名称": "AI后端工程师",
+                "岗位详情": "详细岗位职责内容超过五十个字详细岗位职责内容超过五十个字详细岗位职责内容超过五十个字详细岗位职责内容超过五十个字",
+                "薪资": "20K", "城市": "广州", "经验要求": "3年", "学历要求": "本科",
+            }
+        }
+    }
+
+    mock_res = {
+        "success": True, "ai_score": 90, "grade": "A",
+        "update_data": {"综合评级 (A-F)": "A", "初评总分": 90}, "usage": {},
+    }
+    mock_deep = {"dream_picture": "画像", "ats_ability_analysis": "词典"}
+    truncated = "❌ 简历定制失败：定稿标签 <FINAL_RESUME> 未闭合（输出疑似被截断），已拒绝使用残缺内容，请重试。"
+
+    mock_rew = MagicMock(return_value=(truncated, {}))
+
+    with patch("app.tasks.wave_pipeline.research_company_serper", AsyncMock(return_value="")), \
+         patch("app.tasks.wave_pipeline.evaluate_single_job", return_value=mock_res), \
+         patch("app.tasks.wave_pipeline.deep_evaluate_resume", return_value=(mock_deep, {})), \
+         patch("app.tasks.wave_pipeline.process_resume_rewrite", mock_rew), \
+         patch("app.tasks.wave_pipeline.process_greeting_generation", return_value=("打招呼", {})), \
+         patch("app.tasks.wave_pipeline.convert_and_stitch_resume", return_value="{}") as mock_stitch, \
+         patch("app.tasks.wave_pipeline.update_feishu_record", return_value=True) as mock_write:
+
+        success, failed, skipped = await run_wave_evaluation_pipeline(
+            job_ids=job_ids, task_id="test-wave3-trunc-gate", resume_text="母本简历", preferences_text="偏好",
+            queue=queue, prefetched=prefetched,
+        )
+
+    # wave 层闸门不再重试（重试已下沉 facade）：❌ 一次即失败
+    assert mock_rew.call_count == 1
+    assert success == 0
+    assert failed == 1
+    # 错误串绝不写回：convert_and_stitch_resume 与「简历人工复核」回写均不发生
+    mock_stitch.assert_not_called()
+    for call in mock_write.call_args_list:
+        fields = call.args[1] if call.args else call.kwargs.get("fields_to_update", {})
+        assert "AI改写JSON" not in fields
+        assert "打招呼语" not in fields

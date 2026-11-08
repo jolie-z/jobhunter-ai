@@ -7,7 +7,8 @@ class AutopilotConfigSchema(BaseModel):
     cron_time: str = "09:00"
     auto_deliver_grades: list[str] = ["C", "D", "F"]
     auto_deliver_platforms: list[str] = ["boss", "liepin", "51job", "zhilian"]
-    is_enabled: bool = True
+    # 2026-10-29 默认关：与 DB 初始行对齐，未配置时不默认挂每日定时任务
+    is_enabled: bool = False
     batch_limit: int = 20
     mass_apply_resume_id: str = ""  # 海投简历（C-F 级投递用）：简历库记录 ID，空=回退启用简历
     rewrite_base_resume_id: str = ""  # A/B 级改写底稿：指定后评估与改写都用它，空=用启用简历

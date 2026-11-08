@@ -191,10 +191,22 @@ function TaskSseConnection({
             useCrawlerTaskStore.getState().updateTaskStatus(task.id, 'running')
           }
         } else if (data.type === "end" || data.type === "completed" || data.type === "complete") {
-          const currentTask = useCrawlerTaskStore.getState().tasks[task.id]
-          // 仅当任务非终态（非 error / terminated / completed）时才更新为 completed，防止把错误任务刷绿
-          if (currentTask && !['completed', 'terminated', 'error'].includes(currentTask.status)) {
-            useCrawlerTaskStore.getState().updateTaskStatus(task.id, 'completed')
+          // 🌟 task_expired 分诊（2026-11-05 重连风暴根治）：reason=task_expired 的 end 帧
+          // 表示任务在服务端已不存在（后端重启/登记被延迟清理），不能记成 completed——
+          // 必须落终态 error 才能让「该不该连」判断跳过它，掐断重连循环
+          if (data.reason === "task_expired") {
+            // 终态守卫（R1-P2）：已完成/已终止/已报错的任务因后端清理登记延迟收到
+            // task_expired 时不覆写，防止历史任务被误刷红
+            const currentTask = useCrawlerTaskStore.getState().tasks[task.id]
+            if (currentTask && !['completed', 'terminated', 'error'].includes(currentTask.status)) {
+              useCrawlerTaskStore.getState().updateTaskStatus(task.id, 'error', '任务已过期（后端已重启或登记已清理）')
+            }
+          } else {
+            const currentTask = useCrawlerTaskStore.getState().tasks[task.id]
+            // 仅当任务非终态（非 error / terminated / completed）时才更新为 completed，防止把错误任务刷绿
+            if (currentTask && !['completed', 'terminated', 'error'].includes(currentTask.status)) {
+              useCrawlerTaskStore.getState().updateTaskStatus(task.id, 'completed')
+            }
           }
           // 🌟 触发任务完成回调，刷新岗位列表等
           onCompleteRef.current?.()

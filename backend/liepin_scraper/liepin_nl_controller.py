@@ -27,12 +27,15 @@ if PROJECT_ROOT not in sys.path:
 
 # 🌟 Windows 防闪窗：子进程统一走防闪窗包装（参照 engine_guard，收口见 backend/subprocess_utils.py）
 from subprocess_utils import popen_hidden
+from engine_guard import PORT_LOCK_BUSY_EXIT_CODE
 
 from app.core.config import settings
+from app.automation.dup_skip_parse import count_duplicate_skip
 # 🌟 统一 Token 埋点
 from app.core.llm_tracker import make_tracked_client
 # 猎聘采集放行双判据（Cookie 文件 OR Edge profile 登录实证），与预检守卫同一实现
 from app.session.health_checker import liepin_collect_ready
+from app.session.registry import get_liepin_cookie_file
 OPENAI_API_KEY = settings.OPENAI_API_KEY
 OPENAI_BASE_URL = settings.OPENAI_BASE_URL
 OPENAI_MODEL = settings.OPENAI_MODEL
@@ -45,6 +48,11 @@ GLOBAL_STOP_FLAG = False
 # 🌟 最近一次引擎子进程崩溃原因（None=无）：run_task 崩溃快停时写入，
 # 异步入口 process_liepin_scraping_request 读取后回飞书告警（0928 事故修复）
 LAST_ENGINE_CRASH = None
+
+# 🌟 最近一轮是否命中「访客态登录墙」（2026-10-31 事故根治）：采集器输出
+# [LIEPIN_GUEST_BLOCKED] 契约行时置位，run_task 据此把本轮计为登录源失效
+# （success=False 写台账与 result_meta），与「到底/滑块」明确区分
+LAST_GUEST_BLOCKED = False
 
 def set_stop_flag(value: bool):
     """外部（例如 FastAPI 路由）调用此函数拉起 / 释放猎聘急刹车。"""
@@ -124,9 +132,9 @@ def _build_crawler_cmd(keyword, city, start_page, target_jobs, salary, total_ins
     if salary and salary != "不限": cmd.extend(["--salary", salary])
     return cmd
 
-def _process_crawler_output(process, sse_task_id, loop, target_jobs, current_page, real_time_inserted):
+def _process_crawler_output(process, sse_task_id, loop, target_jobs, current_page, real_time_inserted, skip_state=None):
     """实时处理爬虫子进程输出，负责急刹车检测与进度推送；顺带捕获搜索总数（分母）"""
-    global GLOBAL_STOP_FLAG
+    global GLOBAL_STOP_FLAG, LAST_GUEST_BLOCKED
     hit_bottom = False
     search_total = 0
 
@@ -141,6 +149,16 @@ def _process_crawler_output(process, sse_task_id, loop, target_jobs, current_pag
             break
         print(line, end="")
         _ping_heartbeat()  # 🌟 stdout 有活动即报平安（钩子内部 30s 节流）
+
+        # 重复岗位跳过计数（前置查重命中行，实况送前端横幅）
+        dup_n = count_duplicate_skip(line)
+        if dup_n and skip_state is not None:
+            skip_state["n"] += dup_n
+            if sse_task_id and loop:
+                from app.tasks.state import task_queues
+                if sse_task_id in task_queues:
+                    msg = f'data: {{"type": "scrape_progress", "skipped": {skip_state["n"]}}}\n\n'
+                    asyncio.run_coroutine_threadsafe(task_queues[sse_task_id].put(msg), loop)
 
         # 捕获搜索总数（分母）协议行
         if "搜索总数" in line and "个" in line:
@@ -157,20 +175,36 @@ def _process_crawler_output(process, sse_task_id, loop, target_jobs, current_pag
                 msg = f'data: {{"type": "progress", "total_inserted": {real_time_inserted}, "target_jobs": {target_jobs}, "current_page": {current_page}}}\n\n'
                 asyncio.run_coroutine_threadsafe(task_queues[sse_task_id].put(msg), loop)
 
-        # 到底或被风控的标志
-        if "未截获到包含" in line or "未捕获到 API 数据" in line:
+        # 到底或被风控的标志（采集器当前只输出“未截获到包含”；旧版
+        # “未捕获到 API 数据”已不存在，保留死条件只会让契约测试失真）
+        if "未截获到包含" in line:
             hit_bottom = True
+
+        # 访客态登录墙标记（2026-10-31 事故根治）：采集器在 Cookie 失效/缺失时
+        # 降级游客态，深页搜索必被登录墙拦截——此时「未截获」不是到底/验证码，
+        # 本轮必须按登录源失效计失败，绝不静默 0 条还报成功。
+        if "LIEPIN_GUEST_BLOCKED" in line:
+            LAST_GUEST_BLOCKED = True
 
     process.wait()
     return real_time_inserted, hit_bottom, search_total
 
-def run_task(keyword, city, start_page, target_jobs, salary, sse_task_id=None, loop=None):
+def run_task(keyword, city, start_page, target_jobs, salary, sse_task_id=None, loop=None,
+             ledger_keyword=None, ledger_city=None, ledger_salary=None, result_meta=None):
     """🌟 动态 While 循环，实时解析猎聘终端日志。支持 GLOBAL_STOP_FLAG 中断。"""
-    global GLOBAL_STOP_FLAG, LAST_ENGINE_CRASH
+    global GLOBAL_STOP_FLAG, LAST_ENGINE_CRASH, LAST_GUEST_BLOCKED
     LAST_ENGINE_CRASH = None
+    LAST_GUEST_BLOCKED = False
+    if int(target_jobs or 0) <= 0:
+        # 0/负目标不是一次抓取轮次：不回报台账，避免连续空跑被误判抓尽
+        return 0
     total_inserted = 0
     current_page = start_page
+    last_touched = start_page
     search_total = 0
+    fatal = False
+    port_busy = False
+    skip_state = {"n": 0}  # 本轮重复跳过累计（可变盒跨页累加）
     
     while total_inserted < target_jobs:
         # 🌟 主循环（翻页循环）首部急刹车检查
@@ -196,8 +230,12 @@ def run_task(keyword, city, start_page, target_jobs, salary, sse_task_id=None, l
         )
         
         real_time_inserted, hit_bottom, page_search_total = _process_crawler_output(
-            process, sse_task_id, loop, target_jobs, current_page, total_inserted
+            process, sse_task_id, loop, target_jobs, current_page, total_inserted, skip_state
         )
+        # 外审 R2-P1（B2）：仅在当页正常跑完（returncode==0）后才推进 last_touched——
+        # 端口忙/崩溃页并未真正抓取，提前推进会把未抓取页写进续抓游标造成漏页
+        if process.returncode == 0:
+            last_touched = current_page
         if page_search_total > 0:
             search_total = page_search_total
 
@@ -205,12 +243,23 @@ def run_task(keyword, city, start_page, target_jobs, salary, sse_task_id=None, l
         if GLOBAL_STOP_FLAG:
             print("🛑 [猎聘急刹车触发] 当前页处理完毕，根据中断信号退出翻页循环。")
             total_inserted = real_time_inserted
+            fatal = True
             break
         
+        # 跨进程端口锁被另一个 JobHunter 实例持有：协调性跳过，不是环境故障。
+        # 外审 R2-P1（B2）：必须置失败态——否则 0 入库按 success=True 计入
+        # 「连续 0 新增」判尽阈值，存在误触发 7 天冻结的风险（对齐 zhilian/51job 语义）
+        if process.returncode == PORT_LOCK_BUSY_EXIT_CODE:
+            print("\n⏳ [调度器] 猎聘浏览器端口正被占用（本进程或另一个 JobHunter 实例），本轮抓取跳过（非环境故障）")
+            total_inserted = real_time_inserted
+            port_busy = True
+            break
+
         # 针对猎聘特殊的 99 安全熔断拦截
         if process.returncode == 99:
             print("\n🚨 检测到子进程返回 99 错误码，触发风控熔断，停止任务！")
             total_inserted = real_time_inserted
+            fatal = True
             break
 
         # 引擎崩溃快停（0928 事故修复）：子进程非 0/99 退出=崩溃（如浏览器拉起失败），
@@ -222,12 +271,17 @@ def run_task(keyword, city, start_page, target_jobs, salary, sse_task_id=None, l
             print(f"\n🚨 [猎聘] {LAST_ENGINE_CRASH}")
             print("   （浏览器类故障请另查 backend/logs/edge_liepin.log 与上方堆栈）")
             total_inserted = real_time_inserted
+            fatal = True
             break
 
         total_inserted = real_time_inserted
         
         if hit_bottom:
-            print("\n>> ⚠️ 触发中断：猎聘未返回数据，可能是到底部或遇到滑块验证码。")
+            if LAST_GUEST_BLOCKED:
+                print("\n>> 🚨 触发中断：猎聘以访客态运行且未截获任何岗位数据包（登录墙/验证码拦截）。")
+                print("   本轮按「登录源失效」计失败：请在指挥中心会话条扫码登录猎聘（或运行 liepin_cookie_harvester.py）后重试。")
+            else:
+                print("\n>> ⚠️ 触发中断：猎聘未返回数据，可能是到底部或遇到滑块验证码。")
             break
             
         if total_inserted >= target_jobs:
@@ -239,13 +293,52 @@ def run_task(keyword, city, start_page, target_jobs, salary, sse_task_id=None, l
 
     print(f"\n🏁 本轮指令执行完毕！最终入库: {total_inserted}")
 
-    # 回写「条件×平台」进度台账：分子累加本轮入库；拿到搜索总数则校准分母
+    # 回写「条件×平台」进度台账：使用原始条件（不是平台映射后的薪资/关键词）
+    # 访客态登录墙（2026-10-31）必须计失败：否则 0 条静默收场，台账只按
+    # 「连续 0 新增」兜底判尽，用户无从知道是登录源坏了。
+    success = (not fatal) and not port_busy and LAST_ENGINE_CRASH is None and not GLOBAL_STOP_FLAG and not LAST_GUEST_BLOCKED
+    # 失败原因（供指挥中心弹窗/飞书通知下发）：手动急刹不产生失败通知
+    fail_reason = None
+    if not success and not GLOBAL_STOP_FLAG:
+        if port_busy:
+            fail_reason = "浏览器端口被占用（另一个 JobHunter 实例在使用），本轮抓取跳过"
+        elif LAST_ENGINE_CRASH:
+            fail_reason = LAST_ENGINE_CRASH
+        elif LAST_GUEST_BLOCKED:
+            fail_reason = "登录源失效：访客态被登录墙拦截（请在全景控制台扫码登录猎聘后重试）"
+        else:
+            fail_reason = "本轮抓取异常中止（详见任务日志）"
     try:
         from app.session.scrape_sessions import report_condition_round
-        report_condition_round(keyword, city or "", salary or "", "liepin",
-                               total_inserted, search_total or None)
+        report_condition_round(
+            ledger_keyword if ledger_keyword is not None else keyword,
+            ledger_city if ledger_city is not None else (city or ""),
+            ledger_salary if ledger_salary is not None else salary,
+            "liepin",
+            total_inserted,
+            search_total or None,
+            # 猎聘的“未截获到包含”也可能是滑块验证码，不能当作确认到底；
+            # 交给连续 0 新增阈值兜底，避免误判后冻结 7 天。
+            hit_bottom=False,
+            success=success,
+        )
     except Exception as e:
         print(f"⚠️ 猎聘条件台账回写失败: {e}")
+
+    if result_meta is not None:
+        # 猎聘的“未截获到包含”可能是滑块验证码，不能当确认到底：
+        # 台账侧已按 hit_bottom=False 走连续 0 新增兜底，页码侧也必须一致——
+        # 保留真实末页、不归零，避免验证码误判触发从第 1 页全量重扫。
+        # 真到底时由连续 0 新增判尽；TTL 重开时 clear_exhaustion 会把 last_page 归零，
+        # 下一轮自然从第 1 页重新找新岗位。
+        result_meta.update({
+            "inserted": int(total_inserted or 0),
+            "search_total": int(search_total or 0),
+            "hit_bottom": False,
+            "last_page": int(last_touched or 0),
+            "success": bool(success),
+            "fail_reason": fail_reason,
+        })
 
     return total_inserted
 
@@ -290,14 +383,20 @@ def main():
 
 from app.services.feishu_service import send_feishu_message
 
-def run_scraping_task(keyword: str, city: str, salary: str, start_page: int = 1, target_jobs: int = 40, sse_task_id: str = None, loop=None) -> int:
+def run_scraping_task(keyword: str, city: str, salary: str, start_page: int = 1, target_jobs: int = 40,
+                      sse_task_id: str = None, loop=None, ledger_keyword=None, ledger_city=None,
+                      ledger_salary=None, result_meta=None) -> int:
     """猎聘简化版抓取入口：从 start_page 起抓到目标入库数 target_jobs。
 
     薄包装层，与 CLI 用的 run_task 共享同一份底层执行逻辑（while 循环 + Popen），
     返回 total_inserted（本次累计入库数），方便异步入口回报飞书。
     """
     print(f"   [run_scraping_task/liepin] keyword={keyword}, city={city}, salary={salary}, start_page={start_page}, target={target_jobs}")
-    total = run_task(keyword, city, int(start_page), int(target_jobs), salary or "不限", sse_task_id, loop)
+    total = run_task(
+        keyword, city, int(start_page), int(target_jobs), salary or "不限", sse_task_id, loop,
+        ledger_keyword=ledger_keyword, ledger_city=ledger_city,
+        ledger_salary=ledger_salary, result_meta=result_meta,
+    )
     return int(total or 0)
 
 
@@ -309,7 +408,10 @@ async def _notify_feishu_liepin(chat_id: str, message: str):
         print(f"📢 [控制台模式] {message}")
 
 
-async def process_liepin_scraping_request(chat_id: str, city: str, keyword: str, salary: str, start_page: int = 1, target_jobs: int = 40, sse_task_id: str = None):
+async def process_liepin_scraping_request(chat_id: str, city: str, keyword: str, salary: str, start_page: int = 1,
+                                          target_jobs: int = 40, sse_task_id: str = None,
+                                          ledger_keyword: str | None = None, ledger_city: str | None = None,
+                                          ledger_salary: str | None = None, result_meta: dict | None = None):
     global LAST_ENGINE_CRASH
     print(f"\n{'='*50}")
     print(f"🕵️ [DEBUG] 飞书请求已进入猎聘执行中枢！参数: 城市={city}, 岗位={keyword}, 薪资={salary}, start_page={start_page}, target_jobs={target_jobs}")
@@ -347,18 +449,42 @@ async def process_liepin_scraping_request(chat_id: str, city: str, keyword: str,
                 msg = 'data: {"type": "start", "message": "✅ 收到指令！正在启动 [猎聘] 爬虫引擎..."}\n\n'
                 await task_queues[sse_task_id].put(msg)
 
-        # 猎聘特有：采集放行双判据（2026-09-27）——Cookie 文件存在，或 Edge profile
-        # 登录实证有效。会话条「唤起浏览器」与采集引擎（DrissionPage 9226）共用同一
-        # profile，用户在指挥中心登录后即使无文件也可开工；引擎确认 profile 登录后
-        # 会把 cookie 自愈回写文件（liepin_crawler._self_heal_cookie_file），两条通道收敛。
-        cookie_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'liepin_cookies.json')
+        # 猎聘特有：采集放行双判据（2026-09-27；2026-10-31 文件侧从「存在」升级为
+        # 「有效」）——Cookie 文件凭证未过期，或 Edge profile 登录实证有效。会话条
+        # 「唤起浏览器」与采集引擎（DrissionPage 9226）共用同一 profile，用户在指挥
+        # 中心登录后即使无文件/文件过期也可开工；引擎确认 profile 登录后会把 cookie
+        # 自愈回写文件（liepin_crawler._self_heal_cookie_file），两条通道收敛。
+        # 外审 R2-P1（B2）：与采集器/会话层收敛到 get_liepin_cookie_file() 单一口径——
+        # 硬编码脚本目录路径在 JOBHUNTER_DATA_DIR 隔离布局下查错位置，冷浏览器时
+        # 门禁会因查不到文件误判登录失效而阻断抓取
+        cookie_file = get_liepin_cookie_file()
         if not await asyncio.to_thread(liepin_collect_ready, cookie_file):
-            print(f"⚠️ 猎聘 Cookie 文件不存在且浏览器未检出登录态: {cookie_file}")
-            await _notify_feishu_liepin(
-                chat_id,
-                "❌ 缺少猎聘 Cookie 且未检出浏览器登录态：请在指挥中心「唤起浏览器」登录猎聘，"
+            err_msg = (
+                "❌ 猎聘 Cookie 缺失/已失效且未检出浏览器登录态：请在全景控制台「唤起浏览器」登录猎聘，"
                 "或在后端终端运行 `liepin_cookie_harvester.py` 扫码登录！"
             )
+            print(f"⚠️ 猎聘 Cookie 文件缺失或已失效，且浏览器未检出登录态: {cookie_file}")
+            # 1. 优先标记 result_meta（阻止外层调度器按正常收尾处理，供 _run_and_track 触发弹窗和保留游标）
+            if result_meta is not None:
+                result_meta.update({
+                    "success": False,
+                    "fail_reason": "猎聘登录态失效（Cookie缺失或已过期且浏览器未登录）",
+                    "inserted": 0,
+                    "search_total": 0,
+                    "last_page": start_page,
+                    "hit_bottom": False,
+                })
+            # 2. 优先推送 SSE 错误事件（前端 live-task-terminal 消费 type: error 翻红并主动关闭连接，终态防刷绿）
+            if sse_task_id:
+                from app.tasks.state import task_queues
+                if sse_task_id in task_queues:
+                    payload = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
+                    await task_queues[sse_task_id].put(f"data: {payload}\n\n")
+            # 3. 异步外部通知兜底，避免飞书网络抖动阻塞前端错误传播
+            try:
+                await _notify_feishu_liepin(chat_id, err_msg)
+            except Exception as e:
+                print(f"⚠️ 猎聘门禁失败飞书通知发送失败(已忽略): {e}")
             return
         if not os.path.exists(cookie_file):
             print("✅ Cookie 文件缺失，但专用浏览器登录实证有效，放行（采集启动后将自动回写文件）")
@@ -384,7 +510,11 @@ async def process_liepin_scraping_request(chat_id: str, city: str, keyword: str,
         set_heartbeat_hook(_heartbeat_hook)
         total_inserted = await asyncio.to_thread(
             run_scraping_task,
-            keyword, city, salary, start_page, target_jobs, sse_task_id, loop
+            keyword, city, salary, start_page, target_jobs, sse_task_id, loop,
+            ledger_keyword=ledger_keyword,
+            ledger_city=ledger_city,
+            ledger_salary=ledger_salary,
+            result_meta=result_meta,
         )
 
         # 引擎崩溃告警（0928 事故修复）：run_task 快停后此处回飞书真实原因，不发庆功报文

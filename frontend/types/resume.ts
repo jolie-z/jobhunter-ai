@@ -111,4 +111,10 @@ export interface ResumeDataV2 {
     confidence?: Record<string, string>
     parsed_at?: string
   }
+  /**
+   * 顶层照片地址（与 personalInfo.avatar_url 双写同值）：后端渲染数据出口、
+   * 部分打印模板（resume-color / classic-markdown）直接读顶层。仅运行时由
+   * 渲染数据出口注入/对齐，不持久化业务语义，见 strategy/avatar_injection.py
+   */
+  avatar_url?: string | null
 }

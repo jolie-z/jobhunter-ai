@@ -8,6 +8,7 @@ import { apiFetch } from '@/lib/api'
 import { STRATEGY_SET_SECTION_EVENT } from '@/lib/strategy-events'
 import { useResumeUpload, type ParseProgress } from '@/hooks/use-resume-upload'
 import { ConfigGateDialog } from '@/components/dashboard/config-gate-dialog'
+import { showGlobalError } from '@/components/dashboard/global-error-bus'
 import {
     RESUME_DRAFT_DEBOUNCE_MS,
     RESUME_DRAFT_LOCAL_KEY,
@@ -90,6 +91,8 @@ type StrategyContextType = {
     handleToggleResumeStatus: (e: React.MouseEvent, item: StrategyItem) => Promise<void>;
     handleCreateNew: () => void;
     handleDuplicate: (id: string) => void;
+    /** 侧边栏行内重命名：云端简历只写「简历版本」字段即时落库，本地 temp_ 草稿更新登记表 */
+    handleRenameResume: (id: string, newName: string) => Promise<void>;
     handleSave: () => Promise<string | null>;
     /** 是否有未同步到飞书的修改（供切换简历前弹确认用） */
     hasUnsavedChanges: () => boolean;
@@ -609,6 +612,40 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
         })
     }
 
+    // 🌟 侧边栏行内重命名：改名是轻量元数据，不走「标记脏 + 保存并同步」重链路——
+    // 云端简历直接调 /api/strategy/save 只写「简历版本」字段（后端白名单过滤，飞书 PUT 部分更新不动内容），
+    // 本地 temp_ 草稿（从未落飞书）只更新登记表。乐观更新，失败回滚旧名
+    const handleRenameResume = async (id: string, newName: string) => {
+        const trimmed = newName.trim()
+        if (!trimmed) return
+        const target = resumesRef.current.find(r => r.record_id === id)
+        if (!target || target.name === trimmed) return
+
+        setResumes(prev => prev.map(r => (r.record_id === id ? { ...r, name: trimmed } : r)))
+        setEditingItem(prev => (prev && prev.record_id === id ? { ...prev, name: trimmed } : prev))
+
+        if (isTempResumeId(id)) {
+            upsertLocalResume(id, trimmed)
+            return
+        }
+
+        try {
+            const res = await apiFetch(`/api/strategy/save`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ table_type: "resume", record_id: id, fields: { "简历版本": trimmed } })
+            })
+            const data = await res.json()
+            if (!res.ok || data.status !== "success") {
+                throw new Error(typeof data?.detail === "string" ? data.detail : `HTTP ${res.status}`)
+            }
+            showToast(`✅ 已重命名为「${trimmed}」`)
+        } catch (e) {
+            setResumes(prev => prev.map(r => (r.record_id === id ? { ...r, name: target.name } : r)))
+            setEditingItem(prev => (prev && prev.record_id === id ? { ...prev, name: target.name } : prev))
+            alert(`❌ 重命名失败，已恢复原名称\n${String(e)}`)
+        }
+    }
+
     const handleSave = async (): Promise<string | null> => {
         if (!editingItem || !editingItem.name.trim()) { alert("名称不能为空！"); return null }
         if (savingRef.current) return null
@@ -679,11 +716,16 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
                 await fetchConfig(newRecordId)
                 return newRecordId
             } else {
-                alert("❌ 保存失败: " + (data.detail || `HTTP ${res.status}`))
+                // 后端 detail 原样透传（含飞书响应 body 快照时为取证关键），走统一错误弹窗可一键导诊断日志；
+                // 422 校验失败的 detail 是对象数组，String() 会变 "[object Object]"，需 JSON.stringify（code-review P2）
+                const detailText = typeof data.detail === "string"
+                    ? data.detail
+                    : data.detail ? JSON.stringify(data.detail) : `HTTP ${res.status}`
+                showGlobalError({ title: "❌ 保存失败", detail: detailText })
                 return null
             }
-        } catch {
-            alert("❌ 网络错误，保存失败，请检查后端服务后重试")
+        } catch (e) {
+            showGlobalError({ title: "❌ 网络错误，保存失败", detail: `请检查后端服务后重试\n${String(e)}` })
             return null
         }
         finally {
@@ -733,7 +775,7 @@ export function StrategyStoreProvider({ children }: { children: React.ReactNode 
             parseProgress, uploadGate,
             clearUploadGate: () => setUploadGate(null),
             dismissParseError: () => setParseError(null),
-            toastMsg, showToast, togglingResumeId, fetchConfig, handleToggleResumeStatus, handleCreateNew, handleDuplicate, handleSave, handleDelete,
+            toastMsg, showToast, togglingResumeId, fetchConfig, handleToggleResumeStatus, handleCreateNew, handleDuplicate, handleRenameResume, handleSave, handleDelete,
             confirmUnsavedGuard,
             hasUnsavedChanges: () => isDirtyRef.current,
             markDirty: () => { isDirtyRef.current = true }

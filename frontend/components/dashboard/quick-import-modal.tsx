@@ -521,7 +521,7 @@ export function QuickImportModal({ onClose, onSuccess }: Props) {
         open={gateOpen}
         onClose={() => setGateOpen(false)}
         title="截图识别暂不可用"
-        description="识别招聘截图需要「视觉模型」，当前还未配置。前往 配置大盘 → 系统底层配置 → LLM 大模型，填写「视觉模型」后即可使用。"
+        description="识别招聘截图需要「视觉模型」，当前还未配置。前往 配置大盘 → 系统底层配置 → 视觉通道，填写「视觉模型」后即可使用。"
         missing={visionMissing ?? ["VISION_MODEL"]}
         onGoConfigure={() => router.push("/strategy?section=system")}
         secondaryLabel={importText.trim() ? "不用图片，仅按文本解析" : undefined}

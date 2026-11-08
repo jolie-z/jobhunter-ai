@@ -9,19 +9,19 @@ from pydantic import BaseModel
 from app.core.config import settings
 from app.core.llm_client import get_openai_client
 from app.pipeline import (
+    MAX_KEYWORD_QUEUE,
     add_keyword_history,
     delete_keyword_history,
     find_keyword_history,
     get_scrape_config,
     list_keyword_history,
+    normalize_keywords,
     save_scrape_config,
 )
 from app.services.feishu_service import get_active_resume_from_feishu
 
 logger = logging.getLogger("pipeline_scrape_router")
 logger.setLevel(logging.INFO)
-
-MAX_KEYWORD_QUEUE = 10
 
 router = APIRouter()
 
@@ -40,7 +40,7 @@ class ScrapeConfigBody(BaseModel):
 
 
 class RunScrapeOnlyBody(BaseModel):
-    platforms_limit: int | None = 10
+    platforms_limit: int | None = 3
     keyword: str | None = None
     city: str | None = None
     salary: str | None = None
@@ -64,6 +64,10 @@ class ResetConditionBody(BaseModel):
     platform: str | None = None
 
 
+class SuggestKeywordsBody(BaseModel):
+    count: int = 5
+
+
 @router.get("/scrape-config")
 def read_scrape_config():
     data = get_scrape_config()
@@ -72,12 +76,14 @@ def read_scrape_config():
 
 @router.put("/scrape-config")
 def write_scrape_config(body: ScrapeConfigBody):
-    if len(body.keywords) > MAX_KEYWORD_QUEUE:
+    # 先归一化再判上限：11 条里含重复项、去重后 ≤10 时应允许保存，
+    # 否则用户会被“看起来超限、实际不超限”的队列卡住。
+    keywords = normalize_keywords([k.model_dump() for k in body.keywords])
+    if len(keywords) > MAX_KEYWORD_QUEUE:
         raise HTTPException(
             status_code=400,
             detail=f"条件队列最多 {MAX_KEYWORD_QUEUE} 组，请先删减或归档再保存",
         )
-    keywords = [k.model_dump() for k in body.keywords]
     data = save_scrape_config(
         keywords=keywords,
         platforms=body.platforms,
@@ -243,8 +249,11 @@ def reset_condition_progress_endpoint(body: ResetConditionBody):
 
 
 @router.post("/suggest-keywords")
-async def suggest_keywords():
+async def suggest_keywords(body: SuggestKeywordsBody | None = None):
     """根据「启用简历 + A级岗位画像」AI 推荐抓取关键词（岗位名称方向），去重现有队列"""
+    raw_count = body.count if body else 5
+    # 0/负数按 clamp 到 1 处理，不静默回落 5
+    count = max(1, min(20, int(raw_count if raw_count is not None else 5)))
     resume_text = await asyncio.to_thread(get_active_resume_from_feishu)
     if not resume_text:
         raise HTTPException(status_code=400, detail="读不到启用简历，请先确认简历库")
@@ -264,7 +273,7 @@ async def suggest_keywords():
     prompt = f"""你是招聘爬虫的关键词顾问。请根据「简历」推导应该抓取哪些岗位名称的职位，
 可参考「A级岗位画像」里市场对候选人的定位。
 要求：
-- 输出 10 个搜索关键词，每个 4-12 字，是岗位名称方向（如「AI应用工程师」「大模型开发工程师」）
+- 输出 {count} 个搜索关键词，每个 4-12 字，是岗位名称方向（如「AI应用工程师」「大模型开发工程师」）
 - 覆盖核心方向与相邻方向，避免过于宽泛（如「工程师」）或过于狭窄
 - 不要与现有队列重复：{ _json.dumps(existing, ensure_ascii=False) }
 - 只输出 JSON 数组，如 ["AI应用工程师", ...]

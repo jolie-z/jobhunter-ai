@@ -104,6 +104,7 @@ PLATFORM_CONFIGS: dict[str, PlatformConfig] = {
         auth_url="https://www.zhipin.com/web/user/?ka=header-login",
         login_indicators=["css:.user-nav", "text:退出登录"],
         login_page_indicators=["passport.zhipin.com"],
+        auth_cookie_keys=("wt2", "zp_at"),
     ),
     "xiaohongshu": PlatformConfig(
         name="xiaohongshu",
@@ -128,6 +129,7 @@ PLATFORM_CONFIGS: dict[str, PlatformConfig] = {
         login_page_indicators=["/login", "loginBackUrl", "passport"],
         requires_login=False,
         legacy_cookie_file=get_liepin_cookie_file(),
+        auth_cookie_keys=("lt_auth", "liepin_login_valid"),
     ),
     "zhilian": PlatformConfig(
         name="zhilian",
@@ -143,6 +145,7 @@ PLATFORM_CONFIGS: dict[str, PlatformConfig] = {
         #   在智联首页不存在（猜测值），不得回流。
         login_indicators=["css:.c-login__top__name", "css:.c-login__top__img", "text:退出"],
         login_page_indicators=["passport.zhaopin.com"],
+        auth_cookie_keys=("at",),
     ),
     "51job": PlatformConfig(
         name="51job",
@@ -161,11 +164,15 @@ PLATFORM_CONFIGS: dict[str, PlatformConfig] = {
         login_indicators=["css:.user-info", "css:.avatar", "text:退出登录"],
         login_page_indicators=["login.51job.com", "passport.51job.com"],
         requires_real_edge=True,
+        # 51job 的 last_page 是「最后触碰页」：该页可能因达标/急停只扫了一部分，
+        # 必须从该页重扫（其他平台默认同语义；如需 0.4.1 的 +1 语义改 next_page）。
+        resume_mode="rescan_last",
         # 与 51job_collector 的真实落盘位置同一阀门（打包态用户数据目录）：此前指向安装目录内锚点，
         # 0.3.6 起该文件不再进包，旧锚点在打包态恒为不存在——健康检查/预检要看对地方
         legacy_cookie_file=str(writable_path(
             os.path.join(_BACKEND_ROOT, "51job_scraper", "51job_cookies.json"), "51job_cookies.json"
         )),
+        auth_cookie_keys=("51job",),
     ),
 }
 

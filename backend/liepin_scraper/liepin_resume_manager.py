@@ -5,8 +5,10 @@
 - 简历标题净化与通用简历标识判定；
 - 3份上限槽位管控，旧定制简历安全淘汰；
 - 通用简历【汰旧换新】机制：上传前先行清理历史版本，确保全账号唯一最新；
-- TDOSS 内存分块 Base64 上传与 React Fiber onChange 状态响应式同步；
-- 幽灵 DOM 隐藏 input 注入降级兜底。
+- 上传弹窗内 input[type=file] 原生注入（CDP setFileInputFiles，走猎聘自身
+  beforeUpload → customRequest → onChange 全链路）；
+- TDOSS 内存分块 Base64 + React Fiber 直调 customRequest/onChange 作降级兜底；
+- 失败现场截图落盘 liepin_failure_shots/。
 """
 
 import os
@@ -14,6 +16,8 @@ import sys
 import time
 import re
 import base64
+import shutil
+from datetime import datetime
 
 # 双身份导入引导
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -30,10 +34,26 @@ from app.core.db_paths import writable_path  # noqa: E402
 
 TEMP_DIR = writable_path(os.path.join(_PROJECT_ROOT, "temp_resumes"), "temp_resumes")
 LIEPIN_MAX_RESUMES = 3
+LIEPIN_ATTACHMENT_EDIT_URL = "https://c.liepin.com/resume/edit?editType=attachment"
 
-CSS_ANT_MODAL_CLOSE = 'css:.ant-modal-close'
-CSS_RESUME_CARD_CONTAINER = 'css:.attachment-view-box .resume-card-container'
-CSS_ANT_UPLOAD_DRAG = 'css:.ant-upload-drag'
+# 猎聘附件简历页 2026-10 改版：业务 class 全部变为 CSS Modules 哈希风格
+# （attachmentCard--XzM2N / fileName--XzM2N / moreIcon--XzBkN，哈希随构建漂移，
+# 只能按 `name--` 前缀匹配），Ant Design 组件前缀由 ant- 换成 ant-c-。
+# 每个选择器都把改版前后的写法并列成一组，旧页面灰度/回滚时不至于再次失明。
+# 卡片仍限定在附件主展示区（attachment-view-box / attachmentView--*）之内，
+# 侧边栏的简历分析卡片不得被计入槽位。
+CSS_ANT_MODAL_CLOSE = 'css:.ant-modal-close, .ant-c-modal-close'
+CSS_MODAL_CONTENT = 'css:.ant-modal-content, .ant-c-modal-content'
+CSS_RESUME_CARD_CONTAINER = (
+    'css:.attachment-view-box .resume-card-container, '
+    '[class*="attachmentView--"] [class*="attachmentCard--"]'
+)
+CSS_CARD_FILE_NAME = 'css:.file-name, [class*="fileName--"]'
+CSS_CARD_MORE_ICON = 'css:.more-icon, [class*="moreIcon--"], .ant-c-dropdown-trigger'
+CSS_DROPDOWN_MENU = 'css:.ant-dropdown-menu, .ant-c-dropdown-menu'
+CSS_ANT_UPLOAD_DRAG = 'css:.ant-upload-drag, .ant-c-upload-drag'
+CSS_UPLOAD_FILE_INPUT = 'css:.ant-upload input[type="file"], .ant-c-upload input[type="file"]'
+UPLOAD_MODAL_TITLE = "上传附件简历"
 
 # 模块级句柄，支持单测 monkeypatch 与运行时动态获取
 page = None
@@ -68,16 +88,34 @@ def _get_card_file_name(item) -> str:
     if not item:
         return ""
     try:
-        fn_ele = item.ele("css:.file-name", timeout=1)
+        fn_ele = item.ele(CSS_CARD_FILE_NAME, timeout=1)
         return fn_ele.text.strip() if (fn_ele and fn_ele.text) else ""
     except Exception:
         return ""
 
 
+def _close_upload_modal_if_open(p) -> bool:
+    """关掉「上传附件简历」弹窗：editType=attachment 会在进页时自动弹出，
+    遮罩挡住卡片「⋯」入口，槽位管理前必须关掉；上传时再按需重开。"""
+    for modal in p.eles(CSS_MODAL_CONTENT):
+        try:
+            if not modal.states.is_displayed or UPLOAD_MODAL_TITLE not in (modal.text or ""):
+                continue
+            close_btn = modal.ele(CSS_ANT_MODAL_CLOSE, timeout=1)
+            if not close_btn:
+                continue
+            close_btn.click(by_js=True)
+            time.sleep(1)
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def _click_delete_in_dropdown_menu() -> bool:
     """在下拉菜单中点击删除"""
     p = _get_page()
-    for menu in p.eles("css:.ant-dropdown-menu"):
+    for menu in p.eles(CSS_DROPDOWN_MENU):
         if menu.states.is_displayed:
             del_btn = menu.ele("xpath:.//*[contains(text(), '删除')]", timeout=2)
             if del_btn:
@@ -89,16 +127,28 @@ def _click_delete_in_dropdown_menu() -> bool:
 def _confirm_delete_in_modal() -> bool:
     """确认删除弹窗"""
     p = _get_page()
-    for modal in p.eles("css:.ant-modal-content"):
-        if modal.states.is_displayed:
-            content_text = modal.text
-            if "不可恢复" in content_text or "确定要删除" in content_text:
-                confirm = modal.ele("text:确 定", timeout=2) or modal.ele("text:确定", timeout=2)
-                if confirm:
-                    confirm.click()
-                    print("   ✅ 已提交删除确认请求")
-                    time.sleep(2)
-                    return True
+    for modal in p.eles(CSS_MODAL_CONTENT):
+        if not modal.states.is_displayed:
+            continue
+        content_text = modal.text or ""
+        # 改版后确认弹窗文案无契约保证，只要是带「删除」语义的可见弹窗即视为删除确认；
+        # 「上传附件简历」弹窗同为 modal-content，必须排除，否则会误点它的关闭/其他按钮
+        if UPLOAD_MODAL_TITLE in content_text:
+            continue
+        if not ("不可恢复" in content_text or "确定要删除" in content_text or "删除" in content_text):
+            continue
+        confirm = (
+            modal.ele("text:确 定", timeout=2)
+            or modal.ele("text:确定", timeout=1)
+            or modal.ele("xpath:.//button[contains(., '删除')]", timeout=1)
+            or modal.ele("css:.ant-btn-primary, .ant-c-btn-primary, .ant-c-btn-dangerous", timeout=1)
+        )
+        if confirm:
+            confirm.click()
+            print(f"   ✅ 已提交删除确认请求（弹窗文案: {content_text.strip()[:40]!r}）")
+            time.sleep(2)
+            return True
+        print(f"   ⚠️ 删除确认弹窗已出现但未找到确认按钮（弹窗文案: {content_text.strip()[:60]!r}）")
     return False
 
 
@@ -112,11 +162,14 @@ def _delete_resume_card(target_item) -> bool:
     except Exception:
         pass
 
-    more_btn = target_item.ele("css:.more-icon", timeout=3)
+    more_btn = target_item.ele(CSS_CARD_MORE_ICON, timeout=3)
     if not more_btn:
-        print("   ⚠️ 目标卡片缺少 .more-icon 操作入口，无法删除")
+        print("   ⚠️ 目标卡片缺少「⋯」操作入口（.more-icon / moreIcon--*），无法删除")
         return False
-    more_btn.click()
+    try:
+        more_btn.click()
+    except Exception:
+        more_btn.click(by_js=True)
     time.sleep(1)
 
     if not _click_delete_in_dropdown_menu():
@@ -200,6 +253,7 @@ def _ensure_resume_slots(upload_name: str = "", mass_apply: bool = False):
             time.sleep(2)
             p.refresh()
             time.sleep(2.5)
+            _close_upload_modal_if_open(p)
 
         leftover = [
             item for item in p.eles(CSS_RESUME_CARD_CONTAINER)
@@ -224,6 +278,7 @@ def _ensure_resume_slots(upload_name: str = "", mass_apply: bool = False):
     time.sleep(2)
     p.refresh()
     time.sleep(2.5)
+    _close_upload_modal_if_open(p)
 
     if len(p.eles(CSS_RESUME_CARD_CONTAINER)) < count_before:
         return
@@ -235,206 +290,10 @@ def _ensure_resume_slots(upload_name: str = "", mass_apply: bool = False):
     time.sleep(2)
     p.refresh()
     time.sleep(2.5)
+    _close_upload_modal_if_open(p)
 
     count_final = len(p.eles(CSS_RESUME_CARD_CONTAINER))
     if count_final >= count_before:
         raise RuntimeError(
             f"槽位清理失败：删除后仍有 {count_final} 份附件简历（删除前 {count_before} 份），中止本次投递"
         )
-
-
-def _get_upload_btn():
-    p = _get_page()
-    return (
-        p.ele('css:div[data-testid="attachment-resume-add-btn"]', timeout=3)
-        or p.ele('css:[data-testid="attachment-resume-add-btn"]', timeout=3)
-        or p.ele('text:上传附件简历', timeout=2)
-        or p.ele('css:.resume-add-icon', timeout=2)
-        or p.ele('css:span.ant-upload-btn', timeout=2)
-        or p.ele('css:.attachment-add-btn', timeout=1)
-        or p.ele('css:.add-resume-btn', timeout=1)
-    )
-
-
-def _execute_hidden_input_injection(abs_path):
-    p = _get_page()
-    print("   ⚠️ 未找到「上传」按钮，尝试直接定位隐藏的 file input ...")
-    hidden_input = p.ele('css:input[type="file"]', timeout=3)
-    if hidden_input:
-        try:
-            hidden_input.input(abs_path)
-            print("   ⏳ 已通过隐藏控件静默注入文件，等待页面响应...")
-            time.sleep(5)
-            liepin_popups._clear_liepin_annoying_popups(p)
-            return
-        except Exception as e:
-            raise RuntimeError(f"隐藏 input 注入失败: {e}")
-    raise RuntimeError("无法定位「+」号或「上传附件简历」按钮，请核实页面是否处于附件简历区域")
-
-
-def _upload_attachment_resume(local_pdf_path: str, pdf_name: str):
-    """穿透 UI 弹窗静默上传核心逻辑并严格验证入库 (支持 TDOSS 内存分块上传与 React 响应式同步)"""
-    p = _get_page()
-    abs_path = os.path.abspath(local_pdf_path)
-
-    clean_title = _sanitize_resume_title(pdf_name)
-    upload_filename = f"{clean_title}.pdf"
-
-    upload_btn = _get_upload_btn()
-    if not upload_btn:
-        _execute_hidden_input_injection(abs_path)
-        return
-
-    try:
-        upload_btn.scroll.to_see()
-    except Exception:
-        pass
-
-    try:
-        upload_btn.click(timeout=3)
-    except Exception:
-        upload_btn.click(by_js=True)
-
-    time.sleep(2)
-    liepin_popups._clear_liepin_annoying_popups(p)
-
-    with open(abs_path, "rb") as f:
-        b64_data = base64.b64encode(f.read()).decode("utf-8")
-
-    # 分块注入 Base64 到浏览器
-    p.run_js("window.__b64_chunks = [];")
-    chunk_size = 100000
-    for i in range(0, len(b64_data), chunk_size):
-        chunk = b64_data[i:i+chunk_size]
-        p.run_js(f"window.__b64_chunks.push(\"{chunk}\");")
-
-    print(f"   ⏳ 正在通过 TDOSS 分块上传并触发 React 状态绑定: {upload_filename} ...")
-
-    js_upload = f"""
-    return (function() {{
-        const fullB64 = window.__b64_chunks.join("");
-        const binaryStr = atob(fullB64);
-        const len = binaryStr.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {{
-            bytes[i] = binaryStr.charCodeAt(i);
-        }}
-        const blob = new Blob([bytes], {{ type: "application/pdf" }});
-        const file = new File([blob], "{upload_filename}", {{ type: "application/pdf" }});
-
-        const input = document.querySelector(".ant-upload input[type=file]") || document.querySelector("input[type=file]");
-        if (!input) return "no_input";
-
-        let curr = null;
-        for (let k in input) {{
-            if (k.startsWith("__reactInternalInstance") || k.startsWith("__reactFiber")) {{
-                curr = input[k];
-                break;
-            }}
-        }}
-
-        let uploaderNode = null;
-        let targetOnChange = null;
-        while (curr) {{
-            if (curr.stateNode && curr.stateNode.props && curr.stateNode.props.customRequest) {{
-                uploaderNode = curr.stateNode;
-            }}
-            if (curr.memoizedProps && typeof curr.memoizedProps.onChange === "function" && curr.memoizedProps.customRequest) {{
-                targetOnChange = curr.memoizedProps.onChange;
-            }}
-            curr = curr.return;
-        }}
-
-        if (!uploaderNode || !targetOnChange) return "uploader_comp_not_found";
-
-        window.__save_status = "uploading";
-        uploaderNode.props.customRequest({{
-            file: file,
-            onSuccess: function(response) {{
-                window.__save_status = "TDOSS_DONE";
-                try {{
-                    targetOnChange({{
-                        file: {{
-                            uid: "rc-upload-" + Date.now(),
-                            name: "{upload_filename}",
-                            status: "done",
-                            response: response,
-                            percent: 100
-                        }}
-                    }});
-                    window.__save_status = "ONCHANGE_TRIGGERED";
-                }} catch(e) {{
-                    window.__save_status = "ONCHANGE_ERROR: " + e.toString();
-                }}
-            }},
-            onError: function(err) {{
-                window.__save_status = "TDOSS_ERROR: " + err;
-            }}
-        }});
-        return "started";
-    }})();
-    """
-
-    res = p.run_js(js_upload)
-    if res == "no_input" or res == "uploader_comp_not_found":
-        # 降级尝试原生 input 注入
-        fi = p.ele('css:input[type="file"]', timeout=3)
-        if fi:
-            fi.input(abs_path)
-            time.sleep(6)
-    else:
-        # 等待上传完成与 React 响应式更新
-        for _ in range(35):
-            time.sleep(1)
-            status = p.run_js("return window.__save_status;")
-            if status == "ONCHANGE_TRIGGERED":
-                time.sleep(6)
-                break
-            if status and "ERROR" in status:
-                print(f"   ⚠️ TDOSS 上传报错: {status}")
-                break
-
-    liepin_popups._clear_liepin_annoying_popups(p)
-
-    # 刷新并强校验卡片列表中是否真正出现了新上传的简历
-    p.refresh()
-    time.sleep(3)
-    cards = p.eles(CSS_RESUME_CARD_CONTAINER)
-    card_names = [_get_card_file_name(c) for c in cards if _get_card_file_name(c)]
-    print(f"   📋 当前账号内生效的附件列表: {card_names}")
-
-    short_name = clean_title[:8]
-    matched = any(short_name in name for name in card_names)
-    if not matched:
-        raise RuntimeError(f"猎聘附件上传后卡片列表中未找到「{clean_title}」，生效列表为: {card_names}")
-
-    print(f"   ✅ 简历「{upload_filename}」上传验证通过！")
-
-
-def _manage_and_upload_resume(local_pdf_path: str, pdf_name: str, mass_apply: bool = False):
-    """访问在线简历管理页 -> 清理旧简历 -> 上传新简历并强校验"""
-    p = _get_page()
-    print("   1. 正在访问猎聘在线简历管理页...")
-    p.get("https://c.liepin.com/resume/edit?editType=attachment")
-    time.sleep(3)
-
-    # 1. 关掉可能出现的引导弹窗
-    for _ in range(3):
-        guide = p.ele('text:我知道了', timeout=1) or p.ele('css:.ant-modal-close', timeout=1)
-        if guide:
-            try:
-                guide.click(by_js=True)
-            except Exception:
-                pass
-            time.sleep(1)
-        else:
-            break
-
-    liepin_popups._handle_resume_sync_modals(p)
-    liepin_popups._clear_interfering_modals(p)
-
-    # 2. 检查槽位并执行汰旧换新
-    _ensure_resume_slots(upload_name=pdf_name, mass_apply=mass_apply)
-
-    # 3. 执行上传
-    _upload_attachment_resume(local_pdf_path, pdf_name)

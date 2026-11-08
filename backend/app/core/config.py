@@ -23,8 +23,8 @@ os.environ.setdefault("no_proxy", "open.feishu.cn,feishu.cn")
 # ==========================================
 # 📂 全局路径常量配置
 # ==========================================
-# 假设 config.py 位于 new_jobhunter/backend/app/core/
-# 则 PROJECT_ROOT 指向 new_jobhunter/backend/
+# 假设 config.py 位于仓库 backend/app/core/
+# 则 PROJECT_ROOT 指向仓库 backend/
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 BASE_DIR = PROJECT_ROOT
 

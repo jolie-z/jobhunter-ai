@@ -342,44 +342,74 @@ def test_fallback_healthy_passthrough(tmp_path):
 
 # ---------- requires_login=False 平台预检豁免 ----------
 
-def _exempt_platform_config(monkeypatch):
-    """猎聘豁免场景夹具：legacy_cookie_file 指向测试文件自身（一定存在），
-    免除对运行机器真实 cookies.json 的依赖（cookie 文件守卫上线后缺失会进等待通道）。"""
+def _write_valid_liepin_cookie_file(path) -> None:
+    """写一份凭证未过期的猎聘 cookie 文件（预检按「存在且有效」判定，2026-10-31）。"""
+    import json
+    import time as _time
+    future = _time.time() + 7 * 24 * 3600
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump([
+            {"name": "lt_auth", "value": "valid", "expires": future},
+            {"name": "liepin_login_valid", "value": "1", "expires": future},
+        ], f)
+
+
+def _exempt_platform_config(monkeypatch, tmp_path=None):
+    """猎聘豁免场景夹具：legacy_cookie_file 指向本测试写入的有效 cookie 文件，
+    免除对运行机器真实 cookies.json 的依赖（机器真实 profile 可能带有效登录态，
+    会把「文件失效」用例带进实证放行分支，测试结果随机器漂移）。"""
     import app.session.preflight as pf
     from app.session.models import PlatformConfig
+
+    cookie_file = str(tmp_path / "liepin_cookies.json") if tmp_path else __file__
+    if tmp_path:
+        _write_valid_liepin_cookie_file(cookie_file)
 
     config = PlatformConfig(
         name="liepin",
         display_name="猎聘",
         port=9226,
         requires_login=False,
-        legacy_cookie_file=__file__,
+        legacy_cookie_file=cookie_file,
     )
     monkeypatch.setattr(pf, "resolve_platform", lambda key: config)
 
 
-def test_preflight_exempt_platform_skips_dom_check(monkeypatch):
-    """requires_login=False（猎聘）→ cookie 文件在位即直接放行：不探测端口、不拉起浏览器、不做 DOM 判定。"""
+def test_preflight_exempt_platform_skips_dom_check(monkeypatch, tmp_path):
+    """requires_login=False（猎聘）→ 跳过 DOM 登录判定，但仍保障浏览器就绪。
+
+    2026-10-31 变更：Cookie 文件在位只豁免“登录判定”，不豁免“浏览器生命周期”；
+    此前直接放行导致 9226 僵尸/异种监听时爬虫裸抛 BrowserConnectError。
+    """
     import app.session.preflight as pf
 
-    _exempt_platform_config(monkeypatch)
+    _exempt_platform_config(monkeypatch, tmp_path)
+
+    browser_calls = []
+    monkeypatch.setattr(
+        pf, "ensure_browser_ready_sync",
+        lambda cfg, **k: (browser_calls.append(cfg.name) or (True, "alive")),
+    )
 
     def _forbidden(*a, **k):
-        raise AssertionError("豁免平台不应触发端口探测/浏览器拉起/DOM 校验")
+        raise AssertionError("豁免平台不应触发 DOM 登录校验")
 
-    monkeypatch.setattr(pf, "probe_port", _forbidden)
-    monkeypatch.setattr(pf, "launch_edge", _forbidden)
     monkeypatch.setattr(pf, "check_login_with_fallback", _forbidden)
 
     results = asyncio.run(pf.ensure_platforms_ready(["liepin"]))
     assert results == {"liepin": True}
+    assert browser_calls == ["liepin"]  # 浏览器生命周期不再豁免
 
 
-def test_preflight_exempt_platform_logged(monkeypatch):
-    """豁免平台需记录「无需登录，豁免预检」日志。"""
+def test_preflight_exempt_platform_logged(monkeypatch, tmp_path):
+    """豁免平台需记录「无需登录，豁免预检」日志，且浏览器就绪。"""
     import app.session.preflight as pf
 
-    _exempt_platform_config(monkeypatch)
+    _exempt_platform_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        pf, "ensure_browser_ready_sync",
+        lambda cfg, **k: (True, "alive"),
+    )
 
     logged = []
 

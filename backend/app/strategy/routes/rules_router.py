@@ -52,6 +52,7 @@ async def update_active_strategy_api(payload: UpdateStrategyRequest):
         await service.update_active_strategy_in_db(payload)
         return {"status": "success", "message": "策略更新成功"}
     except Exception as e:
+        logger.exception(f"[update_active_strategy] 报错: {e}")
         raise HTTPException(status_code=500, detail=f"策略更新失败: {str(e)}")
 
 
@@ -62,6 +63,7 @@ async def get_strategy_config():
         data = await service.get_all_strategy_configs()
         return {"status": "success", **data}
     except Exception as e:
+        logger.exception(f"[get_strategy_config] 报错: {e}")
         raise HTTPException(status_code=500, detail=f"获取策略配置失败: {str(e)}")
 
 
@@ -83,6 +85,7 @@ async def save_strategy_config(payload: SaveConfigRequest):
         record_id = await service.save_strategy_config_service(payload)
         return {"status": "success", "record_id": record_id}
     except Exception as e:
+        logger.exception(f"[save_strategy_config] 报错: {e}")
         raise HTTPException(status_code=500, detail=f"处理保存请求时出错: {str(e)}")
 
 
@@ -93,6 +96,7 @@ async def delete_strategy(payload: DeleteStrategyRequest):
         await service.delete_strategy_service(payload)
         return {"status": "success"}
     except Exception as e:
+        logger.exception(f"[delete_strategy] 报错: {e}")
         raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
 
 
@@ -103,6 +107,7 @@ async def get_preferences():
         data = await service.get_preferences_service()
         return {"status": "success", "data": data}
     except Exception as e:
+        logger.exception(f"[get_preferences] 报错: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -113,6 +118,7 @@ async def upsert_preference(payload: PreferenceUpsertRequest):
         msg = await service.upsert_preference_service(payload)
         return {"status": "success", "message": msg}
     except Exception as e:
+        logger.exception(f"[upsert_preference] 报错: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -123,6 +129,7 @@ async def delete_preference(record_id: str):
         msg = await service.delete_preference_service(record_id)
         return {"status": "success", "message": msg}
     except Exception as e:
+        logger.exception(f"[delete_preference] 报错: {e}")
         return {"status": "error", "message": str(e)}
 
 

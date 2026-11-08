@@ -18,9 +18,22 @@ import re
 import sys
 import time
 import random
+import logging
 import platform
 from datetime import datetime
 from DrissionPage import ChromiumPage, ChromiumOptions
+
+# 双身份导入引导（脚本独立运行 / backend 内导入都能找到 engine_guard 与 registry）
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+from engine_guard import cross_process_port_lock  # noqa: E402
+from app.session.registry import get_platform_port  # noqa: E402
+
+logger = logging.getLogger(__name__)
+
+ZHILIAN_DEBUG_PORT = get_platform_port("zhilian")
 
 # -------------------------------------------------------------
 # 🛡️ DrissionPage 底层 CDP 查询防御补丁：
@@ -252,27 +265,129 @@ def ensure_login(wait_s: int = 0) -> bool:
 # ==========================================
 # 弹窗拦截
 # ==========================================
-def _kill_popups(tab, max_rounds=5):
-    """关闭所有干扰弹窗（纯 JS 方式点击可见关闭/取消按钮，零 CDP performSearch 依赖，杜绝 searchId 崩溃）"""
+# 「上传附件简历」业务弹层自己的 X 关闭按钮类名。该弹层是 _upload_resume_once 主动
+# 打开的上传流程载体，等确认上传期间误杀它 = 取消整个上传（2026-11-03 智联投递
+# 两连败根因之一：确定上传点击被预览重渲染吞掉后，等待循环把弹层 X 掉，附件永远
+# 进不了后台列表，30 秒后按 [物料] 失败收场）
+_UPLOAD_DIALOG_CLOSE_SEL = '.upload-to-confirm__close'
+
+
+def _kill_sync_dialog_js() -> str:
+    """生成「附件可同步」营销弹窗的定点清除 JS（2026-11-04 智联投递失败根治）。
+
+    现场标定（9250 CDP）：该弹窗 = .ivu-modal-wrap.upload-to-confirm__modal，X 按钮类名
+    .ivu-modal-close / .upload-to-confirm__close 均已在拦截名单内——选择器不缺，缺的是
+    **时序**：弹窗由智联前端在附件状态就绪后异步弹出，_kill_popups 在流程开头各点跑的
+    时候它还没出现。故把清除动作内联到各等待循环里持续执行：弹窗一现即被点掉。
+
+    全程按文案锚定（容器 innerText 含「可同步」/「同步至在线简历」才动手）：它与
+    「上传附件简历」业务弹层共用 .upload-to-confirm__modal 类名，靠类名无法区分，
+    按文案才能保证绝不误杀业务弹层（R1-P1）。绝不点「同步至在线简历」主按钮
+    （会改写用户在线简历数据）。
+
+    返回 JS 源码，eval 后返回清除的元素数；纯 DOM 点击，无网络/状态副作用，
+    弹窗不在时 querySelectorAll 落空、代价可忽略。
+    """
+    return '''
+        var n = 0;
+        var SYNC_KW1 = '可同步';
+        var SYNC_KW2 = '同步至在线简历';
+        // 1) 文案锚定容器 → 只在同步弹窗容器内点 X（绝不全页无差别点击）
+        document.querySelectorAll('.ivu-modal-wrap, .ivu-modal').forEach(function(m){
+            var s = window.getComputedStyle(m);
+            if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return;
+            var text = m.innerText || '';
+            if (text.indexOf(SYNC_KW1) < 0 && text.indexOf(SYNC_KW2) < 0) return;
+            m.querySelectorAll('.upload-to-confirm__close, .ivu-modal-close, [class*="close"]').forEach(function(x){
+                if (x.getBoundingClientRect().width > 0) { x.click(); n++; }
+            });
+        });
+        // 2) 兜底：X 点击被 Vue 重渲染吞掉半程（真机实证：wrap 已 display:none 但 mask
+        //    仍在遮挡）——mask 无文案，按「相邻 wrap 命中同步文案」清除
+        var masks = document.querySelectorAll('.ivu-modal-mask');
+        for (var i = 0; i < masks.length; i++) {
+            var mk = masks[i];
+            var s = window.getComputedStyle(mk);
+            if (s.display === 'none' || s.visibility === 'hidden') continue;
+            var sib = mk.nextElementSibling;
+            var txt = ((sib && (sib.innerText || sib.textContent)) || '');
+            if (txt.indexOf(SYNC_KW1) >= 0 || txt.indexOf(SYNC_KW2) >= 0) {
+                mk.style.display = 'none';
+                n++;
+            }
+        }
+        // 3) 终极兜底：同步弹窗 wrap 本体仍可见时直接隐藏（X 彻底失效时解除遮罩）
+        document.querySelectorAll('.ivu-modal-wrap').forEach(function(m){
+            var s = window.getComputedStyle(m);
+            if (s.display === 'none' || s.visibility === 'hidden') return;
+            var text = m.innerText || '';
+            if (text.indexOf(SYNC_KW1) < 0 && text.indexOf(SYNC_KW2) < 0) return;
+            m.style.display = 'none';
+            n++;
+        });
+        return n;
+    '''
+
+
+def _dismiss_sync_dialog(tab) -> int:
+    """在真实页面上执行同步弹窗清除 JS，返回清除元素数；任何异常静默归零。
+
+    三个异步等待循环共用的轻量封装（R1-P2：消除 try/run_js/except 样板）；
+    清除失败不抛出——弹窗清除是尽力而为的干扰抑制，不应反噬主流程。
+    """
+    try:
+        return int(tab.run_js(_kill_sync_dialog_js()) or 0)
+    except Exception:
+        return 0
+
+
+def _kill_popups(tab, max_rounds=5, protect_upload_dialog=False):
+    """关闭所有干扰弹窗（纯 JS 方式点击可见关闭/取消按钮，零 CDP performSearch 依赖，杜绝 searchId 崩溃）
+
+    protect_upload_dialog=True 时跳过「上传附件简历」弹层的关闭按钮与取消路径——
+    用于上传确认等待期，防止把还没提交完的业务弹层当干扰弹窗杀掉。
+    """
+    close_selector = _UPLOAD_DIALOG_CLOSE_SEL + ', .ivu-modal-close, .el-dialog__headerbtn, [aria-label="Close"]' \
+        if not protect_upload_dialog else '.ivu-modal-close, .el-dialog__headerbtn, [aria-label="Close"]'
     for _ in range(max_rounds):
         closed = False
         try:
             closed = bool(tab.run_js('''
                 var n = 0;
-                // 1. 常见干扰弹窗的显式关闭按钮
-                document.querySelectorAll('.upload-to-confirm__close, .ivu-modal-close, .el-dialog__headerbtn, [aria-label="Close"]').forEach(function(e){
+                var protectUpload = arguments[0] === undefined ? false : !!arguments[0];
+                // 1. 常见干扰弹窗的显式关闭按钮（protect 时不含上传弹层自己的 X）
+                var closeSel = arguments[1];
+                document.querySelectorAll(closeSel).forEach(function(e){
                     if (e.getBoundingClientRect().width > 0) { e.click(); n++; }
+                });
+                // 1.5 「附件可同步」营销弹窗（2026-11-04）：同样走 close 按钮；
+                // 无取消类按钮，只有 X + 主按钮「同步至在线简历」（绝不可点主按钮，
+                // 会改写用户在线简历数据）
+                document.querySelectorAll('.ivu-modal-wrap, .ivu-modal').forEach(function(m){
+                    var s = window.getComputedStyle(m);
+                    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return;
+                    var text = m.innerText || '';
+                    if (text.indexOf('可同步') >= 0 || text.indexOf('同步至在线简历') >= 0) {
+                        m.querySelectorAll('.ivu-modal-close, .upload-to-confirm__close, [class*="close"]').forEach(function(x){
+                            if (x.getBoundingClientRect().width > 0) { x.click(); n++; }
+                        });
+                    }
                 });
                 // 2. 干扰弹窗/引导弹窗中的取消按钮（排除删除确认等核心业务弹窗）
                 document.querySelectorAll('.ivu-modal-wrap, .el-dialog__wrapper, .ivu-modal').forEach(function(m){
                     var s = window.getComputedStyle(m);
                     if (s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0') {
                         var text = m.innerText || '';
+                        // 上传确认等待期：跳过「上传附件简历」业务弹层，绝不替用户点它的取消类按钮
+                        if (protectUpload && (text.indexOf('确定上传') >= 0 || text.indexOf('重新选择') >= 0)) {
+                            return;
+                        }
                         // 包含同步/建议/完善/提示文案的非业务弹窗才执行取消
+                        // 暂不同步/下次再说/以后再说（2026-11-04 补）：智联引导类弹窗的延迟按钮变体
                         if (text.indexOf('同步') >= 0 || text.indexOf('建议') >= 0 || text.indexOf('完善') >= 0 || text.indexOf('提示') >= 0) {
                             m.querySelectorAll('button, span, a').forEach(function(b){
                                 var bt = (b.innerText || '').trim();
-                                if ((bt === '取消' || bt === '暂不' || bt === '知道了') && b.getBoundingClientRect().width > 0) {
+                                if ((bt === '取消' || bt === '暂不' || bt === '知道了' || bt === '暂不同步' || bt === '下次再说' || bt === '以后再说') && b.getBoundingClientRect().width > 0) {
                                     b.click();
                                     n++;
                                 }
@@ -281,7 +396,7 @@ def _kill_popups(tab, max_rounds=5):
                     }
                 });
                 return n > 0;
-            '''))
+            ''', protect_upload_dialog, close_selector))
         except Exception:
             closed = False
         if closed:
@@ -358,8 +473,94 @@ def _delete_resume_by_name(tab, name="我的简历"):
             print(f"   🗑️ 发现历史「{name}」，执行前置清理删除...")
             if _delete_resume_item(tab, it):
                 deleted = True
-            time.sleep(1)
+            _wait_resume_gone(tab, name)
     return deleted
+
+
+# ==========================================
+# 条件等待（慢机器防早退，2026-10-29 沙箱事故根治）
+# 背景：Windows 沙箱等慢环境下固定 sleep(1)/sleep(2)+单次 3s 查找随机翻车——
+# 删完简历列表还没重渲染就去点上传、点了上传 3s 内没等到 input[type=file]。
+# 原则：不等固定秒数，轮询到目标状态出现即走，超时才按原失败路径收场。
+# 注意：timeout_s 为软上限——单次迭代含 ele 探测（最多 ~1s）+ 0.5s sleep，
+# 实际超时可能超出至多一个迭代长度（外审 round2 P2，接受：方向是多等不是少等）。
+# 时钟统一 time.monotonic()，不受系统回拨影响。
+# ==========================================
+def _wait_resume_gone(tab, name, timeout_s=8):
+    """轮询等待指定简历从后台列表消失（删除后 Ant 列表重渲染有延迟）。返回是否确认消失。
+
+    已知歧义（软处理）：简历中心尚未渲染时 `.parse-item` 查空也会判 True——但进入本函数
+    前必经 _wait_for_resume_center（列表或上传按钮任一渲染），且后续上传控件查找有独立
+    失败路径 + 外层 _upload_resume_once 有刷新重试，最坏结果是本轮上传失败重试，无副作用。
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        items = _safe_eles(tab, 'css:.parse-item', timeout=1) or []
+        if not any(name in (it.text or "") for it in items):
+            return True
+        time.sleep(0.5)
+    print(f"   ⚠️ 等待「{name}」从列表消失超时（{timeout_s}s），继续按原流程执行")
+    return False
+
+
+def _wait_slot_below(tab, limit, timeout_s=8):
+    """轮询等待附件槽位数降到 limit 以下（腾槽位删除后）。返回是否确认降位。"""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if len(_safe_eles(tab, 'css:.parse-item', timeout=1) or []) < limit:
+            return True
+        time.sleep(0.5)
+    print(f"   ⚠️ 等待槽位数降到 {limit} 以下超时（{timeout_s}s），继续按原流程执行")
+    return False
+
+
+def _wait_for_resume_center(tab, timeout_s=12):
+    """轮询等待简历中心渲染出附件列表或上传按钮（导航后的条件等待，替代固定 sleep(4)）。"""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            if (tab.ele('css:.parse-item', timeout=1)
+                    or tab.ele('text:上传新附件', timeout=1)
+                    or tab.ele('css:button.upload__button', timeout=1)):
+                return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+    print(f"   ⚠️ 等待简历中心渲染超时（{timeout_s}s），继续按原流程执行")
+    return False
+
+
+def _wait_file_input_with_reclick(tab, reclick, timeout_s=20, retry_at_s=8):
+    """轮询等待上传弹层里的 input[type=file] 渲染；等过 retry_at_s 仍无则执行一次 reclick 补救再等。
+
+    点击偶发被页面重渲染吃掉（弹窗开了又关）。reclick 是无参可调用（调用方负责重找按钮，
+    原句柄可能已随重渲染失效）；全部超时返回 None（调用方按原「未找到文件上传控件」失败
+    路径收场）。
+
+    2026-11-04 智联投递失败根治：等待期间每轮持续清除「附件可同步」营销弹窗——该弹窗由
+    智联前端异步弹出（附件状态就绪触发），恰好卡在本等待窗口内盖住页面，上传按钮点击
+    被遮罩吞掉 → input 永远等不到 → 整岗按 [物料] 失败（14:13 现场实证）。DOM 标定：
+    弹窗即 .upload-to-confirm__modal，X 已在拦截名单，缺的只是等待期的持续执行。
+    """
+    deadline = time.monotonic() + timeout_s
+    reclicked = False
+    while time.monotonic() < deadline:
+        _dismiss_sync_dialog(tab)
+        try:
+            file_input = tab.ele('css:input[type="file"]', timeout=1)
+            if file_input:
+                return file_input
+        except Exception:
+            pass
+        if not reclicked and (timeout_s - (deadline - time.monotonic())) >= retry_at_s:
+            reclicked = True
+            print("   ⚠️ 文件上传控件迟迟未渲染，重按一次【上传新附件】...")
+            try:
+                reclick()
+            except Exception:
+                pass
+        time.sleep(0.5)
+    return None
 
 
 # ==========================================
@@ -388,6 +589,52 @@ def _upload_resume(page, local_pdf_path, pdf_name="我的简历", is_mass=False,
     return False, batch_mass_uploaded, 0
 
 
+def _confirm_upload_visible(tab) -> bool:
+    """检测「上传附件简历」弹层的【确定上传】按钮是否仍可见（弹层未收口）。
+
+    用按钮可见性而非容器类名探测：不依赖 .upload-to-confirm 容器结构假设，
+    且上传中按钮文案变为「上传中…」时自然判定为已提交。"""
+    try:
+        return bool(tab.run_js('''
+            var btns = document.querySelectorAll('button');
+            for (var b of btns) {
+                var t = (b.innerText || '').trim();
+                if (t.indexOf('确定上传') >= 0 && b.getBoundingClientRect().width > 0) return true;
+            }
+            return false;
+        '''))
+    except Exception:
+        return False
+
+
+def _click_confirm_upload(tab, max_rounds=3):
+    """点击【确定上传】并确认点击真正生效（弹层收口）。返回是否确认生效。
+
+    2026-11-03 智联投递两连败根治：原实现 click() 后不校验返回值也不看弹层状态——
+    弹层内简历预览解析/重布局的瞬间，CDP 坐标点击会被静默吞掉（按钮 disabled 或
+    节点重挂载），弹层滞留打开，随后等待循环的 _kill_popups 又把它当干扰弹窗 X 掉，
+    上传被取消，30 秒后按 [物料] 失败。现在每轮点击后轮询确认按钮消失（弹层已收口），
+    未收口则下一轮改用 JS 点击兜底（绕过遮挡/坐标漂移）；全部轮次耗尽仍失败才返回 False。
+    """
+    for rnd in range(1, max_rounds + 1):
+        confirm_btn = tab.ele('text:确定上传', timeout=3)
+        if not confirm_btn or not confirm_btn.states.is_displayed:
+            # 按钮不存在/不可见：弹层已收口（上一轮点击生效或上传已提交）
+            return True
+        print(f"   ✅ 点击【确定上传】（第 {rnd}/{max_rounds} 次尝试）...")
+        try:
+            confirm_btn.click(by_js=(rnd > 1))
+        except Exception as click_err:
+            print(f"   ⚠️ 确定上传点击异常（将重试）: {click_err}")
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if not _confirm_upload_visible(tab):
+                return True
+            time.sleep(1)
+        print(f"   ⚠️ 第 {rnd} 次点击后弹层仍未收口{'，下一轮改用 JS 点击' if rnd < max_rounds else ''}...")
+    return False
+
+
 def _upload_resume_once(page, local_pdf_path, pdf_name="我的简历", is_mass=False, batch_mass_uploaded=False, navigate=True):
     # 🌟 核心优化：海投岗位在当次批次若已上传过「我的简历.pdf」，后续岗位100%直接复用，杜绝重复删传耗时
     if is_mass and batch_mass_uploaded:
@@ -398,7 +645,9 @@ def _upload_resume_once(page, local_pdf_path, pdf_name="我的简历", is_mass=F
 
     if navigate:
         page.get("https://i.zhaopin.com/resume")
-        time.sleep(4)
+        # 条件等待（原固定 sleep(4)）：慢机器冷启动下 4s 常常不够，列表/按钮 12s 内渲染
+        # 出来即走；超时不阻断，后续步骤各有自己的失败路径
+        _wait_for_resume_center(page.latest_tab, timeout_s=12)
 
     tab = page.latest_tab
     _kill_popups(tab)
@@ -406,12 +655,10 @@ def _upload_resume_once(page, local_pdf_path, pdf_name="我的简历", is_mass=F
     if is_mass:
         # 海投首次进入：先清理历史同名的「我的简历.pdf」，避免残留上个任务或多天前的旧文件
         _delete_resume_by_name(tab, "我的简历")
-        time.sleep(1)
     else:
         # 🌟 精投模式：同名专属简历一律删旧传新 —— 后台同名≠同内容（重新生成的定制稿、
         # 同公司同名不同岗位都会撞名），复用旧附件会让最新定制简历永远发不出去
         _delete_resume_by_name(tab, pdf_name)
-        time.sleep(1)
 
     # 检查槽位数 (智联最多 3 份)
     resume_items = _safe_eles(tab, 'css:.parse-item')
@@ -420,7 +667,7 @@ def _upload_resume_once(page, local_pdf_path, pdf_name="我的简历", is_mass=F
 
     if slot_count >= 3:
         _delete_oldest_resume(tab)
-        time.sleep(1)
+        _wait_slot_below(tab, 3)
 
     # 上传新附件
     upload_btn = (
@@ -435,31 +682,52 @@ def _upload_resume_once(page, local_pdf_path, pdf_name="我的简历", is_mass=F
     upload_btn.click()
     time.sleep(2)
 
-    # 直接向 modal 中的 input[type=file] 注入本地文件路径
-    file_input = tab.ele('css:input[type="file"]', timeout=3)
+    # 轮询等待上传弹层里的文件控件渲染（原单次 3s 查找在慢机器上随机翻车）；
+    # 等过 8s 仍无则重按一次上传按钮再等（点击偶发被页面重渲染吃掉）。
+    # 重按走 callable：原句柄可能已随重渲染失效，失败时重找按钮再点
+    def _reclick_upload_btn():
+        try:
+            upload_btn.click()
+        except Exception:
+            retry_btn = (tab.ele('text:上传新附件', timeout=1)
+                         or tab.ele('text:添加附件', timeout=1)
+                         or tab.ele('css:button.upload__button', timeout=1))
+            if retry_btn:
+                retry_btn.click()
+
+    file_input = _wait_file_input_with_reclick(tab, _reclick_upload_btn)
     if not file_input:
         print("   ❌ 未找到文件上传控件 (input[type=file])")
+        # 失败现场留痕：常见为营销/引导弹窗遮挡上传按钮（截图可见遮罩层与弹窗内容）
+        _save_failure_shot(tab, f"nofileinput_{pdf_name[:24]}")
         return False, batch_mass_uploaded, 0
 
     file_input.input(local_pdf_path)
     time.sleep(3)
 
-    # 点击"确定上传" → 完成上传
-    confirm_btn = tab.ele('text:确定上传', timeout=5) or tab.ele('css:.ivu-btn-primary', timeout=3)
-    if confirm_btn and confirm_btn.states.is_displayed:
-        print(f"   ✅ 点击【确定上传】...")
-        confirm_btn.click()
-        time.sleep(4)
+    # 点击"确定上传" → 完成上传（带点击有效性校验 + JS 点击兜底，失败快速止损不进 30s 空等）
+    if not _click_confirm_upload(tab):
+        print(f"   ❌ [物料] 【确定上传】多次点击后弹层仍未收口，上传未提交（简历「{pdf_name}」不会出现在后台列表）")
+        return False, batch_mass_uploaded, 0
 
-    # 🌟 上传解析等待：轮询确认新附件已出现在后台列表（最多 30 秒），规避「附件审核中不可选」竞态
+    # 🌟 上传解析等待：轮询确认新附件已出现在后台列表（最多 30 秒），规避「附件审核中不可选」竞态。
+    # protect_upload_dialog=True：绝不把还没提交完的「上传附件简历」弹层当干扰弹窗杀掉；
+    # 弹层若仍开着（点击又被重渲染吞掉）就地补点一次，而不是干等 30 秒后报解析失败
     t0 = time.time()
     while True:
-        _kill_popups(tab)
+        _kill_popups(tab, protect_upload_dialog=True)
+        # 「附件可同步」营销弹窗与上传弹层并存时：定点清同步弹窗（不受 protect 保护——
+        # 它不是上传业务弹层，留着会挡住后台列表查看）
+        _dismiss_sync_dialog(tab)
+        if _confirm_upload_visible(tab):
+            print("   ⚠️ 上传弹层仍在（确定上传未生效），就地补点...")
+            _click_confirm_upload(tab, max_rounds=1)
         items_now = _safe_eles(tab, 'css:.parse-item') or []
         if any(pdf_name in (it.text or "") for it in items_now):
             break
         if time.time() - t0 > 30:
             print(f"   ❌ [物料] 上传后 30 秒内未在简历后台看到「{pdf_name}」，附件可能解析失败")
+            _save_failure_shot(tab, f"upload_noattach_{pdf_name[:24]}")
             return False, (True if is_mass else batch_mass_uploaded), 0
         time.sleep(2)
     time.sleep(3)  # 解析宽限：附件出现 ≠ 解析渲染完成，留出缓冲
@@ -661,11 +929,15 @@ def _deliver_to_job(
         apply_btn.click()
         time.sleep(2)
 
-        # 轮询等待简历选择弹窗渲染（慢页面下弹窗可能延迟出现）；等待期间主按钮若变迁为已投递态，
-        # 说明智联对单附件岗位做了静默直投
+        # 轮询等待简历选择弹窗渲染（原 8s 在慢机器/冷启动环境下随机不够用，2026-10-29
+        # 沙箱事故后放宽到 20s）；等待期间主按钮若变迁为已投递态，说明智联对单附件岗位
+        # 做了静默直投。
+        # 等待期持续清「附件可同步」营销弹窗：它是异步弹出，出现即遮罩全页，
+        # 不清会让后续「投递简历」确认按钮点击被吞（与上传控件等待同款时序竞态）
         resume_items = []
         t0 = time.time()
-        while time.time() - t0 < 8:
+        while time.time() - t0 < 20:
+            _dismiss_sync_dialog(tab)
             try:
                 resume_items = tab.eles('css:.a-attachment-select__item', timeout=1) or []
             except Exception:
@@ -1042,6 +1314,7 @@ def _deliver_to_job(
 # ==========================================
 # 完整工作流
 # ==========================================
+@cross_process_port_lock(ZHILIAN_DEBUG_PORT, "zhilian", timeout_s=300, on_busy="false")
 def deliver_job(job_data) -> bool:
     """
     投递单个岗位（全自动化无缝支持海投与精投分流）

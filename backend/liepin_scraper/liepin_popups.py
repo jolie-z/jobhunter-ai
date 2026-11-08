@@ -21,7 +21,9 @@ for _p in (_SCRIPT_DIR, _PROJECT_ROOT):
 
 import liepin_session
 
-CSS_ANT_MODAL_CLOSE = 'css:.ant-modal-close'
+# 猎聘 2026-10 改版后 Ant Design 组件前缀由 ant- 换成 ant-c-，新旧并列兼容
+CSS_ANT_MODAL_CLOSE = 'css:.ant-modal-close, .ant-c-modal-close'
+CSS_ANT_MODAL_CONTENT = 'css:.ant-modal-content, .ant-c-modal-content'
 
 
 def _resolve_page(page=None):
@@ -33,7 +35,7 @@ def _resolve_page(page=None):
 def _clear_interfering_modals(page=None):
     """检测并关闭干扰弹窗（如“内容未保存”提示）"""
     p = _resolve_page(page)
-    for modal in p.eles("css:.ant-modal-content"):
+    for modal in p.eles(CSS_ANT_MODAL_CONTENT):
         if modal.states.is_displayed:
             text = modal.text
             if "内容未保存" in text or "确定退出编辑" in text:

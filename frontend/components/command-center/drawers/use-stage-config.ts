@@ -32,6 +32,12 @@ export function useStageConfig<T>(
       const result = await res.json()
       if (res.ok && result.code === 0 && result.data) {
         setData(result.data)
+      } else {
+        // 非网络失败（4xx/5xx 带 JSON body、code!=0）此前静默——面板呈现本地默认值，
+        // 用户随后点保存会用默认值覆盖线上真实配置（审计 P2-21）。显式报错 + data 保持
+        // null（各面板保存入口均有 data 判空守卫，加载失败天然禁保存）
+        const detail = typeof result?.detail === "string" ? result.detail : result?.message
+        toast.error(`${errorMessage}${detail ? `: ${detail}` : ""}`)
       }
     } catch {
       toast.error(errorMessage)

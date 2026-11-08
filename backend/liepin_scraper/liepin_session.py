@@ -22,6 +22,7 @@ for _p in (_SCRIPT_DIR, _PROJECT_ROOT):
         sys.path.insert(0, _p)
 
 from app.session.registry import get_liepin_cookie_file, get_profile_path, get_platform_port
+from app.session.health_checker import has_valid_liepin_auth_cookies
 from engine_guard import EngineGuardError, verify_browser_identity
 
 COOKIE_FILE = get_liepin_cookie_file()
@@ -86,16 +87,52 @@ def get_browser_page():
         return page
 
 
+def _browser_auth_ok(p) -> bool:
+    """浏览器当前 cookie 是否含有效猎聘登录凭证（不导航、不看 URL）。"""
+    try:
+        return has_valid_liepin_auth_cookies(p.cookies(all_info=True, all_domains=True))
+    except Exception:
+        return False
+
+
 def check_login_status() -> bool:
-    """校验猎聘登录态：访问 c.liepin.com，若保持在 c.liepin.com 则登录态有效"""
+    """校验猎聘登录态：优先看 lt_auth/liepin_login_valid 两键，URL 仅作兜底。
+
+    2026-10-30 修复：旧实现只看 `p.url.startswith("https://c.liepin.com")`。
+    猎聘登录页也可能挂在 c.liepin.com 下，URL 前缀会把登录页误判成已登录，
+    进而跳过 Cookie 注入、甚至把访客态 cookie 覆盖回有效文件。
+    """
     try:
         p = get_browser_page()
+        if _browser_auth_ok(p):
+            return True
         p.get(LIEPIN_HOME_URL)
         time.sleep(2)
-        return p.url.startswith("https://c.liepin.com")
+        url = getattr(p, "url", "") or ""
+        if not url.startswith("https://c.liepin.com"):
+            return False
+        if any(ind in url for ind in ("/login", "loginBackUrl", "passport")):
+            return False
+        return _browser_auth_ok(p)
     except Exception as e:
         print(f"   ⚠️ 校验猎聘登录态异常: {e}")
         return False
+
+
+def _clean_cookie_payload(cookies) -> list[dict]:
+    """过滤成 DrissionPage 可安全注入的字段，避免脏字段导致整批注入静默失败。"""
+    valid_keys = {"name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite"}
+    out = []
+    for c in cookies or []:
+        if not isinstance(c, dict) or not c.get("name"):
+            continue
+        clean = {k: v for k, v in c.items() if k in valid_keys and v is not None}
+        if "expires" not in clean and c.get("expiry") is not None:
+            clean["expires"] = c.get("expiry")  # 兼容旧文件/旧 DrissionPage 的 expiry 键名
+        if "value" not in clean:
+            clean["value"] = ""
+        out.append(clean)
+    return out
 
 
 def _inject_cookies_if_needed():
@@ -111,14 +148,18 @@ def _inject_cookies_if_needed():
         try:
             with open(COOKIE_FILE, 'r', encoding='utf-8') as f:
                 cookies = json.load(f)
+            clean = _clean_cookie_payload(cookies)
+            if not clean:
+                print("   ⚠️ Cookie 文件为空或格式异常，跳过注入")
+                return
 
             p.get("https://www.liepin.com/")
             time.sleep(1)
-            p.set.cookies(cookies)
+            p.set.cookies(clean)
             p.refresh()
             time.sleep(2)
             if check_login_status():
-                print("   ✅ 本地 Cookie 注入成功，登录态已恢复！")
+                print(f"   ✅ 本地 Cookie 注入成功（{len(clean)} 条），登录态已恢复！")
                 save_current_cookies()
             else:
                 print("   ⚠️ 本地 Cookie 文件已失效，需要扫码登录")
@@ -129,20 +170,49 @@ def _inject_cookies_if_needed():
 
 
 def save_current_cookies():
-    """把浏览器最新 cookies 回写 COOKIE_FILE（playwright 格式），供后续注入复用"""
+    """把浏览器最新 cookies 回写 COOKIE_FILE（playwright 格式），供后续注入复用。
+
+    2026-10-30 修复：仅在当前会话确实含有效猎聘登录凭证时才回写。
+    旧实现无条件覆盖，访客态/登录页误判都会把仅存的有效文件冲掉，导致下次
+    拉起时「文件不新鲜 → 注入失败 → 又要扫码」。
+    """
     try:
         p = get_browser_page()
-        raw = p.cookies(all_info=True)
-        out = [{
-            "name": c.get("name"), "value": c.get("value"), "domain": c.get("domain"),
-            "path": c.get("path", "/"), "expires": c.get("expires", -1) or -1,
-            "httpOnly": bool(c.get("httpOnly")), "secure": bool(c.get("secure")),
-            "sameSite": c.get("sameSite", "Lax") or "Lax",
-        } for c in raw]
-        with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
+        raw = p.cookies(all_info=True, all_domains=True)
+        if not has_valid_liepin_auth_cookies(raw):
+            print("   ⚠️ 跳过 Cookie 回写：当前会话缺少猎聘登录凭证（避免访客 cookie 覆盖有效文件）")
+            return
+        out = []
+        for c in raw:
+            if not isinstance(c, dict) or not c.get("name"):
+                continue
+            exp = c.get("expires")
+            if exp is None:
+                exp = c.get("expiry", -1)
+            try:
+                exp = float(exp) if exp is not None else -1.0
+            except (TypeError, ValueError):
+                exp = -1.0
+            same_site = str(c.get("sameSite") or "Lax").strip()
+            if same_site.lower() == "none":
+                same_site = "None"
+            elif same_site.lower() == "strict":
+                same_site = "Strict"
+            else:
+                same_site = "Lax"
+            out.append({
+                "name": c.get("name"), "value": c.get("value"), "domain": c.get("domain"),
+                "path": c.get("path", "/"), "expires": exp,
+                "httpOnly": bool(c.get("httpOnly")), "secure": bool(c.get("secure")),
+                "sameSite": same_site,
+            })
+        tmp_path = COOKIE_FILE + ".tmp"
+        with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(out, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+        os.replace(tmp_path, COOKIE_FILE)
+        print(f"   💾 已回写 Cookie 文件（{len(out)} 条）")
+    except Exception as e:
+        print(f"   ⚠️ Cookie 回写失败（不影响流程）: {e}")
 
 
 def ensure_login(wait_s: int = 0) -> bool:
@@ -162,7 +232,11 @@ def ensure_login(wait_s: int = 0) -> bool:
     p = get_browser_page()
     while time.time() - t0 < wait_s:
         time.sleep(5)
-        if p.url.startswith("https://c.liepin.com"):
+        try:
+            _ = p.url  # 浏览器被关闭/重启时重新取句柄，避免在死对象上空转
+        except Exception:
+            p = get_browser_page()
+        if _browser_auth_ok(p):
             print("   ✅ 登录成功，登录态已恢复！")
             time.sleep(2)
             save_current_cookies()
@@ -175,8 +249,8 @@ def inject_cookies_if_needed() -> bool:
 
     前置：浏览器已在目标调试端口运行（调用方负责，如预检的 _ensure_browser_ready）。
     流程 = _inject_cookies_if_needed（profile 优先 → cookie 文件注入兜底，成功即回写）。
-    返回最终是否登录（URL 判定）。可能抛 EngineGuardError（端口被陌生浏览器占用），
-    调用方自行兜底。
+    返回最终是否登录（lt_auth/liepin_login_valid 凭证判定）。可能抛 EngineGuardError
+    （端口被陌生浏览器占用），调用方自行兜底。
     """
     _inject_cookies_if_needed()
     return check_login_status()

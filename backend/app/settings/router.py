@@ -16,6 +16,20 @@ async def get_settings() -> dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/reveal")
+async def reveal_setting(key: str) -> dict[str, Any]:
+    """按需返回单个敏感配置的明文（页面眼睛按钮二次核对用）。
+
+    仅允许敏感配置键；明文不进入列表接口，避免整页初始加载下发全部密钥。
+    """
+    try:
+        return await service.reveal_system_setting(key)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="未知或非敏感配置项")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("")
 @router.post("/")
 async def save_settings(payload: SettingsPayload) -> dict[str, Any]:

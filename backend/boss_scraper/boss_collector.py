@@ -17,7 +17,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 from DrissionPage import ChromiumPage, ChromiumOptions
 
-from engine_guard import verify_browser_identity
+from engine_guard import cross_process_port_lock, verify_browser_identity
 from app.core.db_paths import job_hunter_db_path, writable_path
 from app.core.utils import collapse_blank_lines
 
@@ -532,6 +532,7 @@ def collect_single_page(keyword, city, salary, target_page, target_count=0):
     print(f"🎯 第 {target_page} 页处理完毕。新增入库 {success_count} 个，跳过 {skip_count} 个。")
     print(f"新增入库 {success_count} 个")
 
+@cross_process_port_lock(BOSS_DEBUG_PORT, "boss", on_busy="exit")
 def start_auto_patrol(target_page, platform="boss", keyword=None, city=None, salary=None, target_count=0):
     print(f"🚀 启动 [{platform}] 精准采集矩阵 | 当前锁定页码: P{target_page}")
     

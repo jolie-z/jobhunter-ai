@@ -21,7 +21,14 @@ import {
 import { PipelineJob } from "@/store/pipeline-store"
 import { GRADE_COLOR_MAP, getPlatformTheme, formatFullDateTime } from "../types"
 import { cn } from "@/lib/utils"
-import { isJobDelivered, isJobReadyToDeliver, isJobRejected, isJobWaitingReview } from "../job-predicates"
+import {
+  isJobDelivered,
+  isJobDelivering,
+  isJobReadyToDeliver,
+  isJobRejected,
+  isJobRunning,
+  isJobWaitingReview,
+} from "../job-predicates"
 import { JobMaterialPreviewModal } from "./job-material-preview-modal"
 import { useResendGreeting } from "./use-resend-greeting"
 import { JobCardMaterials } from "./job-card-materials"
@@ -33,6 +40,7 @@ interface JobCardProps {
   isCancelling?: boolean
   onApprove?: (jobId: string, action: "approve" | "reject") => void
   onDeliverSingle?: (jobId: string) => void
+  delivering?: boolean  // 父级 in-flight 守卫（审计 P1-11）：立即投递在途时禁用按钮
   onCancelDelivery?: (jobId: string) => void
 }
 
@@ -44,6 +52,7 @@ export const JobCard = React.memo(function JobCard({
   isCancelling,
   onApprove,
   onDeliverSingle,
+  delivering,
   onCancelDelivery,
 }: JobCardProps) {
 
@@ -56,19 +65,9 @@ export const JobCard = React.memo(function JobCard({
   const isReadyToDeliver = isJobReadyToDeliver(job)
   const isDelivered = isJobDelivered(job)
   const isRejected = isJobRejected(job)
-  const isRunning =
-    (job.status === "running" ||
-      job.node === "evaluate_node" ||
-      job.node === "rewrite_node" ||
-      job.node === "deep_eval_node" ||
-      job.node === "greeting_node" ||
-      job.node === "quick_greeting_node") &&
-    job.status !== "done" &&
-    job.status !== "waiting" &&
-    job.status !== "delivered" &&
-    !isRejected &&
-    job.sub_status !== "eval_done"
-  const isDelivering = isRunning && (job.sub_status === "delivering" || job.node === "delivery_node")
+  // 与 use-board-actions 的终止中复位共用同一判源
+  const isRunning = isJobRunning(job)
+  const isDelivering = isJobDelivering(job)
   const normalizedGrade = job.grade ? job.grade.toUpperCase() : ""
   const gradeStyle = normalizedGrade ? GRADE_COLOR_MAP[normalizedGrade] : null
 
@@ -89,15 +88,8 @@ export const JobCard = React.memo(function JobCard({
   // 链接定制面板（沉浸工作台根路径）
   const customPanelUrl = `/?job_id=${encodeURIComponent(job.job_id)}`
 
-  // 子阶段文案
-  const getRunningStageText = () => {
-    if (job.sub_status === "ai_eval_queued") return "AI初步评估排队中"
-    if (job.sub_status === "deep_eval" || job.node === "deep_eval_node") return "AI深度画像评估中"
-    if (job.sub_status === "rewriting" || job.node === "rewrite_node") return "定制简历改写中"
-    if (job.sub_status === "greeting" || job.node === "greeting_node" || job.node === "quick_greeting_node") return "生成打招呼语中"
-    if (job.sub_status === "delivering" || job.node === "delivery_node") return "正在自动投递中"
-    return "AI初步评估打分中"
-  }
+  // 子阶段文案：后端 job 事件/实时快照已下发 last_action_desc，前端只在缺失时兜底
+  const getRunningStageText = () => job.last_action_desc || "处理中…"
 
   // 🌟 精投/海投标签只信后端 review_type（is_custom_record 口径），评级 A/B 仅作旧数据兜底。
   // 严禁拿 C 级私自反推海投：待投递的 C 级定制改写岗（AI改写JSON 在）实际按精投投递，
@@ -272,6 +264,16 @@ export const JobCard = React.memo(function JobCard({
             </span>
           )}
 
+          {/* 疑似重复徽章：跟进状态被查重关卡标记为「疑似重复」的岗位，提示老板对照母本裁决 */}
+          {isWaiting && job.follow_status === "疑似重复" && (
+            <span
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-300"
+              title="查重关卡判定与已有记录疑似重复，已自动跳过评估；请对照母本信息裁决（放行会记入去重白名单）"
+            >
+              🧬 疑似重复 · 待裁决
+            </span>
+          )}
+
           {/* 待投递就绪 Tag */}
           {isReadyToDeliver && (
             <span className="rounded bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-500/20 px-1.5 py-0.5 text-[10px] font-semibold flex items-center gap-1">
@@ -338,13 +340,24 @@ export const JobCard = React.memo(function JobCard({
               已完成投递
             </span>
           ) : isRunning ? (
-            <span className="inline-flex items-center gap-1 text-purple-600 dark:text-purple-400 font-semibold truncate">
-              <Sparkles className="h-3 w-3 shrink-0 animate-spin" />
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 font-semibold truncate",
+                job.sub_status === "feishu_sync_failed"
+                  ? "text-amber-600 dark:text-amber-400"
+                  : "text-purple-600 dark:text-purple-400"
+              )}
+            >
+              {job.sub_status === "feishu_sync_failed" ? (
+                <AlertCircle className="h-3 w-3 shrink-0" />
+              ) : (
+                <Sparkles className="h-3 w-3 shrink-0 animate-spin" />
+              )}
               {getRunningStageText()}
             </span>
           ) : job.node === "feishu_sync" ? (
             <span className="inline-flex items-center gap-1 text-blue-600 dark:text-blue-400 font-semibold truncate">
-              ☁️ 正在推送飞书多维表格
+              ☁️ {job.last_action_desc || "正在推送飞书多维表格"}
             </span>
           ) : job.job_id.startsWith("raw_") || job.status === "scraped" ? (
             <span className="inline-flex items-center gap-1 text-muted-foreground truncate" title="爬虫已抓取存入本地 SQLite 数据库，待规则清洗与飞书推送">
@@ -437,7 +450,8 @@ export const JobCard = React.memo(function JobCard({
           {isReadyToDeliver && onDeliverSingle && (
             <button
               onClick={() => onDeliverSingle(job.job_id)}
-              className="flex h-6.5 items-center gap-1 rounded-md bg-blue-600 hover:bg-blue-500 px-2.5 text-[10px] font-medium text-white shadow-xs transition-all active:scale-95 cursor-pointer"
+              disabled={delivering}
+              className="flex h-6.5 items-center gap-1 rounded-md bg-blue-600 hover:bg-blue-500 px-2.5 text-[10px] font-medium text-white shadow-xs transition-all active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               title="立即执行此岗位的自动投递"
             >
               <Send className="h-2.5 w-2.5" />

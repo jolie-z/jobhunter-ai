@@ -186,7 +186,8 @@ def test_midgraph_resume_rebinds_card_and_delivers(patched_feishu, monkeypatch):
     monkeypatch.setattr(full_auto, "run_single_job_pipeline_async", fake_launch)
 
     class _FakeState:
-        values = {"grade": "A", "score": 89.0}
+        # 真实 checkpoint 停在 rewrite_node 时，deep_eval_node 已完成并落盘 deep_diagnosis
+        values = {"grade": "A", "score": 89.0, "deep_diagnosis": {"dream_picture": "画像"}}
         next = ("rewrite_node",)
 
     class _FakeApp:
@@ -218,6 +219,67 @@ def test_midgraph_resume_rebinds_card_and_delivers(patched_feishu, monkeypatch):
     assert "已送达下方消息" in json.dumps(last_card, ensure_ascii=False)
     assert any("__delivered__recMid" in t for _, t in patched_feishu.sent), "物料应补投递"
     assert not reg.has("recMid")
+
+
+def test_resume_at_deep_eval_keeps_eval_stage_running(patched_feishu, monkeypatch):
+    """断点停在独立深评节点：初评已有评级，但 eval 阶段不能提前结案，rewrite 也不能提前点亮。"""
+    from app.automation import full_auto
+
+    async def fake_launch(**kw):
+        return {"outcome": "stopped", "error": "", "status": "简历人工复核", "grade": "A"}
+
+    monkeypatch.setattr(full_auto, "run_single_job_pipeline_async", fake_launch)
+
+    class _FakeState:
+        values = {"grade": "A", "score": 89.0}  # deep_diagnosis 尚未落盘
+        next = ("deep_eval_node",)
+
+    class _FakeApp:
+        async def aget_state(self, config):
+            return _FakeState()
+
+    monkeypatch.setattr(scheduler_mod, "pipeline_app", _FakeApp())
+    reg.register("recDeep", chat_id="oc1", card_msg_id="om_deep",
+                 company="公司A", job="岗位B", started_epoch=time.time() - 30)
+
+    asyncio.run(job_entry_chat.resume_inflight_evaluations())
+
+    first_note = json.dumps(patched_feishu.card_updates[0][1], ensure_ascii=False)
+    assert "🔄 AI 初评 + 深度评估" in first_note, "断点在深评节点时 eval 阶段不能提前结案"
+    assert "🔄 简历改写 & 打招呼语" not in first_note, "深评未完成前 rewrite 阶段不能提前点亮"
+
+
+def test_resume_after_failed_deep_eval_marks_eval_done(patched_feishu, monkeypatch):
+    """深评已执行但失败兜底（deep_diagnosis 为空）：阶段仍应显示 eval 完成，不能误报未深评。"""
+    from app.automation import full_auto
+
+    async def fake_launch(**kw):
+        return {"outcome": "stopped", "error": "", "status": "简历人工复核", "grade": "A"}
+
+    monkeypatch.setattr(full_auto, "run_single_job_pipeline_async", fake_launch)
+
+    class _FakeState:
+        values = {
+            "grade": "A",
+            "score": 89.0,
+            "deep_diagnosis": {},
+            "deep_eval_completed": True,
+        }
+        next = ("rewrite_node",)
+
+    class _FakeApp:
+        async def aget_state(self, config):
+            return _FakeState()
+
+    monkeypatch.setattr(scheduler_mod, "pipeline_app", _FakeApp())
+    reg.register("recDeepFail", chat_id="oc1", card_msg_id="om_deep_fail",
+                 company="公司A", job="岗位B", started_epoch=time.time() - 30)
+
+    asyncio.run(job_entry_chat.resume_inflight_evaluations())
+
+    first_note = json.dumps(patched_feishu.card_updates[0][1], ensure_ascii=False)
+    assert "✅ AI 初评 + 深度评估" in first_note, "深评失败兜底也算已执行，eval 阶段应结案"
+    assert "🔄 简历改写 & 打招呼语" in first_note
 
 
 def test_resume_skips_delivery_when_materials_already_sent(patched_feishu, monkeypatch):

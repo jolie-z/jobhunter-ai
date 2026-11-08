@@ -1,6 +1,7 @@
 export type TabType =
   | "all"
   | "rejected"
+  | "reeval"
   | "review"
   | "ready_to_deliver"
   | "evaluating"

@@ -60,6 +60,54 @@ def _ensure_table():
     _initialized = True
 
 
+_PLATFORM_LIMIT_MAX = 15  # 防封控硬保护：单平台单轮计划上限
+_PLATFORM_LIMIT_DEFAULT = 3  # 非法值/缺省回落
+MAX_KEYWORD_QUEUE = 10  # 条件队列硬上限（去重后计数）
+
+
+def normalize_keywords(keywords) -> list[dict]:
+    """归一化条件队列：去空、去重（keyword 忽略大小写 + city + salary）。
+
+    同三要素重复入队会共享同一行台账，第二个条目每轮必然 0 新增、白占预算；
+    保存时统一收口，前后端都无需再各自处理。
+    """
+    out: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in keywords or []:
+        if isinstance(item, str):
+            item = {"keyword": item}
+        if not isinstance(item, dict):
+            continue
+        kw = str(item.get("keyword") or "").strip()
+        if not kw:
+            continue
+        city = str(item.get("city") or "").strip()
+        salary = str(item.get("salary") or "").strip()
+        key = (kw.lower(), city, salary)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"keyword": kw, "city": city, "salary": salary})
+    return out
+
+
+# 兼容旧的内部引用名
+_normalize_keywords = normalize_keywords
+
+
+def _clamp_platform_limits(platforms) -> dict:
+    """强制每个平台的抓取上限 clamp 到 [0, 15]，非法值回落默认（读取与保存共用同一口径）。"""
+    if not isinstance(platforms, dict):
+        return platforms
+    for _plat, conf in platforms.items():
+        if isinstance(conf, dict) and "limit" in conf:
+            try:
+                conf["limit"] = min(max(int(conf.get("limit") or 0), 0), _PLATFORM_LIMIT_MAX)
+            except (ValueError, TypeError):
+                conf["limit"] = _PLATFORM_LIMIT_DEFAULT
+    return platforms
+
+
 def get_scrape_config() -> dict:
     """读取抓取配置，无记录时返回默认结构。"""
     _ensure_table()
@@ -79,7 +127,8 @@ def get_scrape_config() -> dict:
 
     return {
         "keywords": json.loads(row["keywords"] or "[]"),
-        "platforms": json.loads(row["platforms"] or "{}"),
+        # 读时同样 clamp：历史版本保存过的超限值（如 20/50）即时收敛到新上限，无需等用户重新保存
+        "platforms": _clamp_platform_limits(json.loads(row["platforms"] or "{}")),
         "default_city": row["default_city"] or "",
         "default_salary": row["default_salary"] or "",
         "updated_at": row["updated_at"],
@@ -94,14 +143,8 @@ def save_scrape_config(
 ) -> dict:
     """保存（UPSERT）抓取配置，返回保存后的完整数据。"""
     _ensure_table()
-    # 强制每个平台的抓取上限硬性 clamp 到最大 50（保护爬虫稳定性与防风控）
-    if isinstance(platforms, dict):
-        for _plat, conf in platforms.items():
-            if isinstance(conf, dict) and "limit" in conf:
-                try:
-                    conf["limit"] = min(max(int(conf.get("limit") or 0), 0), 50)
-                except (ValueError, TypeError):
-                    conf["limit"] = 20
+    keywords = normalize_keywords(keywords)
+    platforms = _clamp_platform_limits(platforms)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = sqlite3.connect(DB_PATH)
     conn.execute(

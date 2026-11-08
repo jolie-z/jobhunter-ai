@@ -102,6 +102,9 @@ def test_rejected_manual_contract():
     assert delivery.count('"rejected_manual"') >= 2, "单岗/批量拒绝接口必须持续使用统一的 rejected_manual 口径"
     assert delivery.count('"已拒绝"') >= 2, "单岗/批量拒绝落库必须同步认识「已拒绝」门牌"
 
+    # 拆分子任务：分诊/归类抽至 snapshot_dispatch.py，契约跨两文件检查
     snapshot = (_REPO_ROOT / "backend/app/automation/snapshot_service.py").read_text(encoding="utf-8")
-    assert snapshot.count('"rejected_manual"') >= 1, "快照归类必须使用统一的 rejected_manual 口径"
-    assert snapshot.count('"已拒绝"') >= 1, "快照查询必须同步认识「已拒绝」门牌"
+    dispatch = (_REPO_ROOT / "backend/app/automation/snapshot_dispatch.py").read_text(encoding="utf-8")
+    combined = snapshot + dispatch
+    assert combined.count('"rejected_manual"') >= 1, "快照归类必须使用统一的 rejected_manual 口径"
+    assert combined.count('"已拒绝"') >= 1, "快照查询必须同步认识「已拒绝」门牌"

@@ -1,4 +1,6 @@
 import asyncio
+import json
+import logging
 import uuid
 from datetime import datetime
 from typing import Any
@@ -8,7 +10,14 @@ from fastapi.responses import StreamingResponse
 
 from app.tasks.executor import run_batch_ai_task
 from app.tasks.schemas import BatchTaskRequest
-from app.tasks.state import GLOBAL_TASK_STATE, task_queues, task_status
+from app.tasks.state import (
+    GLOBAL_TASK_STATE,
+    request_batch_stop,
+    task_queues,
+    task_status,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -27,8 +36,16 @@ async def batch_process(payload: BatchTaskRequest, background_tasks: BackgroundT
             detail="job_ids 不能为空"
         )
 
+    # 批量互斥（2026-11-02 审计 P2-15）：已有批量在跑/排队时拒绝新批量（此前可无限
+    # 排队且排队即覆盖 current_task_id，/status 无参轮询从此指向 pending 新任务）
+    if GLOBAL_TASK_STATE.get("is_processing"):
+        raise HTTPException(
+            status_code=409,
+            detail="已有批量任务正在执行，请等待完成或先停止",
+        )
+
     task_id = str(uuid.uuid4())
-    GLOBAL_TASK_STATE["current_task_id"] = task_id
+    # current_task_id 延迟到 executor 真正持锁启动时才写入（原版排队即覆盖运行中任务的指针）
     task_queues[task_id] = asyncio.Queue()
 
     task_status[task_id] = {
@@ -56,6 +73,21 @@ async def batch_process(payload: BatchTaskRequest, background_tasks: BackgroundT
         "task_id": task_id,
         "message": f"批量任务已启动，共 {len(payload.job_ids)} 个岗位"
     }
+
+@router.post("/stop/{task_id}")
+async def stop_batch_task(task_id: str):
+    """停止批量任务（2026-11-02 审计 P2-15）：置停止标志，批量循环每岗检查后优雅收尾。
+
+    已完成/不存在的任务返回 404；受理后循环在当前岗位边界退出，已完成部分照常统计。
+    """
+    from app.tasks.state import task_status as _ts
+    info = _ts.get(task_id)
+    if not info or info.get("status") not in ("pending", "running"):
+        raise HTTPException(status_code=404, detail="任务不存在或已结束")
+    if not request_batch_stop(task_id):
+        raise HTTPException(status_code=409, detail="该任务不是当前运行中的批量任务")
+    return {"status": "stopping", "task_id": task_id, "message": "停止指令已受理，将在当前岗位边界退出"}
+
 
 @router.get("/status")
 def get_task_status(task_id: str | None = None):
@@ -101,12 +133,47 @@ def get_task_status(task_id: str | None = None):
     }
     return res
 
+def _make_expired_stream(task_id: str):
+    """expired 任务 SSE 生成器工厂（模块级供单测直驱；端点内部亦用此实现）。"""
+    async def expired_stream():
+        expired = json.dumps(
+            {
+                "type": "end",
+                "reason": "task_expired",
+                "message": f"任务 {task_id} 不存在或已过期（后端可能已重启）",
+            },
+            ensure_ascii=False,
+        )
+        yield f"data: {expired}\n\n"
+        # 2026-11-05 重连风暴根治：不能直接 return 关流——浏览器 EventSource 规范
+        # 对「流正常结束」的响应是自动重连（非客户端 close()），前端任一未处理
+        # end 帧的消费者都会陷入 ~40s 周期的 expired 重连风暴（当日事故：旧任务
+        # pipeline_794db003 每分钟 1.5 次命中本分支刷屏）。这里保持连接常驻 +
+        # 心跳保活，把「过期任务」钉死为单次语义：帧已送达，连接不再产生任何
+        # 新事件，客户端处理 end 帧后主动 close，未处理的也只会挂一条哑连接。
+        yield ": heartbeat\n\n"
+        while True:
+            await asyncio.sleep(15)
+            yield ": heartbeat\n\n"
+
+    return expired_stream()
+
+
 @router.get("/logs")
 async def task_logs(task_id: str):
     if task_id not in task_queues:
-        raise HTTPException(
-            status_code=404,
-            detail=f"任务 {task_id} 不存在或已过期"
+        # G1（2026-10-31 事故）：后端重启会清空内存任务队列，前端仍持旧 task_id 重连时
+        # EventSource 拿不到 404 状态码，只会按 onerror 无限重连。改为下发终态事件
+        # （type=end + reason=task_expired）让前端既有「end 即收尾清理」逻辑立即生效。
+        logger.warning("[SSE] 任务日志流请求命中过期任务: task_id=%s（队列已随重启清空），下发 task_expired 终态", task_id)
+        return StreamingResponse(
+            _make_expired_stream(task_id),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
         )
 
     channel = task_queues[task_id]

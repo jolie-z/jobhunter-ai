@@ -96,6 +96,9 @@
 
 /* ---------- 教育背景条：对称三列布局（学校靠左、专业居中、时间靠右，无分隔符） ---------- */
 .educationBand {
+  /* 2026-11-03 弹2同源：grid 容器跨页特性与 flex 同病（剩余空间放不下整块时
+     被整体推到下页，前页留大白）。打印/预览上下文退回 flex（视觉等价），
+     与 _base.module.css 的 item-grid 修复同步 */
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
@@ -106,6 +109,20 @@
   margin-bottom: calc(var(--item-gap) * 1.2);
   break-inside: avoid;
   page-break-inside: avoid;
+}
+
+@media print {
+  .educationBand {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+}
+
+:global(.print-preview-mode) .educationBand {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
 }
 
 .educationSchool {

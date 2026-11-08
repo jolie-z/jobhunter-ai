@@ -28,8 +28,14 @@ router = APIRouter()
 
 
 class ScheduleConfigBody(BaseModel):
-    cron_time: str = "09:00"
-    is_enabled: bool = True
+    """全量保存端点的请求体（前端保存按钮整包提交）。
+
+    is_enabled / cron_time 必填（无默认值）：省略即 422，杜绝任何调用方
+    因缺字段被静默按默认值处理（2026-10-29 复审建议：缺省写 False 会把
+    已开启定时者误关，缺省写 True 会复活已关闭者，唯有拒绝缺省最安全）。
+    """
+    cron_time: str
+    is_enabled: bool
     schedule_start_date: str = ""
     schedule_end_date: str = ""
     skip_non_workdays: bool = True
@@ -70,7 +76,8 @@ async def save_config(req: AutopilotConfigSchema):
 
     if "cron_time" in fields or "is_enabled" in fields:
         current_cfg = get_autopilot_config()
-        scheduler.update_scheduler_cron(current_cfg.get("cron_time", "09:00"), current_cfg.get("is_enabled", True))
+        # 缺键兜底同为关：宁可不注册 daily_scout_task，也不能误挂每日定时
+        scheduler.update_scheduler_cron(current_cfg.get("cron_time", "09:00"), current_cfg.get("is_enabled", False))
     return {"status": "success", "message": "配置已保存，定时器已热更新"}
 
 

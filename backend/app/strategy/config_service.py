@@ -15,7 +15,7 @@ from fastapi import HTTPException
 
 from app.core.config import settings
 from app.core.feishu_client import feishu_client
-from app.core.feishu_utils import get_tenant_access_token
+from app.core.feishu_utils import get_tenant_access_token, parse_feishu_json
 from app.strategy.schemas import (
     ActiveStrategyResponse,
     DeleteStrategyRequest,
@@ -23,6 +23,7 @@ from app.strategy.schemas import (
     SaveConfigRequest,
     UpdateStrategyRequest,
 )
+from app.strategy.strategy_row import STRATEGY_COLUMNS, map_strategy_row
 
 logger = logging.getLogger("strategy_config_service")
 logger.setLevel(logging.INFO)
@@ -113,16 +114,10 @@ def _safe_extract_text(field_val: Any) -> str:
 
 
 def _safe_extract_avatar_url(field_val: Any) -> str:
-    """提取飞书附件字段的图片临时URL"""
-    if not field_val:
-        return ""
-    if isinstance(field_val, list) and len(field_val) > 0:
-        first_item = field_val[0]
-        if isinstance(first_item, dict):
-            file_token = first_item.get("file_token")
-            if file_token:
-                return f"{settings.BACKEND_BASE_URL.rstrip('/')}/api/strategy/avatar/{file_token}"
-    return ""
+    """提取飞书附件字段的图片临时URL（实现已收口到 avatar_injection.extract_photo_url）"""
+    from app.strategy.avatar_injection import extract_photo_url
+
+    return extract_photo_url(field_val)
 
 
 def _process_single_resume(r: dict) -> dict:
@@ -320,30 +315,20 @@ def _fetch_active_strategy_sync() -> ActiveStrategyResponse | None:
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT min_salary_k, max_salary_k, experience_years_max, exclude_education, allowed_cities, safe_phrases, keyword_rules, ai_scout_rules "
+            f"SELECT {', '.join(STRATEGY_COLUMNS)} "
             "FROM job_strategies WHERE is_active = 1 LIMIT 1"
         )
         row = cursor.fetchone()
         if not row:
             return None
 
-        ai_rules = "[]"
-        if len(row) > 7 and row[7]:
-            ai_rules = row[7]
+        # 列清单/行映射单一事实源（CR-B3 拆分子任务）：增删列只改 strategy_row.py
+        mapped = map_strategy_row(row)
 
         # 真实语义（空即空）：示例规则禁止在此回填——本函数是核心生效策略读取口，
         # 回填会让自动化清洗/初筛把示例当真实红线执行（R1 P1 修正：示例注入已上移
         # 至 rules_router /active 端点的展示层）
-        return ActiveStrategyResponse(
-            min_salary_k=row[0],
-            max_salary_k=row[1],
-            experience_years_max=row[2],
-            exclude_education=json.loads(row[3] or "[]"),
-            allowed_cities=json.loads(row[4] or "[]"),
-            safe_phrases=json.loads(row[5] or "[]"),
-            keyword_rules=json.loads(row[6] or "[]"),
-            ai_scout_rules=json.loads(ai_rules),
-        )
+        return ActiveStrategyResponse(**mapped)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -376,6 +361,7 @@ async def get_active_strategy_or_default() -> "ActiveStrategyResponse":
             max_salary_k=0,
             experience_years_max=0,
             exclude_education=[],
+            require_education=[],
             allowed_cities=[],
             safe_phrases=[],
             keyword_rules=[],
@@ -396,7 +382,7 @@ def _update_active_strategy_sync(data: UpdateStrategyRequest) -> None:
             """
             UPDATE job_strategies
             SET min_salary_k = ?, max_salary_k = ?, experience_years_max = ?,
-                exclude_education = ?, allowed_cities = ?, safe_phrases = ?, keyword_rules = ?, ai_scout_rules = ?, updated_at = CURRENT_TIMESTAMP
+                exclude_education = ?, require_education = ?, allowed_cities = ?, safe_phrases = ?, keyword_rules = ?, ai_scout_rules = ?, updated_at = CURRENT_TIMESTAMP
             WHERE is_active = 1
         """,
             (
@@ -404,6 +390,7 @@ def _update_active_strategy_sync(data: UpdateStrategyRequest) -> None:
                 data.max_salary_k,
                 data.experience_years_max,
                 json.dumps(data.exclude_education, ensure_ascii=False),
+                json.dumps(data.require_education, ensure_ascii=False),
                 json.dumps(data.allowed_cities, ensure_ascii=False),
                 json.dumps(data.safe_phrases, ensure_ascii=False),
                 json.dumps(data.keyword_rules, ensure_ascii=False),
@@ -418,8 +405,8 @@ def _update_active_strategy_sync(data: UpdateStrategyRequest) -> None:
                 """
                 INSERT INTO job_strategies (
                     strategy_name, is_active, min_salary_k, max_salary_k, experience_years_max,
-                    exclude_education, allowed_cities, safe_phrases, keyword_rules, ai_scout_rules
-                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                    exclude_education, require_education, allowed_cities, safe_phrases, keyword_rules, ai_scout_rules
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     DEFAULT_STRATEGY_NAME,
@@ -427,6 +414,7 @@ def _update_active_strategy_sync(data: UpdateStrategyRequest) -> None:
                     data.max_salary_k,
                     data.experience_years_max,
                     json.dumps(data.exclude_education, ensure_ascii=False),
+                    json.dumps(data.require_education, ensure_ascii=False),
                     json.dumps(data.allowed_cities, ensure_ascii=False),
                     json.dumps(data.safe_phrases, ensure_ascii=False),
                     json.dumps(data.keyword_rules, ensure_ascii=False),
@@ -439,8 +427,25 @@ def _update_active_strategy_sync(data: UpdateStrategyRequest) -> None:
         conn.close()
 
 
+def _invalidate_structural_filter_cache() -> None:
+    """策略保存成功后重置 ai_evaluator 的结构粗筛懒单例（agy P2 复审建议采纳）。
+
+    ai_evaluator._filter_engine 懒实例化后常驻内存、仅创建时读一次库；不失效的话，
+    保存的新策略要到下次重启才会被粗筛引擎吃到（清洗主管道 step1 每轮实时读库，
+    不受此影响）。懒 import 防循环依赖；失败不阻塞保存主流程（旧策略沿用至重启）。
+    """
+    try:
+        from ai_agents import ai_evaluator
+
+        ai_evaluator._filter_engine = None
+        logger.info("[策略] 已重置结构粗筛引擎缓存，下次评估将读取最新策略")
+    except Exception as e:
+        logger.warning(f"[策略] 结构粗筛引擎缓存失效失败（旧策略沿用至重启）: {e}")
+
+
 async def update_active_strategy_in_db(data: UpdateStrategyRequest) -> None:
     await asyncio.to_thread(_update_active_strategy_sync, data)
+    _invalidate_structural_filter_cache()
 
 
 async def get_active_resume_text_async() -> str:
@@ -454,10 +459,11 @@ async def get_active_resume_text_async() -> str:
             "conditions": [{"field_name": "当前状态", "operator": "is", "value": ["启用"]}],
         }
     }
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(trust_env=False) as client:
         resp = await client.post(search_url, headers=headers, json=payload, timeout=15)
+        # 先解析后校状态：网关 5xx 回非 JSON 错误页时，报错也能带 body 快照（code-review P2）
+        resp_data = parse_feishu_json(resp, "查询生效简历")
         resp.raise_for_status()
-        resp_data = resp.json()
         if resp_data.get("code") != 0:
             logger.error(f"Feishu search active resume failed: {resp_data.get('msg')}")
             return ""
@@ -504,7 +510,7 @@ async def save_strategy_config_service(payload: SaveConfigRequest) -> str:
             except Exception:
                 logger.exception(f"快照字段写入准备失败（降级跳过）snapshot={payload.snapshot_id}")
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(trust_env=False) as client:
         if payload.record_id:
             url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{settings.FEISHU_APP_TOKEN}/tables/{table_id}/records/{payload.record_id}"
             resp = await client.put(url, headers=headers, json={"fields": fields}, timeout=15)
@@ -512,7 +518,7 @@ async def save_strategy_config_service(payload: SaveConfigRequest) -> str:
             url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{settings.FEISHU_APP_TOKEN}/tables/{table_id}/records"
             resp = await client.post(url, headers=headers, json={"fields": fields}, timeout=15)
 
-        data = resp.json()
+        data = parse_feishu_json(resp, "保存简历")
         if resp.status_code == 200 and data.get("code") == 0:
             record_id = data.get("data", {}).get("record", {}).get("record_id")
             # 新建简历后自愈：库里仅此一份时自动设为生效。自愈内部自拉取且全 try/except——
@@ -539,10 +545,10 @@ async def delete_strategy_service(payload: DeleteStrategyRequest) -> bool:
     url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{settings.FEISHU_APP_TOKEN}/tables/{table_id}/records/{payload.record_id}"
     headers = {"Authorization": f"Bearer {token}"}
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(trust_env=False) as client:
         # 护栏：生效中的简历禁止删除，防止投递/改写链路静默拿到空简历
         check = await client.get(url, headers=headers, timeout=15)
-        check_data = check.json()
+        check_data = parse_feishu_json(check, "删除简历护栏检查")
         if check.status_code == 200 and check_data.get("code") == 0:
             fields = (check_data.get("data") or {}).get("record", {}).get("fields") or {}
             status = fields.get("当前状态")
@@ -550,7 +556,7 @@ async def delete_strategy_service(payload: DeleteStrategyRequest) -> bool:
                 raise ValueError("该简历当前为生效底稿，请先将其它简历设为生效后再删除")
 
         resp = await client.delete(url, headers=headers, timeout=15)
-        data = resp.json()
+        data = parse_feishu_json(resp, "删除简历")
         if resp.status_code == 200 and data.get("code") == 0:
             return True
         raise ValueError(f"飞书 API 删除请求失败: {data.get('msg')}")

@@ -35,12 +35,22 @@ if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 from app.core.db_paths import job_hunter_db_path, writable_path  # noqa: E402
 from app.core.utils import collapse_blank_lines  # noqa: E402
-from app.session.registry import get_liepin_cookie_file  # noqa: E402
+from app.session.registry import get_liepin_cookie_file, get_platform_port, resolve_platform  # noqa: E402
+from app.session.health_checker import has_valid_liepin_auth_cookies  # noqa: E402
+from app.session.browser import ensure_browser_ready_sync  # noqa: E402
+from engine_guard import cross_process_port_lock, verify_browser_identity  # noqa: E402
+
+LIEPIN_DEBUG_PORT = get_platform_port("liepin")
 
 # db_paths 阀门：dev 态逐字保持 backend/data 锚点，打包态落 JOBHUNTER_DATA_DIR
 DB_PATH = job_hunter_db_path(os.path.join(PARENT_DIR, 'data', 'job_hunter.db'))
 # cookie 文件单一口径（与 liepin_session / 预检同源；打包态落 Roaming，程序目录旧文件自动迁移）
 COOKIE_FILE = get_liepin_cookie_file()
+
+# 访客态标记（2026-10-31 事故根治）：Cookie 注入失败/缺失时引擎仍继续抓取（游客态
+# 搜索是既有设计），但深页搜索会被登录墙拦截——此时「未截获数据包」不再是到底或
+# 验证码，必须如实上报登录源失效，由控制器把本轮计为失败而非静默 0 条。
+GUEST_MODE = False
 
 # 🌟 更新后的猎聘城市代码映射表 (结合了链接提取规律与原有数据)
 LIEPIN_CITY_MAP = {
@@ -286,8 +296,13 @@ def _resolve_edge_path() -> str:
 
 def _setup_chromium_browser():
     """辅助函数：初始化并配置 DrissionPage 浏览器环境"""
+    global GUEST_MODE
     current_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(current_dir)
+
+    config = resolve_platform("liepin")
+    if config is None:
+        raise RuntimeError("猎聘平台配置缺失（registry.resolve_platform('liepin') 返回 None）")
 
     co = ChromiumOptions()
     co.set_argument('--no-sandbox')
@@ -298,17 +313,35 @@ def _setup_chromium_browser():
     mac_edge_path = _resolve_edge_path()
     co.set_browser_path(mac_edge_path)
 
-    # 🌟 1. 随机分配一个不冲突的调试端口 (避开默认的 9222，防止与日常浏览器/僵尸进程抢占)
-    co.set_local_port(9226)
-    print(f"🛡️  [固定端口] DrissionPage 调试端口: 9226")
+    # 🌟 1. 固定调试端口（registry 唯一取数口径，避免与日常浏览器/僵尸进程抢占）
+    co.set_local_port(config.port)
+    print(f"🛡️  [固定端口] DrissionPage 调试端口: {config.port}")
 
     # 🌟 2. 设置物理隔离的用户数据目录 (防止与日常 Chrome / Edge 进程抢 Profile 锁)
-    profile_path = str(writable_path(os.path.join(project_root, 'data', 'profiles', 'liepin'), "profiles/liepin"))
+    profile_path = config.profile_dir or str(
+        writable_path(os.path.join(project_root, 'data', 'profiles', 'liepin'), "profiles/liepin")
+    )
     os.makedirs(profile_path, exist_ok=True)
     co.set_user_data_path(profile_path)
     print(f"🛡️  [Profile 物理隔离] 用户数据目录: {profile_path}")
 
     co.headless(False)
+
+    # 2026-10-31 统一生命周期：先确保端口上「CDP 可达 + 至少 1 个 page tab」。
+    # 此前这里直接 ChromiumPage(co)：端口被僵尸/异种监听占用时 DrissionPage 会等满
+    # 30s 后抛 BrowserConnectError（ERR1），整轮 0 条。ensure_browser_ready_sync
+    # 与预检共用同一份实现：zombie/down 先过身份校验再优雅重启，异种 profile 拒绝。
+    ready, reason = ensure_browser_ready_sync(config)
+    if not ready:
+        raise RuntimeError(
+            f"猎聘浏览器未就绪（{reason}）；请检查 {config.port} 端口占用与 profile 档案锁"
+        )
+
+    # 环境守卫（Q24）：即使端口上的浏览器 CDP 可用，也必须是本引擎 profile
+    # （或可信桌面版 profile），绝不附着陌生浏览器。
+    ok, guard_reason = verify_browser_identity(config.port, profile_path, platform="liepin")
+    if not ok:
+        raise RuntimeError(f"猎聘引擎环境守卫拒绝连接浏览器：{guard_reason}")
 
     # 0928 事故加固：拉起失败先清一次无主档案锁重试，仍失败则带二进制体检诊断抛错
     try:
@@ -345,12 +378,16 @@ def _setup_chromium_browser():
                         pass
             if _check_login_status(page):
                 print(f"🍪 本地 Cookie 注入成功，猎聘登录态已恢复")
+                _self_heal_cookie_file(page)
             else:
+                GUEST_MODE = True
                 print(f"⚠️ 本地 Cookie 文件已失效，需要扫码登录（本次爬取将以未登录态进行）")
                 _alert_login_source_invalid("本地 Cookie 文件已失效")
         except Exception as e:
+            GUEST_MODE = True
             print(f"⚠️ 读取/注入猎聘 Cookie 异常: {e}")
     else:
+        GUEST_MODE = True
         print("⚠️ 未找到本地 Cookie 备份文件（本次爬取将以未登录态进行）")
         _alert_login_source_invalid("本地 Cookie 备份文件缺失")
 
@@ -384,22 +421,34 @@ def _alert_login_source_invalid(reason: str) -> None:
         print(f"   ⚠️ 登录源告警发送失败（不影响抓取）: {e}")
 
 def _check_login_status(page) -> bool:
-    """校验猎聘登录态：访问 c.liepin.com，若保持在 c.liepin.com 则登录态有效"""
+    """校验猎聘登录态：优先 cookie 实证（lt_auth + liepin_login_valid），URL 仅兜底。
+
+    2026-10-30 修复：旧实现只看 URL 前缀，猎聘登录页也可能在 c.liepin.com 下，
+    会把登录页误判成已登录，进而跳过 Cookie 注入/把访客态覆盖回有效文件。
+    """
     try:
+        if has_valid_liepin_auth_cookies(page.cookies(all_info=True, all_domains=True)):
+            return True
         page.get('https://c.liepin.com/')
         time.sleep(2)
-        return page.url.startswith("https://c.liepin.com")
+        url = getattr(page, "url", "") or ""
+        if not url.startswith("https://c.liepin.com"):
+            return False
+        if any(ind in url for ind in ("/login", "loginBackUrl", "passport")):
+            return False
+        return has_valid_liepin_auth_cookies(page.cookies(all_info=True, all_domains=True))
     except Exception as e:
         print(f"   ⚠️ 校验猎聘登录态异常: {e}")
         return False
 
 
-def _dump_cookies_drissionpage_to_playwright(page) -> list:
+def _dump_cookies_drissionpage_to_playwright(page=None, raw=None) -> list:
     """DrissionPage cookie → playwright 注入兼容格式（与 liepin_session.save_current_cookies
     及本文件注入侧 valid_keys 清洗集对齐：expiry/expires 双键兼容→expires、sameSite 归一、
     bool 化）。"""
+    raw_cookies = raw if raw is not None else (page.cookies(all_info=True, all_domains=True) or [])
     cookies = []
-    for c in (page.cookies(all_info=True) or []):
+    for c in raw_cookies:
         if not isinstance(c, dict) or not c.get("name"):
             continue
         same_site = str(c.get("sameSite") or "Lax").strip().capitalize()
@@ -428,9 +477,16 @@ def _self_heal_cookie_file(page) -> None:
     Cookie 文件缺失但 profile 登录有效时，采集可无文件开工（nl_controller 双判据放行）；
     本回写让文件通道随首轮采集自愈，跨机拷文件等旧路径继续可用。因 profile 登录刚过
     _check_login_status 实测，回写内容必然有效，且总是刷新文件保持新鲜。
-    失败仅打印告警，绝不影响本轮采集。"""
+    失败仅打印告警，绝不影响本轮采集。
+
+    2026-10-30 加固：回写前再次校验登录键，访客态/登录页绝不覆盖已有有效文件。
+    """
     try:
-        cookies = _dump_cookies_drissionpage_to_playwright(page)
+        raw = page.cookies(all_info=True, all_domains=True)
+        if not has_valid_liepin_auth_cookies(raw):
+            print("   ⚠️ 自愈回写跳过：当前会话缺少猎聘登录凭证（避免访客 cookie 覆盖有效文件）")
+            return
+        cookies = _dump_cookies_drissionpage_to_playwright(raw=raw)
         if not cookies:
             print("   ⚠️ 自愈回写跳过：浏览器未返回任何 cookie")
             return
@@ -609,6 +665,10 @@ def _execute_single_task(task, i, total_tasks, page, target_page, target, real_p
     if target_packet is None:
         print("❌ 在 30 秒内未截获到包含 'jobCardList' 的核心数据包。")
         print("   可能原因：1. 遇到了滑块验证码 2. 该搜索条件下确实没有岗位 3. 网络极度卡顿。")
+        if GUEST_MODE:
+            # 2026-10-31 事故根治：访客态深页搜索必被登录墙拦截，「未截获」此时不是
+            # 到底/无岗位。输出契约标记行供 nl_controller 识别，把本轮计为登录源失效。
+            print("🚫 [LIEPIN_GUEST_BLOCKED] 当前为访客态（登录源失效/缺失），深页搜索被登录墙拦截——本轮按登录源失效处理。")
         return
 
     job_items = raw_body.get('data', {}).get('data', {}).get('jobCardList', [])
@@ -620,6 +680,7 @@ def _execute_single_task(task, i, total_tasks, page, target_page, target, real_p
 
     _process_job_items(job_items, page, target, target_page)
 
+@cross_process_port_lock(LIEPIN_DEBUG_PORT, "liepin", on_busy="exit")
 def start_auto_collector(target_page, keyword=None, city=None, salary=None, target=0):
     print(f"🚀 启动猎聘【全自动纯净版】采集器 | 锁定抓取页码: P{target_page}")
     
@@ -642,16 +703,18 @@ def start_auto_collector(target_page, keyword=None, city=None, salary=None, targ
                 print("💤 任务切换，休眠 60 秒...")
                 time.sleep(60)
     finally:
-        # 退出前 cookie 保全（2026-10-08）：登录实证有效才回写——猎聘抓取免登录，
-        # 访客态 cookie 绝不能覆盖 liepin_cookies.json 里的有效凭证；判据用 cookie
-        # 键实证而非 URL 判定（此时页面可能停在搜索结果页，URL 判定不可靠）
+        # 退出前 cookie 保全（2026-10-30 加固）：直接读浏览器实时 cookie 回写，
+        # 由 _self_heal_cookie_file 内部的 lt_auth/liepin_login_valid 判据拦截访客态。
+        # 不再先调 check_liepin_login_evidence()——该函数在 DrissionPage 拉起的 Edge 上
+        # 曾因 Playwright context 不兼容而失败，导致真正登录的会话被跳过、文件不刷新。
         try:
-            from app.session.health_checker import check_liepin_login_evidence
-            if check_liepin_login_evidence():
-                _self_heal_cookie_file(page)
+            _self_heal_cookie_file(page)
         except Exception as heal_e:
             print(f"   ⚠️ 退出前 cookie 保全失败（不影响抓取结果）: {heal_e}")
-        page.quit()
+        # 不再 page.quit()（2026-10-31 事故根治）：本引擎附着在 9226 共享 Edge 上，
+        # quit 会把整个浏览器杀掉——会话条立刻翻 zombie、下一轮被迫冷启动（四平台
+        # 并发冷启动正是 51job/智联预检 /json 探针超时的压力源）。与 BOSS/51job/
+        # 智联「只关 tab、浏览器长驻」对齐；回收统一走会话条 close-all 与每日 02:00 cron。
         print("\n🏁 本次全自动页面抓取指令已全部执行完毕！程序退出。")
 
 if __name__ == "__main__":

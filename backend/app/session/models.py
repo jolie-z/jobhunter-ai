@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -26,6 +27,18 @@ class PlatformConfig(BaseModel):
     requires_real_edge: bool = False
     legacy_cookie_file: str = ""
     requires_login: bool = True             # False=抓取不强制登录，预检豁免 DOM 登录校验
+    # 登录凭证 cookie 键集合（CDP 内存实证用，2026-11-03 冷启动误判根治）：
+    # 空 = 未摸底，回退 DOM 判定；非空 = 预检可零导航实证登录态。
+    # 键集合来源（逐平台实测摸底，2026-11-03 CDP Storage.getCookies 全量比对）：
+    #   boss    = wt2+zp_at（renewal.py 核心登录双键；boss_cli REQUIRED_COOKIES 另含
+    #             __zp_stoken__/wbg，前者 2~3 天即轮换不强制，强制会把正常轮换误判成掉登录）
+    #   liepin  = lt_auth+liepin_login_valid（与 health_checker.LIEPIN_LOGIN_COOKIE_KEYS 同源）
+    #   zhilian = at（renewal.py 核心）
+    #   51job   = "51job"（51job_cookie_harvester.py 关键认证 cookie，session 键落账即有效）
+    auth_cookie_keys: tuple[str, ...] = ()
+    # 续抓语义：rescan_last=从最后触碰页重扫（该页可能只扫了一部分）；
+    # next_page=从最后触碰页 +1 开始（0.4.1 的非 51job 语义）。
+    resume_mode: Literal["rescan_last", "next_page"] = "rescan_last"
 
 
 class SessionStatus(BaseModel):

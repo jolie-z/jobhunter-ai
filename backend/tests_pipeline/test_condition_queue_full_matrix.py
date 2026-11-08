@@ -81,6 +81,16 @@ def test_queue_max_limit_enforcement(client):
     assert r2.status_code == 400
     assert "最多 10 组" in r2.json()["detail"]
 
+    # 11 条含 1 条重复 → 去重后 10 条，应允许保存（上限按去重后计数）
+    eleven_with_dup = ten_items + [{"keyword": "岗位0", "city": "广州", "salary": "不限"}]
+    r3 = client.put(
+        "/api/pipeline/scrape-config",
+        json={"keywords": eleven_with_dup, "platforms": {}, "default_city": "", "default_salary": ""},
+    )
+    assert r3.status_code == 200
+    saved = client.get("/api/pipeline/scrape-config").json()["data"]["keywords"]
+    assert len(saved) == 10
+
 
 # ─── 3. 4 平台 9 档薪资映射全覆盖测试 ───
 def test_all_salary_tiers_4_platforms_mapping():
@@ -242,3 +252,10 @@ def test_platform_worker_multi_condition_budget_cap(monkeypatch):
     assert cond2_target == 5
     cap -= 5
     assert cap == 0  # 预算用尽，退出循环
+
+
+def test_run_scrape_only_default_platforms_limit_is_three():
+    """单独试跑抓取默认改为单平台 3 条（2026-10-29 数值收紧：10→3）。"""
+    from app.pipeline.routes.scrape_router import RunScrapeOnlyBody
+
+    assert RunScrapeOnlyBody().platforms_limit == 3

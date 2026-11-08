@@ -46,12 +46,46 @@ export function isJobReadyToDeliver(job: PipelineJob): boolean {
 }
 
 /**
+ * 岗位是否处于运行态（node/sub_status/终态三方约束）：卡片渲染与投递判定共用。
+ * 判定式与 job-card 旧内联实现完全一致。
+ */
+export function isJobRunning(job: PipelineJob | undefined): boolean {
+  if (!job) return false
+  return (
+    (job.status === "running" ||
+      job.node === "evaluate_node" ||
+      job.node === "rewrite_node" ||
+      job.node === "deep_eval_node" ||
+      job.node === "greeting_node" ||
+      job.node === "quick_greeting_node") &&
+    job.status !== "done" &&
+    job.status !== "waiting" &&
+    job.status !== "delivered" &&
+    !isJobRejected(job) &&
+    job.sub_status !== "eval_done"
+  )
+}
+
+/**
+ * 岗位是否正在自动投递：卡片「终止投递」按钮显隐与终止中状态的自动复位共用同一口径。
+ */
+export function isJobDelivering(job: PipelineJob | undefined): boolean {
+  if (!job) return false
+  return isJobRunning(job) && (job.sub_status === "delivering" || job.node === "delivery_node")
+}
+
+/**
  * 岗位是否等待老板审批：当前人工审批断点的岗位
  * @param job 岗位对象
  * @returns true 如果岗位处于待审批状态
  */
 export function isJobWaitingReview(job: PipelineJob): boolean {
   if (isJobDelivered(job) || isJobRejected(job) || isJobReadyToDeliver(job) || isJobFailed(job) || job.status === "running") return false
+  // 初评排队（eval_pending/eval_queued）与停机未评估（eval_incomplete）的 status 也是
+  // waiting：宽匹配曾把它们错归待审批 tab（2026-11-01 疑似重复记录误归事件）。排队/
+  // 未评估属评估侧，不属于人工审批断点；eval_incomplete 另归待重评 tab（审计 P1-5）——
+  // 它们从未跑过 AI 评估，进入待审批曾被「一键放行」直接推进投递队列。
+  if (job.node === "evaluate_node" && (job.sub_status === "eval_pending" || job.sub_status === "eval_queued" || job.sub_status === "eval_incomplete")) return false
   return job.status === "waiting" || job.node === "manual_review_node"
 }
 
@@ -90,4 +124,47 @@ export function isJobEvaluating(job: PipelineJob): boolean {
     return false
   }
   return job.status === "running"
+}
+
+/**
+ * 岗位是否待重评：停机期间未经 AI 评估的岗位（waiting/evaluate_node/eval_incomplete）。
+ * 归待重评 tab 纯展示（下次链路启动自动补评估）；后端 /auto-heal-and-approve 已加评级闸，
+ * 此类岗位不可被放行（2026-11-02 审计 P1-5）。
+ */
+export function isJobPendingReeval(job: PipelineJob): boolean {
+  if (job.status !== "waiting" || job.node !== "evaluate_node") return false
+  return job.sub_status === "eval_incomplete"
+}
+
+// ===== 平台识别单一事实源（CR-B3 拆分子任务；CR-Split-R2-P2 常量表单点驱动）=====
+// 四平台匹配词/展示名/other 兜底统一在 KNOWN_PLATFORMS：正向匹配、反向分桶、other
+// 判定全部由该表驱动，新增平台只改这一处（消除三处手抄失步）
+const KNOWN_PLATFORMS = [
+  { key: "51job", label: "51Job", keywords: ["51", "前程"] },
+  { key: "zhilian", label: "智联招聘", keywords: ["智联", "zhilian"] },
+  { key: "boss", label: "BOSS直聘", keywords: ["boss"] },
+  { key: "liepin", label: "猎聘", keywords: ["猎聘", "liepin"] },
+] as const
+
+const _OTHER_EXCLUDED_KEYWORDS = KNOWN_PLATFORMS.flatMap((p) => p.keywords)
+
+export function resolvePlatformKey(raw: string, platformKey: string): boolean {
+  const r = (raw || "").toLowerCase()
+  const known = KNOWN_PLATFORMS.find((p) => p.key === platformKey)
+  if (known) return known.keywords.some((kw) => r.includes(kw))
+  if (platformKey === "other") {
+    // 「其他」桶：小红书或平台字段缺失的失败岗（审计 P2-25 行为修正）
+    if (!r) return true
+    return !_OTHER_EXCLUDED_KEYWORDS.some((kw) => r.includes(kw))
+  }
+  return false
+}
+
+// 反向封装：岗位→所属平台桶 key（failed-batch-bar 分桶统计用）
+export function resolvePlatformKeyForJob(rawPlatform: string | undefined): { key: string; label: string } {
+  const raw = (rawPlatform || "").toLowerCase()
+  for (const p of KNOWN_PLATFORMS) {
+    if (p.keywords.some((kw) => raw.includes(kw))) return { key: p.key, label: p.label }
+  }
+  return { key: "other", label: "其他" }
 }

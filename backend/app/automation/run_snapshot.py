@@ -210,6 +210,12 @@ def get_dismissed_job_ids() -> set:
         return set(_dismissed_jobs)
 
 
+# 失败台账 step 字面量：批量改写链（wave_pipeline/executor）简历/打招呼语生成失败共用。
+# step 仅作失败卡片展示与归因（重试按 job_id 整链分派、不读 step）；台账存量显式值仅
+# "AI初步评估"（workflow.py 评估失败）与默认 "自动投递阶段"，本常量为新增、无历史冲突。
+STEP_RESUME_GREETING = "简历定制/打招呼语"
+
+
 def record_delivery_failure(job_id: str, error: str, step: str = "自动投递阶段", company: str = "", job_name: str = "", platform: str = "", job_url: str = "", grade: str = "") -> None:
     """记录当天发生的投递异常岗位（同岗位重复失败时累加 failure_count，供 L1 分诊判定重试上限）。
 

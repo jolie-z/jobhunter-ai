@@ -59,15 +59,12 @@ def _build_job_states(leads: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-# LangGraph 节点名 → 全链路阶段 映射（用于实时 job 事件广播）
+# LangGraph 节点名 → 全链路阶段 映射。
+# 节点→阶段的唯一事实源已收敛到 pipeline_broadcast.NODE_STAGE_MAP；这里保留
+# (stage, label) 二元组形态仅为兼容 full_auto 的历史 re-export。
 _NODE_STAGE_MAP = {
-    "evaluate_node": ("evaluating", "AI初评"),
-    "deep_eval_node": ("deep_eval", "深度评估"),
-    "rewrite_node": ("rewriting", "简历改写"),
-    "quick_greeting_node": ("greeting", "欢迎语"),
-    "greeting_node": ("greeting", "欢迎语"),
-    "manual_review_node": ("review", "待审批"),
-    "delivery_node": ("delivering", "自动投递"),
+    node: (stage, dict(pb.PIPELINE_STAGES).get(stage, stage))
+    for node, stage in pb.NODE_STAGE_MAP.items()
 }
 
 
@@ -261,7 +258,6 @@ async def _run_single_job_graph(
         try:
             async for event in stream:
                 for node_name, state_update in event.items():
-                    stage, _label = _NODE_STAGE_MAP.get(node_name, (node_name, node_name))
                     if isinstance(state_update, dict):
                         if state_update.get("grade"):
                             latest_grade = state_update.get("grade")
@@ -281,10 +277,14 @@ async def _run_single_job_graph(
                     job_kwargs = {**common_meta}
                     if latest_score is not None:
                         job_kwargs["score"] = latest_score
+                    if isinstance(state_update, dict) and state_update.get("greeting"):
+                        # 真实话术产物随节点完成事件下发：前端「打招呼语」分子
+                        # 不能等 12 秒快照才从 Feishu 字段补到。
+                        job_kwargs["greeting_msg"] = state_update.get("greeting")
 
-                    # 节点完成即点亮对应阶段（轨道推进），再广播岗位级事件
-                    if node_name in _NODE_STAGE_MAP:
-                        await pb.emit_stage(pipeline_task_id, stage, "running")
+                    # 只广播岗位级事件；阶段级状态由 pipeline_broadcast 的实时登记表
+                    # 按「该阶段尚有多少岗位在跑」聚合，绝不能让单个岗位的节点完成
+                    # 直接把全局阶段推进（并发岗位会被误标为已完成）。
                     await pb.emit_job(
                         pipeline_task_id,
                         job_id=job_id,

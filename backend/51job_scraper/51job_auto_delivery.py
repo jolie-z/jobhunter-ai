@@ -47,7 +47,7 @@ from app.automation import upload_quota
 from playwright.sync_api import sync_playwright
 
 # 纯标准库零包连锁，任何 sys.path 含 backend 根的环境都可导入
-from engine_guard import EngineGuardError, verify_browser_identity
+from engine_guard import EngineGuardError, cross_process_port_lock, verify_browser_identity
 from app.core.db_paths import writable_path
 
 try:
@@ -1082,6 +1082,7 @@ def _attach_resume_to_apply(page, cv_log_ids: list, apply_popup: dict, pdf_name:
 # 投递主入口
 # ==========================================
 
+@cross_process_port_lock(BROWSER_DEBUG_PORT, "51job", timeout_s=300, on_busy="false")
 def deliver_job(job_data: dict) -> bool:
     """
     51job 确定性精准投递入口。

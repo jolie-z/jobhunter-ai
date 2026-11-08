@@ -13,12 +13,15 @@ AI 评估引擎 - 独立的岗位智能评估模块
 
 import argparse
 import json
+import logging
 import os
 import random
 import sys
 import time
 
 import requests  # 🌟 新增 requests 用于拉取云端简历
+
+logger = logging.getLogger(__name__)
 
 # 🌟 引入 Python 结构化粗筛引擎（双保险）
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -38,15 +41,25 @@ from job_processor.structural_filter import StructuralFilterEngine
 # 🌟 引入外部搜索函数
 from .ai_scorer import deep_evaluate_resume, get_user_preferences
 from .company_intel import (
-    fetch_company_intel,  # 公司情报统一入口：Serper 主引擎 + Tavily 降级
+    fetch_company_intel,  # 公司情报统一入口：博查主引擎 + Serper/Tavily 降级
 )
 from .engine_facade import process_greeting_generation, process_resume_rewrite
 
 # 🌟 配置统一走 settings 动态读取：sync_settings_to_runtime() 会原地更新 settings 单例，
 # 配置页保存后即时生效；不再在模块级冻结快照（旧快照会让 UI 配置永远读不到）
 
-# 🌟 初始化结构化粗筛引擎（调用大模型前的双保险拦截）
-_filter_engine = StructuralFilterEngine()
+# 🌟 结构化粗筛引擎（调用大模型前的双保险拦截）。
+# 懒实例化（2026-10-28 沙箱首启排查）：模块级实例化会在 import 期连主库读策略，
+# 全新机器此时建表引导尚未跑完，必报「no such table」且该进程终身锁死兜底策略；
+# 改为首次评估时才连库，顺带能吃到用户中途保存的最新策略。
+_filter_engine = None
+
+
+def _get_filter_engine():
+    global _filter_engine
+    if _filter_engine is None:
+        _filter_engine = StructuralFilterEngine()
+    return _filter_engine
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -431,18 +444,27 @@ def evaluate_single_job(job_data, resume_text, company_intel: str = "", preferen
     experience = job_data.get("experience", "未知")
     education = job_data.get("education", "未知")
 
-    def _report_progress(stage: int, total_stages: int, title: str, message: str):
+    def _report_progress(stage: int, total_stages: int, title: str, message: str,
+                         phase: str | None = None, grade: str | None = None,
+                         score: float | None = None):
         if progress_callback and callable(progress_callback):
             try:
-                progress_callback({
+                payload = {
                     "stage": stage,
                     "total_stages": total_stages,
                     "title": title,
                     "message": message,
                     "job_id": record_id,
-                })
-            except Exception:
-                pass
+                }
+                if phase:
+                    payload["phase"] = phase
+                if grade:
+                    payload["grade"] = grade
+                if score is not None:
+                    payload["score"] = score
+                progress_callback(payload)
+            except Exception as e:
+                logger.warning(f"[ai_evaluator] progress_callback 异常（不阻断评估）: {e}")
 
     # 组装全景 JD 上下文（让 LLM 看到所有基础字段）
     full_jd_info = (
@@ -458,7 +480,7 @@ def evaluate_single_job(job_data, resume_text, company_intel: str = "", preferen
 
     try:
         # 步骤 0: Python 结构化粗筛（双保险拦截，避免浪费 LLM 调用）
-        is_garbage, reason = _filter_engine.is_obvious_garbage(
+        is_garbage, reason = _get_filter_engine().is_obvious_garbage(
             job_title=job_title, experience_req=experience, education_req=education
         )
         if is_garbage:
@@ -596,7 +618,7 @@ def evaluate_single_job(job_data, resume_text, company_intel: str = "", preferen
 
             if trigger_deep_eval:
                 print(f"   🔥 [3/3] 触发【高分轨】(当前配置: {threshold}级及以上触发)！正在自动进行深度评估与简历定制...")
-                _report_progress(3, 4, "高分轨·画像与定制简历", f"🔥 [3/4] 触发【高分轨】({threshold}级及以上)！正在自动进行深度画像与简历定制 (预估30s)...")
+                _report_progress(3, 4, "高分轨·画像与定制简历", f"🔥 [3/4] 触发【高分轨】({threshold}级及以上)！正在自动进行深度画像与简历定制 (预估30s)...", phase="deep_eval_start", grade=grade, score=ai_total)
 
                 deep_result, deep_usage = deep_evaluate_resume(resume_text, full_jd_info, ai_result)
                 total_usage["prompt_tokens"] += deep_usage.get("prompt_tokens", 0)
@@ -619,6 +641,7 @@ def evaluate_single_job(job_data, resume_text, company_intel: str = "", preferen
                 # 动态判断是多Agent还是Skill模式
                 current_mode = "multi" if "multi" in task_mode else "skill"
                 print(f"[{job_title}] -> 开始通过 Engine Facade 进行 {current_mode.upper()} 模式简历定制改写...")
+                _report_progress(3, 4, "高分轨·简历定制", "✍️ [3/4] 正在定制改写简历...", phase="rewrite_start", grade=grade, score=ai_total)
 
                 rewrite_result, rewrite_usage = process_resume_rewrite(
                     jd_text=full_jd_info, 
@@ -631,12 +654,16 @@ def evaluate_single_job(job_data, resume_text, company_intel: str = "", preferen
                 total_usage["total_tokens"] += rewrite_usage.get("total_tokens", 0)
                 total_usage["cached_tokens"] += rewrite_usage.get("cached_tokens", 0)
                 from ai_agents.markdown_to_json import convert_and_stitch_resume
-                update_data["AI改写JSON"] = convert_and_stitch_resume(rewrite_result)
+                # ❌ 前缀错误串闸（2026-11-01 线上输出截断复盘，与 workflow/wave_pipeline 同款）：
+                # 截断等失败返回非空 ❌ 串，绝不能转成空壳 JSON 写回飞书。截断重试已在
+                # engine_facade 统一收敛，走到这里仍是 ❌ = 重试耗尽，跳过写回保留原状态
+                if rewrite_result and not rewrite_result.lstrip().startswith("❌"):
+                    update_data["AI改写JSON"] = convert_and_stitch_resume(rewrite_result)
 
                 from app.core.utils import is_greeting_supported_platform
                 target_platform = platform or job_data.get("platform", "未知渠道")
                 if is_greeting_supported_platform(target_platform):
-                    _report_progress(4, 4, "高分轨·打招呼语", "💬 [4/4] 正在构思高情商打招呼语...")
+                    _report_progress(4, 4, "高分轨·打招呼语", "💬 [4/4] 正在构思高情商打招呼语...", phase="greeting_start", grade=grade, score=ai_total)
                     greeting_result, greeting_usage = process_greeting_generation(full_jd_info, deep_result, resume_text, job_title)
                     total_usage["prompt_tokens"] += greeting_usage.get("prompt_tokens", 0)
                     total_usage["completion_tokens"] += greeting_usage.get("completion_tokens", 0)
@@ -805,11 +832,21 @@ def run_smart_evaluation(target_records=None, task_mode="auto"):
             print(f"[{job_title}] -> 开始通过 Engine Facade 进行 {current_mode.upper()} 模式简历定制改写...")
 
             rewrite_res, _ = process_resume_rewrite(
-                jd_text=full_jd_info, 
-                diagnosis_dict=deep_result, 
-                job_name=job_title, 
+                jd_text=full_jd_info,
+                diagnosis_dict=deep_result,
+                job_name=job_title,
                 rewrite_mode=current_mode
             )
+
+            # ❌ 前缀错误串闸（2026-11-01 线上输出截断复盘，与 workflow/wave_pipeline 同款）：
+            # 截断重试已在 engine_facade 统一收敛，走到这里仍是 ❌/空 = 重试耗尽。
+            # 按本循环既有失败惯例计入 fail_count 并跳过本岗位，绝不写回空壳简历
+            if isinstance(rewrite_res, str) and (not rewrite_res.strip() or rewrite_res.lstrip().startswith("❌")):
+                print(f"❌ [强制改写模式] {job_data.get('company', '未知')} - {job_title} 简历改写失败（重试耗尽），跳过写回: {str(rewrite_res).lstrip()[:120]}")
+                fail_count += 1
+                if idx < len(leads) - 1:
+                    time.sleep(random.randint(3, 8))
+                continue
 
             raw_fields = job_data.get("_raw_fields", {}) or {}
             platform = (

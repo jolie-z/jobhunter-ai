@@ -13,7 +13,7 @@ export interface PlatformSessionItem {
   platform: string
   display_name: string
   port: number
-  state: string // healthy | degraded | offline | expired | unknown
+  state: string // healthy | degraded | offline | expired | zombie | unknown
   message: string
   is_alive: boolean
 }
@@ -233,6 +233,9 @@ export function PlatformSessionBar({
 
       <div className={cn("grid gap-2", gridClassName || (displayedSessions.length === 4 ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-3 md:grid-cols-5"))}>
         {displayedSessions.map((item) => {
+          // 僵死态（审计 P2-24）：端口通但 CDP 僵死（后端 browser.py state="zombie"），
+          // 显示独立徽标而非「未运行」——误导用户重复唤起
+          const isZombie = item.state === "zombie"
           const isHealthy = item.state === "healthy"
           const isAlive = item.is_alive
           // 后端 offline 时补读 profile cookie 有效期：离线 ≠ 登录丢失
@@ -247,7 +250,9 @@ export function PlatformSessionBar({
               key={item.platform}
               className={cn(
                 "flex flex-col justify-between rounded-lg border p-2 text-xs transition-all",
-                isHealthy
+                isZombie
+                  ? "border-amber-500/40 bg-amber-500/[0.05]"
+                  : isHealthy
                   ? "border-emerald-500/30 bg-emerald-500/[0.04]"
                   : cookieValidUntil
                   ? "border-sky-500/30 bg-sky-500/[0.03]"
@@ -268,7 +273,9 @@ export function PlatformSessionBar({
                   <span
                     className={cn(
                       "h-2 w-2 rounded-full shrink-0",
-                      isHealthy
+                      isZombie
+                        ? "bg-amber-500 animate-pulse"
+                        : isHealthy
                         ? "bg-emerald-500 animate-pulse"
                         : cookieValidUntil || isAlive
                         ? "bg-sky-500"
@@ -280,7 +287,9 @@ export function PlatformSessionBar({
                   <span
                     className={cn(
                       "text-[10px] truncate",
-                      isHealthy
+                      isZombie
+                        ? "text-amber-700 dark:text-amber-300 font-medium"
+                        : isHealthy
                         ? "text-emerald-700 dark:text-emerald-300 font-medium"
                         : cookieValidUntil
                         ? "text-sky-700 dark:text-sky-300"
@@ -292,7 +301,9 @@ export function PlatformSessionBar({
                     )}
                     title={item.message}
                   >
-                    {isHealthy
+                    {isZombie
+                      ? "僵死 · 预检将自动重启"
+                      : isHealthy
                       ? "已登录"
                       : isAlive
                       ? "已就绪"

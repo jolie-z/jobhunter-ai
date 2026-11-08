@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { Save, RefreshCw } from "lucide-react"
 import { toast } from "sonner"
+import { invalidateMassGreetingCache } from "@/components/command-center/jobs/job-material-preview-modal"
 import { GreetingPlatformCard } from "./greeting/greeting-platform-card"
 import { MassGreetingCard } from "./greeting/mass-greeting-card"
 import { GreetingPromptCard } from "./greeting/greeting-prompt-card"
@@ -141,6 +142,7 @@ export function GreetingConfigPanel({ onSaved, onSavingChange }: GreetingConfigP
       if (res.ok && result.code === 0) {
         clearGreetingDraft()
         setDraft(null)
+        invalidateMassGreetingCache()  // 保存成功即失效预览缓存（CR-B3-R1：原误挂恢复草稿回调）
         setSaveMsg("打招呼语规则已保存生效")
         toast.success("打招呼语规则已保存生效")
         onSaved()

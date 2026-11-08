@@ -36,18 +36,22 @@ export function PipelineStepper({
   const aiScoutProgress = usePipelineStore((s) => s.aiScoutProgress)
   const feishuSyncProgress = usePipelineStore((s) => s.feishuSyncProgress)
   const jobs = usePipelineStore((s) => s.jobs)
+  const autoEvalThreshold = usePipelineStore((s) => s.autoEvalThreshold)
 
   const jobList = useMemo(() => Object.values(jobs), [jobs])
 
   // 岗位类阶段统计集中缓存：实时计算各阶段的分子、分母与活跃状态（Q10 拆分批次 2：纯函数抽离 stepper-stats.ts）
   const stageStats = useMemo(
-    () => computeStageStats(jobList, feishuSyncProgress?.total),
-    [jobList, feishuSyncProgress]
+    () => computeStageStats(jobList, feishuSyncProgress?.total, autoEvalThreshold),
+    [jobList, feishuSyncProgress, autoEvalThreshold]
   )
 
   // 计算各阶段的实时进度与状态信息
   const getStageInfo = (key: StageKey) => {
     const isOverallRunning = pipelineStatus === "running"
+    // 链路已收口（done/error）后不再渲染任何「运行中」脉冲，避免残留 running 岗位
+    // 让导轨永远停留在动画态。
+    const canShowRunning = pipelineStatus !== "done" && pipelineStatus !== "error"
     const totalScraped = Object.values(scrapeProgress).reduce((acc, cur) => acc + (typeof cur?.current === 'number' ? cur.current : 0), 0)
     const isPipelineActive =
       pipelineStatus !== "idle" ||
@@ -97,7 +101,7 @@ export function PipelineStepper({
         const total = entries.length
         const done = entries.filter(([, p]) => p.total > 0 && p.current >= p.total).length
         const percent = total > 0 ? Math.round((done / total) * 100) : 0
-        const isCurrent = currentStage === "scraping" && isOverallRunning
+        const isCurrent = currentStage === "scraping" && isOverallRunning && stageStatus.scraping === "running"
         const isDone = stageStatus.scraping === "done" || (total > 0 && done >= total)
         return {
           summary: entries.length === 0 ? "多平台抓取" : `${done}/${total} 平台抓取完毕`,
@@ -110,10 +114,13 @@ export function PipelineStepper({
         const total = hardCleanProgress?.total || 0
         const cur = hardCleanProgress?.current || 0
         const percent = total > 0 ? Math.round((cur / total) * 100) : 0
-        const isCurrent = currentStage === "cleaning" && isOverallRunning
+        const isCurrent = currentStage === "cleaning" && isOverallRunning && stageStatus.cleaning === "running"
         const isDone = stageStatus.cleaning === "done" || (total > 0 && cur >= total)
+        const isBlocked = stageStatus.cleaning === "blocked"
         return {
-          summary: cur === 0 ? "规则清洗与初筛" : `已初筛 ${cur}/${total} 岗位`,
+          summary: isBlocked
+            ? "AI排雷受阻 · 待恢复"
+            : (cur === 0 ? "规则清洗与初筛" : `已初筛 ${cur}/${total} 岗位`),
           percent,
           isActive: isCurrent,
           isCompleted: isDone,
@@ -123,7 +130,7 @@ export function PipelineStepper({
         const total = feishuSyncProgress?.total || 0
         const cur = feishuSyncProgress?.current || 0
         const percent = total > 0 ? Math.round((cur / total) * 100) : 0
-        const isCurrent = currentStage === "feishu_sync" && isOverallRunning
+        const isCurrent = currentStage === "feishu_sync" && isOverallRunning && stageStatus.feishu_sync === "running"
         const isDone = stageStatus.feishu_sync === "done" || (total > 0 && cur >= total)
         return {
           summary: total > 0 ? `已写入 ${cur}/${total} 岗位` : "多维表格线索同步",
@@ -135,12 +142,21 @@ export function PipelineStepper({
       case "evaluating": {
         const total = stageStats.evalTotal
         const done = stageStats.evalDone
+        const running = stageStats.runningCounts.evaluating
         const percent = total > 0 ? Math.round((done / total) * 100) : 0
-        const isActive = stageStats.isEvaluatingRunning || (currentStage === "evaluating" && isOverallRunning)
-        const isDone = stageStatus.evaluating === "done" || (total > 0 && done >= total)
+        // 图刚启动、岗位事件尚未到达时，用后端 stage 快照兜底点亮初评
+        // 兜底：pipeline_orchestrator 在图启动前会 emit_stage("evaluating","running")，
+        // 但刷新页面时该事件可能已被 50 条 SSE 历史挤掉；stage_snapshot 会把它带回来。
+        const isActive = canShowRunning && (running > 0 || (
+          total === 0 &&
+          stageStatus.evaluating === "running" &&
+          currentStage === "evaluating" &&
+          isOverallRunning
+        ))
+        const isDone = running === 0 && (stageStatus.evaluating === "done" || (total > 0 && done >= total))
         let summary = "八维多因子打分"
         if (total > 0 || done > 0) {
-          summary = `已评估 ${done}/${total || done} 岗位`
+          summary = `已评估 ${done}/${total || done} 岗位${running > 0 ? ` · ${running} 进行中` : ""}`
         } else if (stageStatus.evaluating === "done") {
           summary = "已完成多维打分"
         }
@@ -149,42 +165,45 @@ export function PipelineStepper({
       case "deep_eval": {
         const total = stageStats.deepEvalTotal
         const done = stageStats.deepEvalDone
+        const running = stageStats.runningCounts.deep_eval
         const percent = total > 0 ? Math.round((done / total) * 100) : 0
-        const isActive = stageStats.isDeepEvalRunning || (currentStage === "deep_eval" && isOverallRunning)
-        const isDone = total > 0 && done >= total
-        let summary = "A/B 级深度画像诊断"
+        const isActive = canShowRunning && running > 0
+        const isDone = running === 0 && total > 0 && done >= total
+        let summary = "高价值岗位深度画像诊断"
         if (total > 0 || done > 0) {
-          summary = `已诊断 ${done}/${total || done} 岗位`
-        } else if (stageStatus.deep_eval === "done") {
-          summary = "已完成画像诊断"
+          summary = `已诊断 ${done}/${total || done} 岗位${running > 0 ? ` · ${running} 进行中` : ""}`
+        } else if (stageStats.evalDone > 0) {
+          summary = "本批无高潜岗位"
         }
         return { summary, percent, isActive, isCompleted: isDone }
       }
       case "rewriting": {
         const total = stageStats.rewriteTotal
         const done = stageStats.rewriteDone
+        const running = stageStats.runningCounts.rewriting
         const percent = total > 0 ? Math.round((done / total) * 100) : 0
-        const isActive = stageStats.isRewritingRunning || (currentStage === "rewriting" && isOverallRunning)
-        const isDone = total > 0 && done >= total
+        const isActive = canShowRunning && running > 0
+        const isDone = running === 0 && total > 0 && done >= total
         let summary = "定向定制精修简历"
         if (total > 0 || done > 0) {
-          summary = `已改写 ${done}/${total || done} 份`
-        } else if (stageStatus.rewriting === "done") {
-          summary = "已生成定制简历"
+          summary = `已改写 ${done}/${total || done} 份${running > 0 ? ` · ${running} 进行中` : ""}`
+        } else if (stageStats.evalDone > 0) {
+          summary = "本批无需定制改写"
         }
         return { summary, percent, isActive, isCompleted: isDone }
       }
       case "greeting": {
         const total = stageStats.greetingTotal
         const done = stageStats.greetingDone
+        const running = stageStats.runningCounts.greeting
         const percent = total > 0 ? Math.round((done / total) * 100) : 0
-        const isActive = stageStats.isGreetingRunning || (currentStage === "greeting" && isOverallRunning)
-        const isDone = total > 0 && done >= total
+        const isActive = canShowRunning && running > 0
+        const isDone = running === 0 && total > 0 && done >= total
         let summary = "高情商开场白话术"
         if (total > 0 || done > 0) {
-          summary = `已生成 ${done}/${total || done} 条`
-        } else if (stageStatus.greeting === "done") {
-          summary = "已生成招呼话术"
+          summary = `已生成 ${done}/${total || done} 条${running > 0 ? ` · ${running} 进行中` : ""}`
+        } else if (stageStats.evalDone > 0) {
+          summary = "本批无需打招呼岗位"
         }
         return { summary, percent, isActive, isCompleted: isDone }
       }
@@ -211,13 +230,16 @@ export function PipelineStepper({
       }
       case "delivering": {
         const count = stageStats.deliveredCount
-        const total = stageStats.readyToDeliverCount + count
+        const running = stageStats.runningCounts.delivering
+        // 在途投递岗既不在「待投递」也不在「已投递」，必须计入分母，
+        // 否则投递期间会出现 0/2 这种分母缩水的假进度。
+        const total = stageStats.readyToDeliverCount + count + running
         const percent = total > 0 ? Math.round((count / total) * 100) : (count > 0 ? 100 : 0)
-        const isActive = stageStats.isDeliveringRunning || (currentStage === "delivering" && isOverallRunning)
-        const isDone = (total > 0 && count >= total) || (stageStatus.delivering === "done" && count > 0)
+        const isActive = canShowRunning && running > 0
+        const isDone = running === 0 && ((total > 0 && count >= total) || (stageStatus.delivering === "done" && count > 0))
         let summary = "平台白名单自动投递"
         if (total > 0) {
-          summary = `已投递 ${count}/${total} 岗位`
+          summary = `已投递 ${count}/${total} 岗位${running > 0 ? ` · ${running} 投递中` : ""}`
         } else if (count > 0) {
           summary = `${count} 岗位已投递`
         }
@@ -248,6 +270,9 @@ export function PipelineStepper({
           <h2 className="text-xs font-semibold text-foreground tracking-tight">
             全链路执行导轨
           </h2>
+          <span className="rounded bg-muted/60 px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground">
+            本轮
+          </span>
 
           {/* 规则配置就绪状态指示 */}
           {unconfiguredRequired.length > 0 ? (
@@ -298,7 +323,11 @@ export function PipelineStepper({
           const isActive = info.isActive
           // 防御性访问：先提取值再比较，避免可选链与比较运算符的语法冲突
           const currentStageStatus = stageStatus[stage.key]
-          const isDone = info.isCompleted || (pipelineStatus !== "idle" && currentStageStatus === "done")
+          // LLM 阻塞阶段：琥珀色暂停态（既非运行亦非完成）
+          const isBlockedStage = currentStageStatus === "blocked"
+          // 已完成阶段绝不能再套紫色「运行中」高亮：isActive 优先于 isDone 的类名逻辑
+          // 曾让刚完成的飞书推送看起来仍在运行。
+          const isDone = !isActive && !isBlockedStage && (info.isCompleted || (pipelineStatus !== "idle" && currentStageStatus === "done"))
 
           return (
             <div
@@ -308,6 +337,8 @@ export function PipelineStepper({
                 "group relative flex flex-col justify-between rounded-xl border p-3 cursor-pointer transition-all duration-200 hover:shadow-md active:scale-[0.98]",
                 isActive
                   ? "border-violet-500/60 bg-violet-500/5 ring-2 ring-violet-500/20 shadow-sm"
+                  : isBlockedStage
+                  ? "border-amber-500/50 bg-amber-500/[0.04] ring-2 ring-amber-500/15"
                   : isDone
                   ? "border-emerald-500/30 bg-emerald-500/[0.02]"
                   : isRequired && !isConfigured
@@ -326,6 +357,8 @@ export function PipelineStepper({
                           ? "bg-emerald-500 text-white"
                           : isActive
                           ? "bg-violet-600 text-white animate-pulse"
+                          : isBlockedStage
+                          ? "bg-amber-500 text-white"
                           : "bg-muted text-muted-foreground"
                       )}
                     >
@@ -365,7 +398,11 @@ export function PipelineStepper({
                 {/* 中部：状态简述与实时分子分母 */}
                 <p className={cn(
                   "text-[11px] truncate mb-3 transition-colors",
-                  isActive ? "text-violet-600 dark:text-violet-400 font-medium" : "text-muted-foreground"
+                  isActive
+                    ? "text-violet-600 dark:text-violet-400 font-medium"
+                    : isBlockedStage
+                    ? "text-amber-600 dark:text-amber-400 font-medium"
+                    : "text-muted-foreground"
                 )}>
                   {info.summary}
                 </p>

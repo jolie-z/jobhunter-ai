@@ -196,9 +196,133 @@ def test_delivery_node_attribution_keeps_real_success(monkeypatch):
     assert res.get("status") == "已投递", "已真实送达不得被终止归因覆写为失败"
 
 
+def test_delivery_node_attributes_preflight_cancel_to_user_termination(monkeypatch):
+    """2026-10-30 工单：预检等待窗口内点「终止投递」→ 按用户主动终止收尾，不得写成 [环境]。
+
+    真机路径：猎聘登录失效 → 预检进 300s 等待窗口 → 用户点终止 → 等待取消 → 节点早退。
+    修复前这里返回 [环境] 预检未通过，用户终止指令被静默吞掉。
+    """
+    from app.automation import workflow
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    async def fake_preflight(platforms, emit_log=None, cancel_check=None, wait_s=None):
+        assert cancel_check is not None, "delivery_node 必须把单岗取消判定传入预检"
+        assert cancel_check() is False, "进入等待窗口时尚无取消指令"
+        abort_mod.cancel_job_delivery("rec_abort_test")  # 模拟等待窗口内用户点击终止
+        assert cancel_check() is True
+        return {platforms[0]: False}
+
+    monkeypatch.setattr(
+        "app.session.preflight.ensure_delivery_platforms_ready", fake_preflight,
+    )
+
+    res = asyncio.run(workflow.delivery_node(_job_state(platform="猎聘")))
+
+    assert res["error"].startswith("[用户主动终止]"), "终止必须优先于环境归因"
+    assert abort_mod.is_job_delivery_cancelled("rec_abort_test") is False, "取消标记随本次尝试结束清理"
+
+
+def test_delivery_node_clears_cancel_flag_on_any_early_return(monkeypatch):
+    """早退路径（预检拦截/物料缺失等）也必须清理取消标记。
+
+    修复前清理只写在取得串行锁之后的分支里，陈旧标记会让下一次重试在节点入口
+    被误判为「用户主动终止」而空转一次。
+    """
+    from app.automation import workflow
+
+    async def fake_inner(_state):
+        return {"error": "[环境] 模拟预检早退"}
+
+    monkeypatch.setattr(workflow, "_delivery_node_inner", fake_inner)
+    abort_mod.cancel_job_delivery("rec_abort_test")
+
+    res = asyncio.run(workflow.delivery_node(_job_state()))
+
+    assert res["error"] == "[环境] 模拟预检早退"
+    assert abort_mod.is_job_delivery_cancelled("rec_abort_test") is False
+
+
+def test_cancel_endpoint_revokes_flag_when_job_finishes_midflight(monkeypatch):
+    """终止指令登记瞬间岗位刚好收尾：撤销取消标记，避免污染该岗位下一次重试。
+
+    竞态窗口：状态守卫读到「在途」→ 节点收尾 → 登记标记。此时标记已无人消费，
+    残留会让下一次重试在入口被误判为「用户主动终止」而空转一次。
+    """
+    from app.automation import delivery_interrupter, run_snapshot, workflow
+    from app.automation.routes import control_router
+
+    inflight = {"ids": {"rec_race"}}
+    monkeypatch.setattr(run_snapshot, "get_active_inflight_job_ids", lambda: set(inflight["ids"]))
+    monkeypatch.setattr(workflow, "_DELIVERY_INFLIGHT_RECORD_IDS", set())
+
+    def _interrupt_during_unwind(_rid):
+        inflight["ids"].clear()  # 打断调用期间岗位自然收尾
+        return False
+
+    monkeypatch.setattr(delivery_interrupter, "interrupt_active_job", _interrupt_during_unwind)
+
+    res = asyncio.run(control_router.cancel_job_delivery_endpoint(
+        control_router.CancelJobDeliveryRequest(record_id="rec_race")))
+
+    assert res["already_finished"] is True
+    assert abort_mod.is_job_delivery_cancelled("rec_race") is False, "已收尾岗位不得残留取消标记"
+
+
+def test_cancel_endpoint_keeps_flag_while_job_still_inflight(monkeypatch):
+    """语义边界：撤销只在「岗位确实已离开在途集合」时发生。
+
+    守卫与撤销复判使用同一个集合表达式（get_active_inflight_job_ids | 节点在飞表），
+    因此仍在途的岗位绝不会被误撤销——终止意图必须保留给执行器消费。
+    """
+    from app.automation import delivery_interrupter, run_snapshot, workflow
+    from app.automation.routes import control_router
+
+    monkeypatch.setattr(run_snapshot, "get_active_inflight_job_ids", lambda: {"rec_live"})
+    monkeypatch.setattr(workflow, "_DELIVERY_INFLIGHT_RECORD_IDS", set())
+    monkeypatch.setattr(delivery_interrupter, "interrupt_active_job", lambda _rid: True)
+
+    res = asyncio.run(control_router.cancel_job_delivery_endpoint(
+        control_router.CancelJobDeliveryRequest(record_id="rec_live")))
+
+    assert res.get("already_finished") is None
+    assert res["interrupted"] is True
+    assert abort_mod.is_job_delivery_cancelled("rec_live") is True, "在途岗位的终止意图不得被撤销"
+
+
+def test_inflight_block_marker_detection():
+    """防止「在飞拦截不记账」依赖的文案漂移：常量由 workflow 单点定义并在此锁定。"""
+    from app.automation.routes import jobs_router
+    from app.automation.workflow import DELIVERY_INFLIGHT_ERROR_MARKER
+
+    live_msg = f"岗位 rec_x {DELIVERY_INFLIGHT_ERROR_MARKER}（防重复发射拦截），请稍后在失败台账确认投递结果"
+    assert jobs_router._is_inflight_block_error(live_msg) is True
+    assert jobs_router._is_inflight_block_error("[环境] liepin 浏览器/登录态预检未通过") is False
+
+
+def test_retrying_job_is_treated_as_inflight_by_run_snapshot():
+    """终止接口撤销条件依赖的生产不变量：mark_job_retrying 必然出现在在途集合内。
+
+    上一轮用 mock 集合替身验证接口语义，本用例针对 run_snapshot 真实实现锁定
+    「重试任务启动前 → 进入在途集合 → 结束后移出」的进出港契约，防止未来重构
+    （例如把 _retrying_jobs 从并集里摘掉）让终止接口误撤销。
+    """
+    from app.automation import run_snapshot
+
+    run_snapshot._retrying_jobs.clear()
+    run_snapshot._delivering_jobs.clear()
+    run_snapshot.mark_job_retrying("rec_retry_inflight")
+    try:
+        assert "rec_retry_inflight" in run_snapshot.get_active_inflight_job_ids()
+    finally:
+        run_snapshot.unmark_job_retrying("rec_retry_inflight")
+    assert "rec_retry_inflight" not in run_snapshot.get_active_inflight_job_ids()
+
+
 # ==========================================
 # 3) end_pipeline 清终止标志，防止污染后续流程
 # ==========================================
+
 
 def test_end_pipeline_clears_abort_flag():
     abort_mod.begin_pipeline("pipeline_abort_test")

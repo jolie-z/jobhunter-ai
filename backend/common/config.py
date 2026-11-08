@@ -92,7 +92,9 @@ FEISHU_TABLE_ID_RESUMES = _cfg("FEISHU_TABLE_ID_RESUMES", json_key="FEISHU_TABLE
 FEISHU_ALERT_RECEIVE_ID = _cfg("FEISHU_ALERT_RECEIVE_ID", json_key="FEISHU_ALERT_RECEIVE_ID")
 
 # 5. --- 外部情报接口配置 ---
-# Serper（Google 搜索管道）为公司情报主引擎；Tavily（LLM 检索管道）降级备用
+# 博查（国内直连，注册送 1000 次）为主引擎；Serper（Google 搜索管道）与
+# Tavily（LLM 检索管道）需要境外网络，依次作为备用
+BOCHA_API_KEY = _cfg("BOCHA_API_KEY", json_key="BOCHA_API_KEY")
 SERPER_API_KEY = _cfg("SERPER_API_KEY", json_key="SERPER_API_KEY")
 TAVILY_API_KEY = _cfg("TAVILY_API_KEY", json_key="TAVILY_API_KEY")
 
@@ -334,6 +336,11 @@ def get_tavily_api_key() -> str | None:
 def get_serper_api_key() -> str | None:
     """动态读取最新 Serper API Key（感知 settings.json 变更）。"""
     return _cfg("SERPER_API_KEY", json_key="SERPER_API_KEY")
+
+
+def get_bocha_api_key() -> str | None:
+    """动态读取最新博查 API Key（感知 settings.json 变更）。"""
+    return _cfg("BOCHA_API_KEY", json_key="BOCHA_API_KEY")
 
 # 6. --- 火山引擎 (豆包) 流式语音大模型 V3 配置 ---
 VOLC_ASR_APPID = _cfg("VOLC_ASR_APPID", json_key="VOLC_ASR_APPID")

@@ -247,6 +247,13 @@ def summarize_report(report: dict[str, Any]) -> str:
 LIVE_BATCH_LIMIT = 20
 LIVE_SLEEP_RANGE = (20.0, 60.0)
 LIVE_PLATFORMS = ("boss", "zhilian", "liepin")  # 51job 排除
+# 批级持锁硬时长上限（外审 round3-P1-3' / round4-P1-2'''）：单条最坏 ≈38s + 间隔
+# 20-60s，20 条可达 33 分钟——期间引擎波次每轮撞 [环境] 会消耗重试预算
+# （MAX_AUTO_RETRIES=2 耗尽后岗位出列等人工）。240s 硬顶（< 投递闸门 300s 超时）：
+# 一批持锁期间同平台投递至多撞 1 次超时，第 2 次重试必然发生在批结束后；到点未检
+# 完的岗位按「无法判定」保留，下批再检。间隔 sleep 前也复查 deadline，避免
+# 「240s + 最后一次 sleep 60s」越过 300s（见 _liveness_worker_inner）。
+LIVENESS_MAX_HOLD_SECONDS = 240.0
 _CIRCUIT_SESSION_FAILS = 2  # 连续登录态失效 → 熔断
 _CIRCUIT_ERRORS = 5         # 连续检测异常 → 熔断
 
@@ -346,31 +353,152 @@ async def start_liveness_batch(platform: str = "", limit: int = LIVE_BATCH_LIMIT
             "note": "后台检测中（每条之间休息20~60秒防风控），用 check_liveness_progress 查进度"}
 
 
-async def _liveness_worker(jobs: list[dict[str, Any]], platform: str) -> None:
+def _schedule_aux_release(platform: str, owner: str, token: str) -> None:
+    """在当前循环里按 token 释放 aux（回调/兜底路径）；循环已关闭则放弃（进程收尾）。"""
+    import asyncio as _aio
+
+    from app.automation import platform_mutex
+
+    try:
+        loop = _aio.get_running_loop()
+    except RuntimeError:
+        return
+    try:
+        loop.create_task(platform_mutex.release_auxiliary(platform, owner=owner, token=token))
+    except RuntimeError:
+        # 循环正在关闭：进程即将退出，登记随进程清零
+        return
+
+
+async def _release_aux_after_threads(platform: str, owner: str, token: str,
+                                     pending: set) -> None:
+    """等所有在飞检测线程结束后再释放 aux（round5-P1-3）。
+
+    存活检测的同步判定跑在 to_thread 里：协程被取消只中断 await，线程仍可能在
+    page.get。若此刻释放 aux，引擎闸门会立即进入并撞上残留线程——与本次事故同源。
+    因此批次收尾必须先 await 全部 pending 线程；若收尾本身被二次取消，则把释放
+    挂到线程完成回调上（绝不在线程结束前放锁）。
+    """
+    import asyncio as _aio
+
+    from app.automation import platform_mutex
+
+    if pending:
+        waiter = _aio.gather(*pending, return_exceptions=True)
+        try:
+            await _aio.shield(waiter)
+        except _aio.CancelledError:
+            # 二次取消（进程收尾等）：线程还在跑——释放挂到线程完成回调，绝不放早
+            waiter.add_done_callback(
+                lambda _f: _schedule_aux_release(platform, owner, token))
+            raise
+    await _aio.shield(platform_mutex.release_auxiliary(platform, owner=owner, token=token))
+
+
+async def _run_tracked_thread(pending: set, fn, *args):
+    """在线程池执行同步浏览器操作，并把 future 登记到 pending（round5-P1-3）。
+
+    用 shield 等待：协程取消时 future 不被取消、线程继续跑并留在 pending 集合里，
+    批次收尾 await 到线程自然结束才释放 aux。
+    """
+    import asyncio as _aio
+
+    loop = _aio.get_running_loop()
+    fut = loop.run_in_executor(None, fn, *args)
+    pending.add(fut)
+    fut.add_done_callback(pending.discard)
+    return await _aio.shield(fut)
+
+
+async def _liveness_worker(jobs: list, platform: str) -> None:
+    state = _liveness_state
+    log = state["log"]
+
+    # 外审 round4 R9 收口：存活检测与抓取/投递引擎共用同平台浏览器，批级拿互斥闸门
+    # （整个批次持有——逐条间 20~60s 休息也在持锁期内，避免条间空隙被引擎钻入后
+    # 批内后续条目反被自己的闸门卡住）。批次整体作为 aux 阻塞位，抓取/投递/
+    # 死链预检在它持锁期间排队；它自己也等引擎清场（超时按整批取消，逐条语义 =
+    # 「无法判定保留岗位」，无破坏性副作用）。批时长受 LIVENESS_MAX_HOLD_SECONDS
+    # 硬顶（round3-P1-3'：引擎重试预算不被长批耗尽）。
+    from app.automation import platform_mutex
+    try:
+        _liveness_token = await platform_mutex.acquire_auxiliary(platform, owner=f"liveness:{platform}",
+                                                                 timeout_s=platform_mutex.AUXILIARY_WAIT_TIMEOUT_S)
+        if not _liveness_token:
+            # 原因按实际占用槽精确生成（round1-P2）：可能被投递/抓取/另一批存活检测占用
+            blockers = [name for name, kind in (("投递", "deliver"), ("抓取", "scrape"),
+                                                ("另一批存活检测", "aux"))
+                        if platform_mutex._state(platform_mutex.normalize_platform(platform))[kind] is not None]
+            reason = "、".join(blockers) or "其他浏览器操作"
+            state["aborted"] = f"{reason}进行中，本次存活检测取消（岗位全部保留，可稍后重试）"
+            log.append(f"⏭️ {state['aborted']}")
+            logger.warning(f"[岗位卫生] 存活检测取消：{platform} 占用者=[{reason}]，避免抢浏览器")
+            return
+        pending: set = set()
+        try:
+            remaining = await _liveness_worker_inner(
+                jobs, platform, state,
+                deadline=time.time() + LIVENESS_MAX_HOLD_SECONDS, pending=pending)
+            if remaining:
+                log.append(f"⏱️ 达 {LIVENESS_MAX_HOLD_SECONDS // 60:.0f} 分钟批上限，剩余 {len(remaining)} 条未检（岗位保留，可再触发补检）")
+                state["aborted"] = state["aborted"] or f"达批时长上限，剩余 {len(remaining)} 条未检（岗位保留）"
+        except Exception as e:
+            state["aborted"] = state["aborted"] or f"执行异常中止: {str(e)[:120]}"
+            logger.exception(f"[岗位卫生] 存活检测批次异常: {e}")
+        finally:
+            # round5-P1-3：先等所有在飞检测线程结束，再释放 aux——取消路径若提前放锁，
+            # 引擎闸门会立即进入并与仍在 page.get 的线程共用浏览器（本次事故同源）。
+            # 释放本身走 shield（round1-P1-4），token 精确校验（round3-P1-2）。
+            try:
+                await _release_aux_after_threads(
+                    platform, owner=f"liveness:{platform}", token=_liveness_token,
+                    pending=pending)
+            except Exception as e:
+                logger.warning(f"[岗位卫生] 释放辅助闸门异常（按超时自愈兜底）: {e}")
+    finally:
+        # 外审 A3-P1：running/finished_epoch 的复位统一放最外层 finally（aux 释放与
+        # 线程收尾完成之后）。原先留在 inner finally 有两个洞：acquire 等待期被取消时
+        # 两个 finally 都不经过，running 永久卡死 True 直至重启；批内取消仍有在飞
+        # 线程时 running 提前置 False，新批次与未退出的旧批次争用共享 _liveness_state
+        state["running"] = False
+        state["finished_epoch"] = time.time()
+
+
+async def _liveness_worker_inner(jobs: list, platform: str, state: dict,
+                                 deadline: float, pending: set | None = None) -> list:
+    """批内逐条检测（原逻辑）。达 deadline 即停手，返回未检测的剩余岗位列表。
+
+    熔断计数（session_fails/err_fails）为 inner 局部状态——外层不再消费。
+    pending（round5-P1-3）：所有同步判定线程的 future 登记集合，供批次收尾
+    「等线程结束再释放 aux」使用。"""
+    session_fails = err_fails = 0
     import random
 
     from app.core.config import settings
     from app.core.feishu_client import feishu_client
 
-    state = _liveness_state
+    if pending is None:
+        pending = set()
     log = state["log"]
-    session_fails = err_fails = 0
     try:
         mod = _liveness_script()
         browser = None
         if platform in ("zhilian", "liepin"):
-            browser = await asyncio.to_thread(mod.get_platform_browser, platform)
+            browser = await _run_tracked_thread(pending, mod.get_platform_browser, platform)
 
         for i, job in enumerate(jobs, 1):
+            # 批时长硬顶（round3-P1-3'）：到 deadline 未检的岗位整体留给下批（保留语义）
+            if time.time() >= deadline:
+                return jobs[i - 1:]
             link = str(job.get("job_link") or "")
             verdict, reason = None, ""
             try:
                 if platform == "boss":
                     from app.automation.link_precheck import check_boss_link_sync
-                    verdict = await asyncio.to_thread(check_boss_link_sync, link)
+                    verdict = await _run_tracked_thread(pending, check_boss_link_sync, link)
                 else:
                     fn = mod.check_zhilian_link if platform == "zhilian" else mod.check_liepin_link
-                    verdict, reason = await asyncio.to_thread(fn, browser, link)
+                    verdict, reason = await _run_tracked_thread(pending, fn, browser, link)
             except Exception as e:
                 reason = f"检测异常: {str(e)[:60]}"
                 err_fails += 1
@@ -386,7 +514,7 @@ async def _liveness_worker(jobs: list[dict[str, Any]], platform: str) -> None:
                 try:
                     await feishu_client.update_record(
                         settings.FEISHU_TABLE_ID_JOBS, rid, {"跟进状态": "已下架"})
-                    rowid = await asyncio.to_thread(_mark_sqlite_dead, rid)
+                    rowid = await _run_tracked_thread(pending, _mark_sqlite_dead, rid)
                     log.append(f"💀 已下架（飞书+SQLite{rowid or ''}）: {job.get('company_name')} · {job.get('job_name')}")
                 except Exception as e:
                     log.append(f"⚠️ 死链标状态失败 {rid}: {str(e)[:80]}")
@@ -406,13 +534,22 @@ async def _liveness_worker(jobs: list[dict[str, Any]], platform: str) -> None:
                 state["aborted"] = f"连续 {err_fails} 条检测异常，已熔断停手"
                 break
             if i < len(jobs):
-                await asyncio.sleep(random.uniform(*LIVE_SLEEP_RANGE))
+                # round5-P2：sleep 前复查 deadline——原实现只在本轮循环顶部检查，
+                # 最后一次 60s 间隔会让持锁越过硬顶（240+60+38 可能 > 300s 引擎闸门）。
+                # 若间隔会越过 deadline，直接停手把剩余岗位留给下批，不再空睡。
+                if time.time() >= deadline:
+                    return jobs[i:]
+                sleep_s = random.uniform(*LIVE_SLEEP_RANGE)
+                if time.time() + sleep_s >= deadline:
+                    return jobs[i:]
+                await asyncio.sleep(sleep_s)
+        return []
     except Exception as e:
         state["aborted"] = f"执行异常中止: {str(e)[:120]}"
         logger.exception(f"[岗位卫生] 存活检测批次异常: {e}")
-    finally:
-        state["running"] = False
-        state["finished_epoch"] = time.time()
+        return jobs[min(state.get("done", 0), len(jobs)):] if state.get("done") else list(jobs)
+    # running/finished_epoch 的复位已统一移至外层 _liveness_worker 最外层 finally
+    # （外审 A3-P1：inner finally 覆盖不到 acquire 等待期取消，且早于线程收尾）
 
 
 def liveness_progress() -> dict[str, Any]:

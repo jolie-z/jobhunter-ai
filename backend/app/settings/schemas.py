@@ -13,9 +13,9 @@ class SettingsPayload(BaseModel):
     OPENAI_API_KEY: str | None = None
     OPENAI_BASE_URL: str | None = None
     OPENAI_MODEL: str | None = None
-    VISION_MODEL: str | None = None
 
-    # A1. 视觉（图片识别）独立通道：主网关不支持图片输入时指向支持 VL 的供应商
+    # A1. 视觉（图片识别）通道：模型名是硬前提；Key/Base URL 留空则复用主通道
+    VISION_MODEL: str | None = None
     VISION_API_KEY: str | None = None
     VISION_BASE_URL: str | None = None
 
@@ -36,8 +36,10 @@ class SettingsPayload(BaseModel):
     FEISHU_TABLE_ID_INTERVIEW_REPORTS: str | None = None
     FEISHU_TABLE_ID_INTERVIEW_SUMMARY: str | None = None
     FEISHU_TABLE_ID_INTERVIEW_REAL: str | None = None
+    FEISHU_APPROVER_OPEN_IDS: str | None = None
 
-    # C. 搜索/情报（Serper 主引擎，Tavily 降级备用）
+    # C. 搜索/情报（博查国内直连主引擎，Serper / Tavily 境外网络备用）
+    BOCHA_API_KEY: str | None = None
     SERPER_API_KEY: str | None = None
     TAVILY_API_KEY: str | None = None
 

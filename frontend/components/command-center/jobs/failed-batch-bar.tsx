@@ -4,6 +4,7 @@ import React, { useMemo } from "react"
 import { RotateCcw, Trash2, CheckSquare, Square, Sparkles, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { PipelineJob } from "@/store/pipeline-store"
+import { resolvePlatformKeyForJob } from "../job-predicates"
 
 interface FailedBatchBarProps {
   failedJobs: PipelineJob[]
@@ -36,22 +37,8 @@ export const FailedBatchBar = React.memo(function FailedBatchBar({
   const platformStats = useMemo(() => {
     const stats: Record<string, { label: string; count: number }> = {}
     failedJobs.forEach((job) => {
-      const rawPlat = (job.platform || "other").toLowerCase()
-      let key = "other"
-      let label = "其他"
-      if (rawPlat.includes("51") || rawPlat.includes("前程")) {
-        key = "51job"
-        label = "51Job"
-      } else if (rawPlat.includes("智联") || rawPlat.includes("zhilian")) {
-        key = "zhilian"
-        label = "智联招聘"
-      } else if (rawPlat.includes("boss")) {
-        key = "boss"
-        label = "BOSS直聘"
-      } else if (rawPlat.includes("猎聘") || rawPlat.includes("liepin")) {
-        key = "liepin"
-        label = "猎聘"
-      }
+      // 词表单一事实源（CR-Split-R1-P1）：复用 job-predicates 的 resolvePlatformKeyForJob
+      const { key, label } = resolvePlatformKeyForJob(job.platform)
       if (!stats[key]) {
         stats[key] = { label, count: 0 }
       }

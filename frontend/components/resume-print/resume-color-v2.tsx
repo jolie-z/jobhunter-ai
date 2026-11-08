@@ -4,6 +4,7 @@ import { Phone, Mail, MapPin, Globe, Github, Linkedin, ExternalLink } from 'luci
 import { ResumeDataV2 } from '@/types/resume';
 import { stripConfidenceTags } from '@/lib/utils/text-formatters';
 import { PhoneIcon, MailIcon, WeChatIcon, UserAvatarIcon, GitHubBrandLogo, resolveCompanyBrand, resolvePlatformLogo, BossZhipinLogo, ZhilianLogo, Job51Logo, LiepinLogo } from './brand-logos';
+import { extractItemPrintExtras, formatItemPrintExtras, joinDescriptionBlocks } from './custom-item-fields';
 import baseStyles from './styles/_base.module.css';
 import styles from './styles/color-v2.module.css';
 
@@ -284,15 +285,24 @@ export const ResumeColorV2: React.FC<ResumeColorV2Props> = ({ data }) => {
             <h3 className={styles.sectionTitle}>{title}</h3>
             <div className={baseStyles['resume-items']}>
               {customItems.map((item, idx) => {
-                const descStr = toDescString(item.description);
+                // 2026-10-28 原文保真：表头带仅在有标准字段时渲染（归一化后新条目纯 description）；
+                // 用户自建 KV 字段拼行打印，杜绝「编辑器可见、PDF 消失」；location 已由 EntryBand 承载
+                const descStr = joinDescriptionBlocks(item.description);
+                const extrasLine = formatItemPrintExtras(extractItemPrintExtras(item));
+                const hasBand = !!(item.company || item.title || item.years || item.location);
                 return (
                   <div key={idx} className={baseStyles['resume-item']}>
-                    <EntryBand
-                      companyName={item.company || ''}
-                      role={item.title || ''}
-                      years={item.years}
-                      location={item.location || undefined}
-                    />
+                    {hasBand && (
+                      <EntryBand
+                        companyName={item.company || ''}
+                        role={item.title || ''}
+                        years={item.years}
+                        location={item.location || undefined}
+                      />
+                    )}
+                    {extrasLine && (
+                      <div className="mt-1 text-center text-[11px] text-gray-500">{extrasLine}</div>
+                    )}
                     {descStr && (
                       <MarkdownBlock>{descStr}</MarkdownBlock>
                     )}

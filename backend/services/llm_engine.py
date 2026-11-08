@@ -10,7 +10,9 @@ class LLMEngine:
         # 注意这里我们改用 AsyncOpenAI，为了支持异步的高并发
         # 🌟 经 make_tracked_client 包装后，所有 create() 自动记录 token 消耗
         # 配置走动态属性访问（感知配置页保存）；interview 路由按请求实例化，天然拿到最新值
-        raw = AsyncOpenAI(api_key=_ccfg.LLM_API_KEY, base_url=_ccfg.LLM_BASE_URL)
+        # max_retries=0：经 make_tracked_client 过闸的客户端重试统一归策略层，
+        # 杜绝 SDK 隐式重试在并发槽内放大占槽时长（与 step1_rule_filter 同口径）
+        raw = AsyncOpenAI(api_key=_ccfg.LLM_API_KEY, base_url=_ccfg.LLM_BASE_URL, max_retries=0)
         self.client = make_tracked_client(raw, model_default=_ccfg.LLM_MODEL, caller="llm_engine")
         self.model = _ccfg.LLM_MODEL
 

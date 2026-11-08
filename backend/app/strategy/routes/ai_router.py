@@ -120,6 +120,8 @@ async def ats_align_experience(payload: AtsAlignRequest):
 
     基于 A 级岗位画像，对单条经历进行术语平替和 ATS 关键词锚定
     """
+    from app.core import usage_counters
+    usage_counters.bump("strategy_ats")
     try:
         data = await service.ats_align_experience_service(payload)
         return {"code": 200, "status": "success", "data": data}
@@ -164,6 +166,8 @@ async def generate_initial_draft(payload: InitialDraftRequest):
 @router.post("/global_diagnosis", responses={500: {"description": "Error 500"}})
 async def global_diagnosis_api(payload: GlobalDiagnosisRequest):
     """AI 全局诊断：输出建议卡片"""
+    from app.core import usage_counters
+    usage_counters.bump("strategy_diagnosis")
     try:
         data = await service.global_diagnosis_service(payload)
         return {"status": "success", "data": data}
@@ -326,6 +330,8 @@ KNOWN_RESUME_PLACEHOLDERS = {"请使用您的默认简历内容。", "默认简�
 @router.post("/generate_greeting_and_save")
 async def generate_greeting_and_save_api(payload: GenerateGreetingRequest):
     """单独生成打招呼语并保存到飞书"""
+    from app.core import usage_counters
+    usage_counters.bump("strategy_greeting")
     try:
         from ai_agents.engine_facade import process_greeting_generation
         from app.core.config import settings

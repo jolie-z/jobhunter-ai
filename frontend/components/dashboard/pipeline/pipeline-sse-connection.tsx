@@ -2,7 +2,8 @@
 
 import { API_BASE } from "@/lib/api"
 import { useEffect, useRef } from "react"
-import { usePipelineStore } from "@/store/pipeline-store"
+import { toast } from "sonner"
+import { classifyEndFrame, usePipelineStore } from "@/store/pipeline-store"
 
 
 /**
@@ -18,8 +19,8 @@ export function PipelineSseConnection() {
   const eventSourceRef = useRef<EventSource | null>(null)
 
   useEffect(() => {
-    // 已结束或无任务：不连接
-    if (!pipelineTaskId || status === "idle" || status === "done" || status === "error") {
+    // 已结束或无任务：不连接（blocked = 链路已收口暂停，等「继续任务」置回 running 再连）
+    if (!pipelineTaskId || status === "idle" || status === "done" || status === "error" || status === "blocked") {
       return
     }
 
@@ -47,6 +48,18 @@ export function PipelineSseConnection() {
         const data = JSON.parse(event.data)
         usePipelineStore.getState().handleEvent(data)
 
+        // 非正常收口 toast（2026-11-02 审计 P1-9）：复用 store 的 classifyEndFrame
+        // 唯一分诊——blocked 不弹（BlockedDetail 横幅已承载）、aborted 走 info、
+        // expired/no_resume 走 error，与状态机口径严格一致
+        if (data.type === "end") {
+          const verdict = classifyEndFrame(data)
+          if (verdict.kind === "aborted") {
+            toast.info(verdict.message)
+          } else if (verdict.kind === "expired" || verdict.kind === "no_resume") {
+            toast.error(verdict.message)
+          }
+        }
+
         // 终态事件：主动断开
         if (data.type === "end" || data.type === "error") {
           close()
@@ -59,7 +72,20 @@ export function PipelineSseConnection() {
     es.onerror = () => {
       const cur = usePipelineStore.getState()
       // 已结束则直接关闭；否则交给浏览器原生 EventSource 自动重连
-      if (cur.status === "done" || cur.status === "error" || cur.status === "idle") {
+      if (cur.status === "done" || cur.status === "error" || cur.status === "idle" || cur.status === "blocked") {
+        close()
+        return
+      }
+      // 永久死亡自愈（2026-11-02 审计 P2-16）：原生重连收到非 200/非 event-stream 响应时
+      // 规范规定不再重建（readyState=CLOSED），此时 status 停在 running 无人知晓。
+      // 检测到 CLOSED 且链路仍 running → 显式置错误态并提示（用户可重新触发任务）
+      if (es.readyState === EventSource.CLOSED) {
+        console.error(`❌ [Pipeline SSE] 连接永久关闭且链路仍在运行 (${pipelineTaskId})，置为错误态`)
+        usePipelineStore.setState({
+          status: "error",
+          logs: [...cur.logs.slice(-199), "❌ 实时事件流已断开且无法自动重连，请刷新页面或重新触发任务"],
+        })
+        toast.error("实时事件流已断开，请刷新页面恢复")
         close()
         return
       }

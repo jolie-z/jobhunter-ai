@@ -248,9 +248,9 @@ logger = logging.getLogger(__name__)
 
 # 面经 RAG 已收编进本仓库（原依赖外部项目 interview_scraper 的 ai_interview_rag，
 # 2026-09-04 迁入 app/interview/interview_rag.py，配置走 _cfg）
-# 公司情报走 backend 原生 Serper 引擎（外部 company_searcher 与本项目 common 包撞名，
-# 在 backend 进程内 import 必然失败，故不再从那里导入）
-from ai_agents.company_intel import search_company_ai_news  # noqa: E402
+# 公司情报统一走调度器（博查国内直连主引擎 → Serper → Tavily），避免只配博查时此处失效。
+# 外部 company_searcher 与本项目 common 包撞名，在 backend 进程内 import 必然失败，故不再从那里导入。
+from ai_agents.company_intel import fetch_company_intel  # noqa: E402
 from app.interview.interview_rag import (  # noqa: E402
     ask_for_interview_summary,
     fetch_single_reports_by_tags,
@@ -289,10 +289,7 @@ async def init_interviewer_action(req: InterviewRequest):
             company_intel = req.cached_intel
         else:
             print("  [🏢 靶向刷新] 正在搜索公司业务情报...")
-            if inspect.iscoroutinefunction(search_company_ai_news):
-                company_intel = await search_company_ai_news(req.company)
-            else:
-                company_intel = await asyncio.to_thread(search_company_ai_news, req.company)
+            company_intel = await asyncio.to_thread(fetch_company_intel, req.company)
             updates_for_feishu["公司业务情报"] = company_intel
 
         # ==========================================

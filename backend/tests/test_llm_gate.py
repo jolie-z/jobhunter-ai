@@ -71,23 +71,27 @@ def test_gate_concurrency_slots_blocking_and_release():
         assert gate.stats()["active_slots"] == 0
 
 
-def test_batch_caller_concurrency_quota_isolation():
-    """验证双通道配额隔离：批处理占满配额后，交互通道仍保留专属空位。"""
-    with patch.dict(os.environ, {"LLM_MAX_CONCURRENCY": "4", "LLM_BATCH_MAX_CONCURRENCY": "2"}):
+def test_batch_caller_hard_cap_when_elastic_disabled():
+    """热控回滚契约（LLM_BATCH_ELASTIC=0）：批处理回到硬顶 2 槽，交互保留专属空位。
+
+    2026-11-03 弹性改造后，硬顶 2 仅在弹性开关关闭时成立；开启态的伸缩行为
+    见 test_llm_gate_elastic.py。
+    """
+    with patch.dict(os.environ, {
+        "LLM_MAX_CONCURRENCY": "4", "LLM_BATCH_MAX_CONCURRENCY": "2", "LLM_BATCH_ELASTIC": "0",
+    }):
         reset_llm_gate()
         gate = get_llm_gate()
+        assert gate.stats()["batch_effective_cap"] == 2
 
-        # 批处理调用方（侦察兵真实 caller：step1_rule_filter）占用 2 个批处理槽位
         batch1 = gate.acquire_slot(caller="step1_rule_filter", timeout=1.0)
         batch2 = gate.acquire_slot(caller="step1_rule_filter", timeout=1.0)
         assert batch1 is not None and batch1.is_batch is True
         assert batch2 is not None and batch2.is_batch is True
 
-        # 第 3 个批处理请求因批处理配额耗尽而超时
         batch3 = gate.acquire_slot(caller="step1_rule_filter", timeout=0.1)
         assert batch3 is None
 
-        # 交互调用方（agent_map 等非 BATCH_CALLERS 成员）仍可立即申请剩余的 2 个全局空位
         interactive1 = gate.acquire_slot(caller="agent_map", timeout=1.0)
         assert interactive1 is not None and interactive1.is_batch is False
         assert gate.stats()["active_slots"] == 3
@@ -308,7 +312,7 @@ def test_gate_cooldown_exceeds_timeout_rejects_and_does_not_call_raw_create():
     assert not raw_called, "冷却超限后严禁裸发请求上游！"
     assert exc_info.value.status_code == 429
     assert exc_info.value.retry_after == 120.0
-    assert "全局 429 冷却期" in str(exc_info.value)
+    assert "冷却期" in str(exc_info.value)
 
 
 def test_gate_rpm_token_timeout_rejects_and_does_not_call_raw_create():
@@ -360,3 +364,125 @@ async def test_async_gate_acquire_slot_timeout_rejects_and_does_not_call_raw_cre
     assert not raw_called, "异步并发槽获取超时后严禁裸发请求上游！"
     assert exc_info.value.status_code == 429
     assert "并发槽位已满" in str(exc_info.value)
+
+
+def test_server_error_breaker_opens_cooldown_after_streak():
+    """【2026-10-31 事故】连续上游 5xx 达阈值时触发全局熔断冷却窗，成功即清零连击。"""
+    with patch.dict(os.environ, {"LLM_SERVER_BREAKER_THRESHOLD": "3", "LLM_SERVER_BREAKER_COOLDOWN_SECONDS": "45"}):
+        reset_llm_gate()
+        gate = get_llm_gate()
+
+        # 前两次失败不开冷却窗
+        gate.notify_server_error()
+        gate.notify_server_error()
+        stats = gate.stats()
+        assert stats["server_error_streak"] == 2
+        assert stats["cooldown_remaining"] == 0.0
+
+        # 第三次连续失败：开启熔断冷却窗
+        gate.notify_server_error()
+        stats = gate.stats()
+        assert stats["cooldown_remaining"] > 0.0
+        assert stats["total_server_breaks"] == 1
+
+        # 冷却期内新请求在闸外等待被拒（govern 层抛 LLMGateTimeoutError，不碰上游）
+        def fake_create(*args, **kwargs):
+            raise AssertionError("熔断冷却期内严禁发出上游请求！")
+
+        with patch.object(gate, "wait_if_global_cooldown", return_value=False), \
+             patch.object(gate, "get_cooldown_remaining", return_value=30.0):
+            with pytest.raises(LLMGateTimeoutError) as exc_info:
+                govern_sync_call(
+                    fake_create, (), {},
+                    caller="test_server_breaker",
+                    policy=RetryPolicy(max_attempts=1),
+                )
+        assert "冷却期" in str(exc_info.value)
+
+
+def test_server_error_streak_resets_on_success():
+    """间歇性 5xx 不误触发熔断：任一次成功清零连击计数。"""
+    with patch.dict(os.environ, {"LLM_SERVER_BREAKER_THRESHOLD": "3"}):
+        reset_llm_gate()
+        gate = get_llm_gate()
+
+        gate.notify_server_error()
+        gate.notify_server_error()
+        gate.record_success()
+        assert gate.stats()["server_error_streak"] == 0
+
+        gate.notify_server_error()
+        gate.notify_server_error()
+        stats = gate.stats()
+        assert stats["cooldown_remaining"] == 0.0, "成功清零后两次失败不应触发熔断"
+
+
+def test_govern_sync_call_feeds_server_errors_to_breaker():
+    """govern 层捕获上游 5xx 后必须回喂闸门熔断计数（不再硬撞）。"""
+    with patch.dict(os.environ, {"LLM_SERVER_BREAKER_THRESHOLD": "2", "LLM_SERVER_BREAKER_COOLDOWN_SECONDS": "45"}):
+        reset_llm_gate()
+        gate = get_llm_gate()
+
+        def fake_upstream_503(*args, **kwargs):
+            err = Exception("Error code: 503 - no_healthy_account")
+            err.status_code = 503
+            raise err
+
+        with patch.object(gate, "wait_if_global_cooldown", return_value=True), \
+             patch.object(gate, "wait_for_rpm_token", return_value=True), \
+             patch.object(gate, "acquire_slot", return_value=SlotGuard(gate, "test", bypassed=False)):
+            # max_attempts=1：本轮直接上抛，但 notify_server_error 必须已被调用
+            with pytest.raises(Exception):
+                govern_sync_call(
+                    fake_upstream_503, (), {},
+                    caller="test_breaker_feed",
+                    policy=RetryPolicy(max_attempts=1),
+                )
+            assert gate.stats()["server_error_streak"] == 1
+
+            with pytest.raises(Exception):
+                govern_sync_call(
+                    fake_upstream_503, (), {},
+                    caller="test_breaker_feed",
+                    policy=RetryPolicy(max_attempts=1),
+                )
+        # 连续 2 次 5xx → 熔断开窗
+        stats = gate.stats()
+        assert stats["total_server_breaks"] == 1
+        assert stats["cooldown_remaining"] > 0.0
+
+
+def test_govern_sync_call_success_resets_server_streak():
+    """主路径验证「间歇性 5xx 不误触发熔断」：经 govern_sync_call 的成功调用
+    必须真实清零 _server_error_streak（round2 P2：仅直调 record_success 不足）。"""
+    with patch.dict(os.environ, {"LLM_SERVER_BREAKER_THRESHOLD": "3"}):
+        reset_llm_gate()
+        gate = get_llm_gate()
+
+        def fake_upstream_503(*args, **kwargs):
+            err = Exception("Error code: 503 - no_healthy_account")
+            err.status_code = 503
+            raise err
+
+        def fake_upstream_ok(*args, **kwargs):
+            return {"ok": True}
+
+        with patch.object(gate, "wait_if_global_cooldown", return_value=True), \
+             patch.object(gate, "wait_for_rpm_token", return_value=True), \
+             patch.object(gate, "acquire_slot", return_value=SlotGuard(gate, "test", bypassed=False)):
+            with pytest.raises(Exception):
+                govern_sync_call(fake_upstream_503, (), {}, caller="t", policy=RetryPolicy(max_attempts=1))
+            with pytest.raises(Exception):
+                govern_sync_call(fake_upstream_503, (), {}, caller="t", policy=RetryPolicy(max_attempts=1))
+            assert gate.stats()["server_error_streak"] == 2
+
+            # 真实主路径成功：清零连击
+            govern_sync_call(fake_upstream_ok, (), {}, caller="t", policy=RetryPolicy(max_attempts=1))
+            assert gate.stats()["server_error_streak"] == 0
+
+            # 清零后再失败两次也不开窗
+            with pytest.raises(Exception):
+                govern_sync_call(fake_upstream_503, (), {}, caller="t", policy=RetryPolicy(max_attempts=1))
+            with pytest.raises(Exception):
+                govern_sync_call(fake_upstream_503, (), {}, caller="t", policy=RetryPolicy(max_attempts=1))
+            assert gate.stats()["cooldown_remaining"] == 0.0

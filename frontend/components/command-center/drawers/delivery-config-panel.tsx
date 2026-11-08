@@ -15,7 +15,9 @@ interface DeliveryConfigPanelProps {
 
 export function DeliveryConfigPanel({ onSaved }: DeliveryConfigPanelProps) {
   const [platforms, setPlatforms] = useState<string[]>(["boss", "liepin", "51job", "zhilian"])
-  const [grades, setGrades] = useState<string[]>(["C", "D", "E", "F"])
+  // 五档契约（commit 29aca7f6）：全链路等级口径统一 A/B/C/D/F，E 为已退役幽灵档，
+  // 不再提供勾选——勾了也会被后端白名单按契约剔除
+  const [grades, setGrades] = useState<string[]>(["C", "D", "F"])
   const [massDeliverTime, setMassDeliverTime] = useState("09:30")
   const [customDeliverMode, setCustomDeliverMode] = useState<"immediate" | "scheduled">("immediate")
   const [customDeliverTime, setCustomDeliverTime] = useState("14:00")
@@ -36,7 +38,8 @@ export function DeliveryConfigPanel({ onSaved }: DeliveryConfigPanelProps) {
       if (data.code === 0 && data.data) {
         const d = data.data
         if (d.auto_deliver_platforms) setPlatforms(d.auto_deliver_platforms)
-        if (d.auto_deliver_grades) setGrades(d.auto_deliver_grades)
+        // 防御：存量配置若残留已退役的 E 档，加载时过滤，避免渲染幽灵芯片
+        if (d.auto_deliver_grades) setGrades(d.auto_deliver_grades.filter((g: string) => g !== "E"))
         if (d.mass_deliver_time) setMassDeliverTime(d.mass_deliver_time)
         if (d.custom_deliver_mode) setCustomDeliverMode(d.custom_deliver_mode)
         if (d.custom_deliver_time) setCustomDeliverTime(d.custom_deliver_time)

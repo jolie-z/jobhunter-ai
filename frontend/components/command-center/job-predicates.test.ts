@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest"
 import type { PipelineJob } from "@/store/pipeline-store"
 import {
+  isJobPendingReeval,
   isJobDelivered,
+  isJobDelivering,
   isJobRejected,
   isJobReadyToDeliver,
   isJobWaitingReview,
@@ -119,5 +121,41 @@ describe("谓词互斥与优先级守卫", () => {
         status === "done" || status === "rejected_manual" // 文档口径：done/rejected_manual 仅全部 Tab
       expect(claimed).toBe(true)
     }
+  })
+})
+
+describe("isJobDelivering（终止投递按钮与终止中状态共用判源）", () => {
+  it("running + delivering 子状态或 delivery_node 节点 → true", () => {
+    expect(isJobDelivering(job({ status: "running", sub_status: "delivering" }))).toBe(true)
+    expect(isJobDelivering(job({ status: "running", node: "delivery_node" }))).toBe(true)
+  })
+
+  it("非投递阶段、已落终态或岗位缺失 → false（终止按钮/终止中状态必须复位）", () => {
+    expect(isJobDelivering(job({ status: "running", sub_status: "rewriting" }))).toBe(false)
+    expect(isJobDelivering(job({ status: "error", node: "delivery_node" }))).toBe(false)
+    expect(isJobDelivering(undefined)).toBe(false)
+  })
+})
+
+describe("isJobPendingReeval / eval_incomplete 排除（审计 P1-5 第二批）", () => {
+  const mk = (over: Partial<PipelineJob>): PipelineJob =>
+    ({ job_id: "j", status: "waiting", node: "evaluate_node", ...over }) as PipelineJob
+
+  it("eval_incomplete 归待重评、不进待审批", () => {
+    const job = mk({ sub_status: "eval_incomplete" })
+    expect(isJobPendingReeval(job)).toBe(true)
+    expect(isJobWaitingReview(job)).toBe(false)
+  })
+
+  it("eval_pending 仍归评估侧（既不待重评也不待审批）", () => {
+    const job = mk({ sub_status: "eval_pending" })
+    expect(isJobPendingReeval(job)).toBe(false)
+    expect(isJobWaitingReview(job)).toBe(false)
+  })
+
+  it("人工审批断点岗位不受影响，仍归待审批", () => {
+    const job = mk({ node: "manual_review_node", sub_status: "waiting" })
+    expect(isJobWaitingReview(job)).toBe(true)
+    expect(isJobPendingReeval(job)).toBe(false)
   })
 })

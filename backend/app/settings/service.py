@@ -18,7 +18,7 @@ _MINIMAL_REQUIRED = {key for keys in MINIMAL_REQUIRED_KEYS.values() for key in k
 _SENSITIVE_KEYS = {
     "OPENAI_API_KEY", "CLEANER_LLM_API_KEY", "VISION_API_KEY",
     "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_APP_TOKEN",
-    "SERPER_API_KEY", "TAVILY_API_KEY",
+    "BOCHA_API_KEY", "SERPER_API_KEY", "TAVILY_API_KEY",
     "VOLC_ASR_APPID", "VOLC_ASR_TOKEN",
     "AMAP_API_KEY",
 }
@@ -39,9 +39,10 @@ CONFIG_GROUPS = [
         ("OPENAI_API_KEY", "API Key", True),
         ("OPENAI_BASE_URL", "Base URL", False),
         ("OPENAI_MODEL", "推理模型", False),
-        ("VISION_MODEL", "视觉模型", False),
     ]),
+    # 视觉模型与视觉通道同组：模型名是视觉能力硬前提，Key/Base URL 可复用主通道
     ("视觉通道 (可选)", [
+        ("VISION_MODEL", "视觉模型", False),
         ("VISION_API_KEY", "API Key", True),
         ("VISION_BASE_URL", "Base URL", False),
     ]),
@@ -64,8 +65,9 @@ CONFIG_GROUPS = [
         ("FEISHU_APPROVER_OPEN_IDS", "审批人白名单 (open_id 逗号分隔，空=全员可审批)", False),
     ]),
     ("搜索/情报", [
-        ("SERPER_API_KEY", "Serper API Key（主引擎）", True),
-        ("TAVILY_API_KEY", "Tavily API Key（降级备用）", True),
+        ("BOCHA_API_KEY", "博查 API Key（国内直连，推荐）", True),
+        ("SERPER_API_KEY", "Serper API Key（境外网络）", True),
+        ("TAVILY_API_KEY", "Tavily API Key（境外网络，兜底）", True),
     ]),
     ("语音识别 (火山引擎)", [
         ("VOLC_ASR_APPID", "App ID", True),
@@ -99,6 +101,20 @@ async def get_system_settings() -> dict[str, Any]:
         groups.append({"group": group_name, "fields": items})
 
     return {"groups": groups}
+
+
+async def reveal_system_setting(key: str) -> dict[str, Any]:
+    """按需返回单个敏感配置的明文（配置页「眼睛」按钮二次核对用）。
+
+    安全边界：
+    - 只允许 CONFIG_GROUPS 中声明为敏感（sensitive=True）的键，杜绝任意环境变量读取；
+    - 列表接口仍只返回遮罩值，明文仅在用户主动点击眼睛时按需下发；
+    - 后端默认仅监听 127.0.0.1，请勿把本服务直接暴露到公网。
+    """
+    if key not in _SENSITIVE_KEYS:
+        raise KeyError(key)
+    raw = _config_module._cfg(key, json_key=key) or ""
+    return {"code": 0, "data": {"key": key, "value": raw}}
 
 
 async def get_readiness() -> dict[str, Any]:

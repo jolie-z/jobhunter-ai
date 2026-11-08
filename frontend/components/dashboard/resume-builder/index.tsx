@@ -24,6 +24,7 @@ export function ResumeBuilder() {
     handleDelete,
     handleCreateNew,
     handleDuplicate,
+    handleRenameResume,
     fetchConfig,
     confirmUnsavedGuard
   } = store
@@ -74,14 +75,6 @@ export function ResumeBuilder() {
     })
   }
 
-  const handleRename = (id: string, name: string) => {
-    if (editingItem?.record_id === id) {
-      setEditingItem({ ...editingItem, name })
-    }
-    // 不可变更新：直接下标改 resumes[idx].name 变异了 state 数组，订阅方可能不刷新
-    setResumes(prev => prev.map(r => (r.record_id === id ? { ...r, name } : r)))
-  }
-
   const handleDeleteResume = (id: string) => {
     const item = resumes.find(r => r.record_id === id)
     if (item) handleDelete({ stopPropagation: () => { } } as any, item)
@@ -95,7 +88,7 @@ export function ResumeBuilder() {
         resumes={resumes.map(r => ({ id: r.record_id || '', name: r.name, status: r.status }))}
         activeId={activeId}
         onSelect={handleSelect}
-        onRename={handleRename}
+        onRename={handleRenameResume}
         onDuplicate={handleDuplicate}
         onDelete={handleDeleteResume}
         onCreate={handleCreateNew}

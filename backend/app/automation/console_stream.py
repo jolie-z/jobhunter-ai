@@ -13,23 +13,38 @@ import logging
 import sys
 import threading
 
-_buffer: collections.deque = collections.deque(maxlen=800)
+_buffer: collections.deque = collections.deque(maxlen=800)  # 元素 (seq, line)
 _lock = threading.Lock()
 _subscribers: "set[asyncio.Queue]" = set()
 _loop: "asyncio.AbstractEventLoop | None" = None
+_seq_counter = 0
 
 
 def _fanout(line: str):
+    global _seq_counter
     line = line.rstrip("\n")
     if not line.strip():
         return
     with _lock:
-        _buffer.append(line)
+        _seq_counter += 1
+        item = (_seq_counter, line)  # 锁内捕获 seq 并同步入队二元组（CR-B3-R2-P0-1：
+        # 原版只改了 _buffer 漏改投递闭包，消费端解包 str 首条实时日志即崩）
+        _buffer.append(item)
         subs = list(_subscribers)
     if subs and _loop:
         for q in subs:
+            def _put(queue=q, it=item):
+                # 慢消费者队列打满（maxsize=2000）时丢弃该条（2026-11-02 审计 P2-14）：
+                # call_soon 回调内抛 QueueFull 原本每条日志刷一次 "Exception in callback"；
+                # 该订阅者已断线/卡死，丢行优于刷屏，断连时 finally unsubscribe 兜底
+                try:
+                    queue.put_nowait(it)
+                except asyncio.QueueFull:
+                    pass
+                except Exception:
+                    pass
             try:
-                _loop.call_soon_threadsafe(q.put_nowait, line)
+                _loop.call_soon_threadsafe(_put)
             except Exception:
                 pass
 
@@ -113,6 +128,7 @@ def unsubscribe(q: asyncio.Queue):
 
 
 def snapshot():
+    """返回 [(seq, line), ...]——带单调序号，供消费端跳过与订阅队列重叠的行。"""
     with _lock:
         return list(_buffer)
 

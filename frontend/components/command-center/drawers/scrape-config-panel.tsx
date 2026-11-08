@@ -49,14 +49,14 @@ export function ScrapeConfigPanel({ onSaved }: ScrapeConfigPanelProps) {
   const [newSalary, setNewSalary] = useState("")
 
   const [platforms, setPlatforms] = useState<Record<string, { enabled: boolean; limit: number }>>({
-    boss: { enabled: true, limit: 20 },
-    liepin: { enabled: true, limit: 20 },
-    "51job": { enabled: true, limit: 20 },
-    zhilian: { enabled: true, limit: 20 },
+    boss: { enabled: true, limit: 3 },
+    liepin: { enabled: true, limit: 3 },
+    "51job": { enabled: true, limit: 3 },
+    zhilian: { enabled: true, limit: 3 },
   })
 
   const [condProgress, setCondProgress] = useState<
-    Record<string, Record<string, { scraped: number; predicted: number; last_page?: number }>>
+    Record<string, Record<string, { scraped: number; predicted: number; last_page?: number; exhausted?: boolean }>>
   >({})
 
   const [history, setHistory] = useState<HistoryItem[]>([])
@@ -102,7 +102,10 @@ export function ScrapeConfigPanel({ onSaved }: ScrapeConfigPanelProps) {
       if (data.code === 0 && Array.isArray(data.data)) {
         // 后端返回扁平行（keyword/city/salary/platform/scraped_count/predicted_total），
         // 前端按「条件|平台」折叠成台账 UI 需要的嵌套结构
-        const map: Record<string, Record<string, { scraped: number; predicted: number; last_page?: number }>> = {}
+        const map: Record<
+          string,
+          Record<string, { scraped: number; predicted: number; last_page?: number; exhausted?: boolean }>
+        > = {}
         for (const row of data.data) {
           if (!row || !row.keyword) continue
           const key = `${row.keyword}|${row.city || ""}|${row.salary || ""}`
@@ -111,6 +114,7 @@ export function ScrapeConfigPanel({ onSaved }: ScrapeConfigPanelProps) {
             scraped: Number(row.scraped_count) || 0,
             predicted: Number(row.predicted_total) || 0,
             ...(row.last_page !== undefined ? { last_page: Number(row.last_page) || 0 } : {}),
+            exhausted: Boolean(row.exhausted),
           }
         }
         setCondProgress(map)
@@ -135,6 +139,14 @@ export function ScrapeConfigPanel({ onSaved }: ScrapeConfigPanelProps) {
     })()
   }, [loadConfig, loadProgress, loadHistory])
 
+  // 抓取运行中每 5s 刷新一次条件台账，抽屉打开期间也能看到实时推进
+  const pipelineStatus = usePipelineStore((s) => s.status)
+  useEffect(() => {
+    if (pipelineStatus !== "running") return
+    const timer = setInterval(() => { void loadProgress() }, 5000)
+    return () => clearInterval(timer)
+  }, [pipelineStatus, loadProgress])
+
   // 添加条件
   const handleAddCondition = async () => {
     const kw = newKeyword.trim()
@@ -144,6 +156,19 @@ export function ScrapeConfigPanel({ onSaved }: ScrapeConfigPanelProps) {
     }
     if (queue.length >= MAX_QUEUE_COUNT) {
       toast.warning(`条件队列最多只能设置 ${MAX_QUEUE_COUNT} 组`)
+      return
+    }
+
+    const city = newCity || defaultCity || "广州"
+    const salary = newSalary || defaultSalary || "不限"
+    const duplicated = queue.some(
+      (item) =>
+        item.keyword.trim().toLowerCase() === kw.toLowerCase() &&
+        item.city === city &&
+        item.salary === salary
+    )
+    if (duplicated) {
+      toast.warning("该条件（关键词 + 城市 + 薪资）已在队列中，无需重复添加")
       return
     }
 
@@ -161,8 +186,8 @@ export function ScrapeConfigPanel({ onSaved }: ScrapeConfigPanelProps) {
     const newItem: ConditionItem = {
       id: `kw_${Date.now()}`,
       keyword: kw,
-      city: newCity || defaultCity || "广州",
-      salary: newSalary || defaultSalary || "不限",
+      city,
+      salary,
     }
     setQueue((prev) => [...prev, newItem])
     setNewKeyword("")
@@ -254,7 +279,7 @@ export function ScrapeConfigPanel({ onSaved }: ScrapeConfigPanelProps) {
       const res = await fetch(`${API_BASE}/api/pipeline/run-scrape-only`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ platforms_limit: 10 }),
+        body: JSON.stringify({ platforms_limit: 3 }),
       })
       const data = await res.json()
       if (res.ok && data.data?.task_id) {
@@ -417,11 +442,19 @@ export function ScrapeConfigPanel({ onSaved }: ScrapeConfigPanelProps) {
                   key={kw}
                   type="button"
                   onClick={() => {
-                    setQueue((prev) =>
-                      prev.length < MAX_QUEUE_COUNT
-                        ? [...prev, { id: `kw_${Date.now()}_${kw}`, keyword: kw, city: defaultCity, salary: defaultSalary }]
-                        : prev
-                    )
+                    const city = defaultCity || "广州"
+                    const salary = defaultSalary || "不限"
+                    setQueue((prev) => {
+                      if (prev.length >= MAX_QUEUE_COUNT) return prev
+                      const duplicated = prev.some(
+                        (item) =>
+                          item.keyword.trim().toLowerCase() === kw.toLowerCase() &&
+                          item.city === city &&
+                          item.salary === salary
+                      )
+                      if (duplicated) return prev
+                      return [...prev, { id: `kw_${Date.now()}_${kw}`, keyword: kw, city, salary }]
+                    })
                   }}
                   className="rounded-md border border-violet-500/30 bg-background px-2 py-0.5 text-[11px] text-foreground hover:bg-violet-600 hover:text-white transition-colors"
                 >
@@ -478,7 +511,12 @@ export function ScrapeConfigPanel({ onSaved }: ScrapeConfigPanelProps) {
                       </button>
                       <button
                         type="button"
-                        onClick={() => setQueue((prev) => prev.filter((k) => k.id !== item.id))}
+                        onClick={() => {
+                          // 删除也要回存后端，否则刷新/重开抽屉后条件会复活
+                          const remaining = queue.filter((k) => k.id !== item.id)
+                          setQueue(remaining)
+                          void saveQueue(remaining, true)
+                        }}
                         title="删除条件"
                         className="rounded p-1 text-muted-foreground hover:text-rose-500"
                       >
@@ -493,7 +531,12 @@ export function ScrapeConfigPanel({ onSaved }: ScrapeConfigPanelProps) {
                       const pProg = progMap[platKey]
                       const scraped = pProg?.scraped || 0
                       const predicted = pProg?.predicted || 0
-                      const isExhausted = predicted > 0 && scraped >= predicted
+                      const isExhausted = Boolean(pProg?.exhausted)
+                      const progressText = isExhausted
+                        ? `${scraped > 0 ? `${scraped}${predicted > 0 ? `/${predicted}` : ""}` : "已抓尽"} ✓`
+                        : scraped > 0
+                          ? `${scraped}${predicted > 0 ? `/${predicted}` : ""}`
+                          : "待抓"
 
                       return (
                         <div
@@ -508,9 +551,7 @@ export function ScrapeConfigPanel({ onSaved }: ScrapeConfigPanelProps) {
                           )}
                         >
                           <span className="font-sans font-medium">{PLATFORM_NAMES[platKey]?.replace("招聘", "").replace("直聘", "")}:</span>
-                          <span>
-                            {scraped > 0 ? `${scraped}${predicted > 0 ? `/${predicted}` : ""}${isExhausted ? " ✓" : ""}` : "待抓"}
-                          </span>
+                          <span>{progressText}</span>
                         </div>
                       )
                     })}
@@ -540,18 +581,18 @@ export function ScrapeConfigPanel({ onSaved }: ScrapeConfigPanelProps) {
                 </button>
               </TooltipTrigger>
               <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed p-2.5">
-                为了保护各招聘平台爬虫的稳定性、防封控与长期有效使用，系统设置单平台单轮最大计划上限为 50 个岗位。填入大于 50 的数值将自动限制为 50。
+                为了保护各招聘平台爬虫的稳定性、防封控与长期有效使用，系统设置单平台单轮最大计划上限为 15 个岗位。填入大于 15 的数值将自动限制为 15。
               </TooltipContent>
             </Tooltip>
           </div>
           <span className="text-[10px] text-muted-foreground font-mono">
-            单平台单轮上限 ≤ 50 条 (防封控硬保护)
+            单平台单轮上限 ≤ 15 条 (防封控硬保护)
           </span>
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           {["boss", "liepin", "51job", "zhilian"].map((plat) => {
-            const p = platforms[plat] || { enabled: true, limit: 20 }
+            const p = platforms[plat] || { enabled: true, limit: 3 }
             return (
               <div key={plat} className="rounded-xl border border-border/80 bg-muted/20 p-2.5 space-y-2">
                 <div className="flex items-center justify-between">
@@ -569,11 +610,11 @@ export function ScrapeConfigPanel({ onSaved }: ScrapeConfigPanelProps) {
                     <input
                       type="number"
                       min={1}
-                      max={50}
+                      max={15}
                       value={p.limit}
                       onChange={(e) => {
                         const rawVal = Number(e.target.value) || 0
-                        const clamped = Math.min(Math.max(rawVal, 0), 50)
+                        const clamped = Math.min(Math.max(rawVal, 0), 15)
                         setPlatforms({ ...platforms, [plat]: { ...p, limit: clamped } })
                       }}
                       className="w-12 rounded border border-border bg-background px-1.5 py-0.5 text-xs text-center font-mono font-semibold text-foreground focus:border-violet-500 focus:outline-none"
@@ -598,7 +639,7 @@ export function ScrapeConfigPanel({ onSaved }: ScrapeConfigPanelProps) {
             className="flex items-center gap-1.5 rounded-lg border border-violet-500/40 bg-violet-500/10 px-3.5 py-2 text-violet-700 dark:text-violet-300 font-medium hover:bg-violet-600 hover:text-white active:scale-95 transition-all shadow-xs disabled:opacity-50 text-xs"
           >
             <Play className="h-3.5 w-3.5 fill-current" />
-            {runningScrapeOnly ? "启动中…" : "🚀 单独试跑抓取 (单平台10条)"}
+            {runningScrapeOnly ? "启动中…" : "🚀 单独试跑抓取 (单平台3条)"}
           </button>
           <button
             type="button"

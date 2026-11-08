@@ -1,11 +1,11 @@
 import asyncio
-import sys
 from pathlib import Path
 from typing import Any
 
 from langchain_core.tools import tool
 
 import common.config as _ccfg
+from app.core.utils import ensure_import_path
 from app.services.feishu_service import update_feishu_record
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -63,9 +63,7 @@ async def deliver_boss_job(job_data: dict[str, Any]) -> str:
     """
     print("🚀 正在调用 BOSS 直聘自动化投递引擎...")
 
-    boss_dir = str(BASE_DIR / "boss_scraper")
-    if boss_dir not in sys.path:
-        sys.path.insert(0, boss_dir)
+    ensure_import_path(str(BASE_DIR / "boss_scraper"))
 
     try:
         import boss_auto_delivery
@@ -96,9 +94,7 @@ async def deliver_liepin_job(job_data: dict[str, Any]) -> str:
     """
     print("🚀 正在调用猎聘全自动投递引擎...")
 
-    liepin_dir = str(BASE_DIR / "liepin_scraper")
-    if liepin_dir not in sys.path:
-        sys.path.insert(0, liepin_dir)
+    ensure_import_path(str(BASE_DIR / "liepin_scraper"))
 
     try:
         import liepin_auto_delivery
@@ -126,9 +122,7 @@ async def deliver_51job_job(job_data: dict[str, Any]) -> str:
     """
     print("🚀 正在调用 [51job] 全自动投递引擎...")
 
-    job51_dir = str(BASE_DIR / "51job_scraper")
-    if job51_dir not in sys.path:
-        sys.path.insert(0, job51_dir)
+    ensure_import_path(str(BASE_DIR / "51job_scraper"))
 
     try:
         import importlib
@@ -162,9 +156,7 @@ async def deliver_zhilian_job(job_data: dict[str, Any]) -> str:
     """
     print("🚀 正在调用 [智联招聘] 全自动投递引擎...")
 
-    zhilian_dir = str(BASE_DIR / "zhilian_scraper")
-    if zhilian_dir not in sys.path:
-        sys.path.insert(0, zhilian_dir)
+    ensure_import_path(str(BASE_DIR / "zhilian_scraper"))
 
     try:
         import zhilian_auto_delivery

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import uuid
@@ -8,9 +9,10 @@ from fastapi.responses import Response
 from app.core.config import settings
 from app.core.feishu_client import feishu_client
 from app.core.pdf_renderer import render_resume_image, render_resume_pdf
-from app.services.feishu_service import extract_record_id
+from app.services.feishu_service import extract_record_id, get_resume_photo_url
 from app.services.redis_service import redis_service
 from app.strategy import service
+from app.strategy.avatar_injection import apply_feishu_avatar
 from app.strategy.schemas import (
     FormatMarkdownRequest,
     PreviewPdfDirectRequest,
@@ -119,9 +121,19 @@ async def get_resume_data(record_id: str, source: str | None = None):
         except json.JSONDecodeError:
             resume_data = {}
 
-        avatar_url = _safe_extract_avatar_url(fields.get("照片"))
-        if avatar_url:
-            resume_data["avatar_url"] = avatar_url
+        # 照片单一可信源：「照片」附件字段 > 结构化数据里烘焙的旧 avatar_url。
+        # 旧值是首次上传后某次保存烘焙进 JSON 的快照，若不覆写，换照片后
+        # 打印模板（personalInfo.avatar_url 优先）永远渲染第一次那张。
+        # job 源（岗位表）没有「照片」字段，定制改写 JSON 缝合时也已剔除照片，
+        # 统一回退到启用底稿的当前照片，保证岗位物料照片与简历库一致。
+        # get_resume_photo_url 三态：URL=有照片 / ""=确认无照片 / None=读取失败。
+        # 无照片时同样覆写（清除烘焙旧值，物料同步裸脸）；仅读取失败保留现状
+        if source == "job":
+            avatar_url = await asyncio.to_thread(get_resume_photo_url)
+        else:
+            avatar_url = _safe_extract_avatar_url(fields.get("照片"))
+        if resume_data and avatar_url is not None:
+            apply_feishu_avatar(resume_data, avatar_url)
 
         # 3. 异步回写缓存 (TTL 30分钟)
         if resume_data:

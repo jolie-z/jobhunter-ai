@@ -46,48 +46,55 @@ def _isolated_gate_and_registry():
 # ───────────────────────── 1. 交互通道覆写 ─────────────────────────
 
 def test_interactive_override_bypasses_batch_quota_sync():
-    gate = get_llm_gate()
-    assert gate.is_batch_caller("ai_evaluator"), "前置：ai_evaluator 必须仍在批处理名单（不改名单只改通道）"
+    # 弹性批处理（2026-11-03）会把空闲上限抬到全局槽位，「配额满被拒」前置只在
+    # 硬顶模式下成立——本测试锁定的是交互覆写语义，显式关掉弹性保持前置有效。
+    with patch.dict(os.environ, {"LLM_BATCH_ELASTIC": "0"}):
+        reset_llm_gate()
+        gate = get_llm_gate()
+        assert gate.is_batch_caller("ai_evaluator"), "前置：ai_evaluator 必须仍在批处理名单（不改名单只改通道）"
 
-    # 定时批量占住唯一的批处理槽
-    bg_guard = gate.acquire_slot("ai_evaluator", timeout=1.0)
-    assert bg_guard is not None and bg_guard.is_batch
+        # 定时批量占住唯一的批处理槽
+        bg_guard = gate.acquire_slot("ai_evaluator", timeout=1.0)
+        assert bg_guard is not None and bg_guard.is_batch
 
-    # 旧行为：手动评估同 caller → 批处理配额已满 → 被拒
-    assert gate.acquire_slot("ai_evaluator", timeout=0.2) is None
+        # 硬顶模式：手动评估同 caller → 批处理配额已满 → 被拒
+        assert gate.acquire_slot("ai_evaluator", timeout=0.2) is None
 
-    # 新行为：交互通道覆写 → 只占全局槽 → 立刻拿到
-    with interactive_llm_channel():
-        assert is_interactive_override_active()
-        fg_guard = gate.acquire_slot("ai_evaluator", timeout=0.2)
-    assert fg_guard is not None
-    assert fg_guard.is_batch is False, "覆写下不得标记为批处理槽，否则释放时会错误归还批处理 semaphore"
-    assert not is_interactive_override_active(), "离开上下文必须复位"
+        # 新行为：交互通道覆写 → 只占全局槽 → 立刻拿到
+        with interactive_llm_channel():
+            assert is_interactive_override_active()
+            fg_guard = gate.acquire_slot("ai_evaluator", timeout=0.2)
+        assert fg_guard is not None
+        assert fg_guard.is_batch is False, "覆写下不得标记为批处理槽，否则释放时会错误归还批处理槽计数"
+        assert not is_interactive_override_active(), "离开上下文必须复位"
 
-    fg_guard.release()
-    bg_guard.release()
-    # 全部归还后批处理槽可再次获取（无泄漏/无双重释放）
-    again = gate.acquire_slot("ai_evaluator", timeout=0.2)
-    assert again is not None
-    again.release()
+        fg_guard.release()
+        bg_guard.release()
+        # 全部归还后批处理槽可再次获取（无泄漏/无双重释放）
+        again = gate.acquire_slot("ai_evaluator", timeout=0.2)
+        assert again is not None
+        again.release()
 
 
 @pytest.mark.asyncio
 async def test_interactive_override_survives_run_in_executor_async_path():
     """async_acquire_slot 走 run_in_executor（不拷贝 ContextVar），覆写必须显式穿透。"""
-    gate = get_llm_gate()
-    bg_guard = gate.acquire_slot("ai_evaluator", timeout=1.0)
-    assert bg_guard is not None
+    # 同步版同理：关闭弹性，保持「批处理配额满」前置成立
+    with patch.dict(os.environ, {"LLM_BATCH_ELASTIC": "0"}):
+        reset_llm_gate()
+        gate = get_llm_gate()
+        bg_guard = gate.acquire_slot("ai_evaluator", timeout=1.0)
+        assert bg_guard is not None
 
-    # 无覆写：异步路径同样被批处理配额拦住
-    assert await gate.async_acquire_slot("ai_evaluator", timeout=0.2) is None
+        # 无覆写：异步路径同样被批处理配额拦住
+        assert await gate.async_acquire_slot("ai_evaluator", timeout=0.2) is None
 
-    with interactive_llm_channel():
-        fg_guard = await gate.async_acquire_slot("ai_evaluator", timeout=0.2)
-    assert fg_guard is not None and fg_guard.is_batch is False
+        with interactive_llm_channel():
+            fg_guard = await gate.async_acquire_slot("ai_evaluator", timeout=0.2)
+        assert fg_guard is not None and fg_guard.is_batch is False
 
-    fg_guard.release()
-    bg_guard.release()
+        fg_guard.release()
+        bg_guard.release()
 
 
 def test_override_does_not_affect_non_batch_or_disabled_gate():

@@ -254,7 +254,8 @@ def check_login_via_dom(config: PlatformConfig, page_factory=None) -> SessionSta
       HEALTHY : 命中任一登录标识
       EXPIRED : 页面正常加载但未命中任何登录标识（登录态确实失效）
       UNKNOWN : 检查本身失败（附加超时/导航异常/元素查询异常），或当前页已在平台
-                站点内但未命中标识（可能只是不在登录页）——存疑放行，脚本层二次兜底
+                站点内但未命中标识（可能只是不在登录页）——交由调用方按「需确认」处理
+                （预检会发提醒/等待；legacy cookie 存在时走兜底放行）
     page_factory 可注入以便单测（签名：port -> page-like，具备 .get/.ele/.url 可选）。
 
     免导航规则（2026-08-31 智联白纸事故）：当前 Tab 已在平台根域内时不再导航——
@@ -301,8 +302,8 @@ def check_login_via_dom(config: PlatformConfig, page_factory=None) -> SessionSta
             return _mk(SessionState.HEALTHY, f"DOM 级校验通过：命中登录标识{suffix}")
         if same_site:
             # 当前页就在平台站点内（可能停在业务页而非登录页），未命中标识≠未登录：
-            # 按存疑放行，回写脚本层还有登录二次校验兜底
-            return _mk(SessionState.UNKNOWN, "已在平台站点内但未命中登录标识（免导航预检，可能只是不在登录页），存疑放行")
+            # 不导航、不误杀，但也不谎报「已登录」——由预检发提醒并等待用户确认。
+            return _mk(SessionState.UNKNOWN, "已在平台站点内但未命中登录标识（可能停在登录页或非登录页），需要你确认登录状态")
         return _mk(SessionState.EXPIRED, "DOM 级校验未命中任何登录标识，登录态已失效")
     except Exception as e:
         # 判定失败 ≠ 未登录：留痕并交由调用方走等待/提醒流程
@@ -368,26 +369,88 @@ def _judge_login_keys(found: dict[str, float]) -> bool:
     return all(exp <= 0 or exp > now for exp in found.values())
 
 
-def _read_login_keys_via_cdp(port: int) -> dict[str, float] | None:
+def _cookie_expiry_value(cookie: dict) -> float | None:
+    """取 cookie 过期时间（Unix 秒）；None = 字段无法解析，按失效处理。"""
+    exp = cookie.get("expires")
+    if exp is None:
+        exp = cookie.get("expiry", -1)
+    if exp in (None, ""):
+        return 0.0  # 会话 cookie：落账即有效
+    try:
+        return float(exp)
+    except (TypeError, ValueError):
+        return None
+
+
+def has_valid_liepin_auth_cookies(cookies) -> bool:
+    """从浏览器 cookie 列表判定猎聘登录态（lt_auth + liepin_login_valid 齐且未过期）。
+
+    与 `_judge_login_keys` 同一判据，供 liepin_session / liepin_crawler 在浏览器内
+    直接判定，避免 `check_login_status()` 仅凭 URL 前缀误把登录页当已登录。
+    """
+    found: dict[str, float | None] = {}
+    for c in cookies or []:
+        if not isinstance(c, dict):
+            continue
+        name = c.get("name")
+        if name in LIEPIN_LOGIN_COOKIE_KEYS and name not in found:
+            found[name] = _cookie_expiry_value(c)
+    if not all(k in found for k in LIEPIN_LOGIN_COOKIE_KEYS):
+        return False
+    now = time.time()
+    return all(exp is not None and (exp <= 0 or exp > now) for exp in found.values())
+
+
+def _collect_login_keys_from_cookies(cookies, keys=LIEPIN_LOGIN_COOKIE_KEYS) -> dict[str, float]:
+    """cookie 列表 → 登录键字典（CDP/Playwright 两种返回形态共用）。"""
+    found: dict[str, float] = {}
+    for c in cookies or []:
+        if not isinstance(c, dict):
+            continue
+        name = c.get("name")
+        if name in keys and name not in found:
+            exp = c.get("expires", -1)
+            found[name] = float(exp) if isinstance(exp, (int, float)) and exp > 0 else 0.0
+    return found
+
+
+def _read_login_keys_via_cdp(port: int, keys=LIEPIN_LOGIN_COOKIE_KEYS) -> dict[str, float] | None:
     """端口 UP 模：playwright connect_over_cdp 被动附着读内存 cookie。
 
     零页面导航、零 cookie 写入，实时感知扫码落账（不受磁盘 WAL 刷盘延迟影响）。
     sync API 只能在无事件循环的线程中运行（异步调用方须 asyncio.to_thread 包装）。
-    连接失败/异常返回 None，由调用方 fail-closed。
+    连接失败/异常返回 None，由调用方回退 profile Cookies 库。
+
+    2026-10-30 真机修复：旧实现遍历 `browser.contexts[*].cookies()`，附着 DrissionPage
+    拉起的 Edge 时会触发 `Browser.setDownloadBehavior: Browser context management is
+    not supported`，导致登录实证恒 False（预检误判失效、投递前反复要求扫码）。
+    改为 browser 级 CDP session 的 `Storage.getCookies`，不触碰 Playwright 的 context
+    管理；旧路径保留为兜底。
     """
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port}", timeout=3000)
             try:
-                found: dict[str, float] = {}
-                for ctx in browser.contexts:
-                    for c in ctx.cookies():
-                        name = c.get("name")
-                        if name in LIEPIN_LOGIN_COOKIE_KEYS and name not in found:
-                            exp = c.get("expires", -1)
-                            found[name] = float(exp) if isinstance(exp, (int, float)) and exp > 0 else 0.0
-                return found
+                try:
+                    session = browser.new_browser_cdp_session()
+                    try:
+                        result = session.send("Storage.getCookies")
+                    finally:
+                        try:
+                            session.detach()
+                        except Exception:
+                            pass
+                    return _collect_login_keys_from_cookies(result.get("cookies") or [], keys)
+                except Exception as cdp_e:
+                    logger.info(f"[health] browser CDP session 读 cookie 失败（port={port}），回退 context.cookies: {cdp_e}")
+                    found: dict[str, float] = {}
+                    for ctx in browser.contexts:
+                        for c in ctx.cookies():
+                            if c.get("name") in keys and c.get("name") not in found:
+                                exp = c.get("expires", -1)
+                                found[c["name"]] = float(exp) if isinstance(exp, (int, float)) and exp > 0 else 0.0
+                    return found
             finally:
                 # CDP 附着模式下 close() 仅断开连接，不杀远端浏览器进程
                 browser.close()
@@ -396,7 +459,7 @@ def _read_login_keys_via_cdp(port: int) -> dict[str, float] | None:
         return None
 
 
-def _read_login_keys_via_profile_db(profile_dir: str) -> dict[str, float] | None:
+def _read_login_keys_via_profile_db(profile_dir: str, keys=LIEPIN_LOGIN_COOKIE_KEYS) -> dict[str, float] | None:
     """端口 DOWN 模：拷贝 profile Cookies 库（连同 -wal/-shm）到临时目录后只读查键，用完即删。"""
     import shutil
     import sqlite3
@@ -416,8 +479,8 @@ def _read_login_keys_via_profile_db(profile_dir: str) -> dict[str, float] | None
             conn = sqlite3.connect(dst)
             try:
                 rows = conn.execute(
-                    "SELECT name, expires_utc FROM cookies WHERE name IN (?, ?)",
-                    LIEPIN_LOGIN_COOKIE_KEYS,
+                    f"SELECT name, expires_utc FROM cookies WHERE name IN ({', '.join('?' * len(keys))})",
+                    tuple(keys),
                 ).fetchall()
             finally:
                 conn.close()
@@ -432,11 +495,84 @@ def _read_login_keys_via_profile_db(profile_dir: str) -> dict[str, float] | None
     return found
 
 
+def is_liepin_cookie_file_valid(path: str) -> bool:
+    """猎聘 legacy cookie 文件级有效性：文件存在且解析后含未过期的登录键。
+
+    2026-10-31 事故根治：文件「存在」≠「有效」——猎聘 Cookie 有效期由平台
+    服务端控制，过期文件曾让预检放行、引擎降级访客态深页抓取，被登录墙
+    整轮拦截后还静默 0 条收场。判据与浏览器内 `has_valid_liepin_auth_cookies`
+    完全同源（lt_auth + liepin_login_valid 双键未过期）；文件缺失/损坏/
+    解析异常一律 fail-closed 判 False。
+    """
+    try:
+        if not path or not os.path.exists(path):
+            return False
+        with open(path, encoding="utf-8") as f:
+            cookies = json.load(f)
+        if not isinstance(cookies, list):
+            return False
+        return has_valid_liepin_auth_cookies(cookies)
+    except Exception as e:
+        logger.info(f"[health] 猎聘 Cookie 文件有效性判定异常，fail-closed: {e}")
+        return False
+
+
+def _judge_login_keys_for(found: dict[str, float], keys) -> bool:
+    """凭证键集合判定：全部在列且未过期（expires<=0 视为会话 cookie，落账即有效）。"""
+    if not keys:
+        return False
+    if not all(k in found for k in keys):
+        return False
+    now = time.time()
+    return all(exp <= 0 or exp > now for exp in (found[k] for k in keys))
+
+
+def check_platform_login_cookie_evidence(
+    platform: str, port: int | None = None, profile_dir: str | None = None
+) -> bool:
+    """平台通用登录实证（纯同步）：registry.auth_cookie_keys 全键齐且未过期。
+
+    check_liepin_login_evidence 的多平台泛化（2026-11-03 冷启动误判根治）：
+    预检拉起浏览器后先做本实证（零导航、零 DOM、不惊动风控），实证通过即无需
+    DOM 判定——冷启动场景 DOM 判定会跑在 Edge 会话恢复之前造成全员误判。
+    双模取数与 fail-closed 语义与猎聘版完全一致。
+    """
+    try:
+        from .registry import get_platform_port, get_profile_path, resolve_platform
+        cfg = resolve_platform(platform)
+        if not cfg or not cfg.auth_cookie_keys:
+            return False
+        _port = port if port is not None else get_platform_port(platform)
+        _profile = profile_dir if profile_dir is not None else (cfg.profile_dir or get_profile_path(platform))
+        keys = tuple(cfg.auth_cookie_keys)
+
+        if probe_port(_port, timeout=0.3):
+            found = _read_login_keys_via_cdp(_port, keys)
+            if not found:
+                # None=通道异常；{}=内存里暂无凭证键。都回退磁盘库兜底
+                # （2026-11-03：session 键不落盘会假阴性，磁盘兜底是最后防线）
+                logger.info(
+                    "[health] %s CDP 读 cookie 不可用/无凭证（port=%s，found=%r），回退 profile Cookies 库：%s",
+                    platform, _port, found, _profile,
+                )
+                found = _read_login_keys_via_profile_db(_profile, keys)
+        else:
+            found = _read_login_keys_via_profile_db(_profile, keys)
+        if not found:
+            return False
+        return _judge_login_keys_for(found, keys)
+    except Exception as e:
+        logger.info(f"[health] {platform} 登录实证异常，fail-closed: {e}")
+        return False
+
+
 def check_liepin_login_evidence(port: int | None = None, profile_dir: str | None = None) -> bool:
     """猎聘登录实证（纯同步）：Edge 专用 profile 是否携带真实登录态。
 
     双模取数：端口 UP → CDP 直读内存 cookie；端口 DOWN → 离线拷贝 profile Cookies 库
-    （连同 -wal/-shm，规避只拷主文件漏读 WAL 的假阴性）。判据=LIEPIN_LOGIN_COOKIE_KEYS
+    （连同 -wal/-shm，规避只拷主文件漏读 WAL 的假阴性）。端口 UP 但 CDP 读失败时
+    （2026-10-30：DrissionPage 拉起的 Edge 与 Playwright context 不兼容），同样回退
+    离线 profile Cookies 库，避免把「读不到」误判成「未登录」。判据=LIEPIN_LOGIN_COOKIE_KEYS
     两键齐且未过期。全流程兜底 try/except，任一环节失败一律 fail-closed 判 False
     （回到「缺 Cookie 文件」原路径），绝不因探测异常误放行或向调用方抛错。
     """
@@ -447,6 +583,12 @@ def check_liepin_login_evidence(port: int | None = None, profile_dir: str | None
 
         if probe_port(_port, timeout=0.3):
             found = _read_login_keys_via_cdp(_port)
+            if found is None:
+                logger.info(
+                    "[health] CDP 读 cookie 不可用（port=%s），回退 profile Cookies 库：%s",
+                    _port, _profile,
+                )
+                found = _read_login_keys_via_profile_db(_profile)
         else:
             found = _read_login_keys_via_profile_db(_profile)
         if not found:
@@ -457,11 +599,29 @@ def check_liepin_login_evidence(port: int | None = None, profile_dir: str | None
         return False
 
 
+# 猎聘实证复检重试参数：DrissionPage 拉起的 Edge 上 CDP 读 cookie 不稳定
+# （2026-10-30 已记录的 Playwright context 兼容性问题），单次复检会在「可用/
+# 不可用」间翻转，曾把预检刚实证放行的轮次在采集门误拦（2026-10-31 晚间事故：
+# 19:59:01 预检通过、19:59:07 采集门拦截，间隔 6 秒结论相反）。
+_LIEPIN_EVIDENCE_ATTEMPTS = 3
+_LIEPIN_EVIDENCE_RETRY_INTERVAL_S = 2.0
+
+
 def liepin_collect_ready(cookie_file: str) -> bool:
-    """采集入口放行双判据：Cookie 文件存在，或 Edge profile 登录实证有效。
+    """采集入口放行双判据：Cookie 文件有效（存在且凭证未过期），或 Edge profile 登录实证有效。
 
     nl_controller 的文件硬门改判据后的统一入口（主进程不持浏览器会话，
-    实证由本函数在调用线程内完成）。"""
-    if os.path.exists(cookie_file):
+    实证由本函数在调用线程内完成）。
+    2026-10-31 事故根治：文件短路从「存在」升级为「有效」——过期文件曾让
+    本门放行、引擎以访客态跑完全程静默 0 条；失效文件与缺失文件同走实证
+    复检（profile 可能仍带活登录态，引擎启动后会自愈回写新文件）。
+    实证复检带界重试：单次 CDP 读在 DrissionPage Edge 上会闪断，任一次成功即放行，
+    全部失败才 fail-closed。"""
+    if is_liepin_cookie_file_valid(cookie_file):
         return True
-    return check_liepin_login_evidence()
+    for attempt in range(_LIEPIN_EVIDENCE_ATTEMPTS):
+        if check_liepin_login_evidence():
+            return True
+        if attempt < _LIEPIN_EVIDENCE_ATTEMPTS - 1:
+            time.sleep(_LIEPIN_EVIDENCE_RETRY_INTERVAL_S)
+    return False

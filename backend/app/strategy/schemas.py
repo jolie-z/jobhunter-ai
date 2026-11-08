@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class ActiveStrategyResponse(BaseModel):
@@ -8,6 +8,10 @@ class ActiveStrategyResponse(BaseModel):
     max_salary_k: int
     experience_years_max: int
     exclude_education: list[str]
+    # 学历白名单（2026-11-02 审计 P1-9 全链路补全）：仅对解析出的具体学历值生效，
+    # 岗位学历为"不限/空/解析失败"一律放行；与 exclude_education 黑名单互斥
+    # （pydantic 写入侧校验见 UpdateStrategyRequest，读取旧数据不抛错）
+    require_education: list[str] = []
     allowed_cities: list[str]
     safe_phrases: list[str]
     keyword_rules: list[Any]
@@ -38,6 +42,16 @@ class UpdateStrategyRequest(BaseModel):
     max_salary_k: int = 25
     experience_years_max: int = 7
     exclude_education: list[str] = []
+    require_education: list[str] = []
+
+    @model_validator(mode="after")
+    def _education_lists_mutually_exclusive(self):
+        """白/黑名单互斥（2026-11-02 审计 P1-9，Opus plan-review P2 采纳）：
+        两者同时配置语义矛盾（如白名单"硕士"+排除"硕士"），仅在写入请求模型上校验，
+        读取旧数据不抛错。"""
+        if self.require_education and self.exclude_education:
+            raise ValueError("学历白名单(require_education)与黑名单(exclude_education)互斥，只能配置其一")
+        return self
     allowed_cities: list[str] = []
     safe_phrases: list[str] = []
     keyword_rules: list[str] = []

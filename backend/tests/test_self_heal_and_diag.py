@@ -5,8 +5,51 @@
 - diag_agent._parse_json_loose / _extract_relevant_log / needs_diagnosis: 诊断官的纯函数部分。
 LLM 调用与浏览器重启涉及外部依赖，不在单测覆盖范围（由真实波次验证）。
 """
+import asyncio
+import time
+
 import app.automation.self_heal as heal
 import app.automation.diag_agent as diag
+
+
+# ---------------- L2: 平台名归一化 ----------------
+
+def test_restart_platform_browser_accepts_display_name(monkeypatch):
+    """飞书展示名（猎聘/BOSS直聘）必须归一化到 registry 规范键（2026-10-30 工单）。
+
+    病灶：resolve_platform("猎聘") 恒为 None，自愈台账只留「未知平台 猎聘，无法重启浏览器」，
+    L2 自愈对中文平台名全线失效。
+    """
+    from app.session import browser
+
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    launched: list[str] = []
+    monkeypatch.setattr(browser, "close_edge", lambda cfg: True)
+    monkeypatch.setattr(browser, "launch_edge", lambda cfg, url=None: launched.append(cfg.name))
+
+    ok, detail = asyncio.run(heal.restart_platform_browser("猎聘"))
+
+    assert ok is True
+    assert "猎聘" in detail
+    assert launched == ["liepin"], "中文展示名必须归一化到 liepin 才能重启专用浏览器"
+
+
+def test_restart_platform_browser_still_rejects_unknown(monkeypatch):
+    ok, detail = asyncio.run(heal.restart_platform_browser("不存在的平台"))
+    assert ok is False
+    assert "未知平台" in detail
+
+
+def test_restart_platform_browser_handles_empty_platform():
+    """空值防御等价性（替代旧 `(platform or "").lower()`）：None/空串不得抛异常。
+
+    platform_display_to_key 内部 `str(name or "")` 已做兜底，本用例锁定该契约，
+    防止未来重写归一化函数时把空值防御弄丢。
+    """
+    for bad in (None, ""):
+        ok, detail = asyncio.run(heal.restart_platform_browser(bad))
+        assert ok is False
+        assert "未知平台" in detail
 
 
 # ---------------- L2: pick_heal_action ----------------

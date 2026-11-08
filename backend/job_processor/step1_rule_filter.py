@@ -36,6 +36,9 @@ def _normalize_clean_platform(platform) -> str:
 # 🌟 全局急刹车开关：支持手动终止清洗任务
 GLOBAL_STOP_FLAG = False
 
+# AI 侦察兵死因溯源字段：模型对判定为 true 的维度回摘的 JD 原句（对象，键=维度 Key）
+EVIDENCE_KEY = "触发依据"
+
 def set_stop_flag(value: bool):
     global GLOBAL_STOP_FLAG
     GLOBAL_STOP_FLAG = bool(value)
@@ -91,6 +94,11 @@ def load_active_strategy():
         conn.close()
         return config
     except Exception as e:
+        if "no such table" in str(e):
+            # 表缺失两种可能：全新机器首启建表引导尚未跑完（正常时序），或运行期库结构
+            # 意外损坏/被删（需排查）。文案保持中立、不预设场景（agy P2 复审建议采纳）
+            print(f"⏳ 策略数据表不存在（{e}），本次降级用空策略兜底；若非首次启动，请排查主库结构")
+            return {}
         print(f"❌ 读取策略数据库失败: {e}")
         return {}
 
@@ -147,7 +155,10 @@ def get_cleaner_client():
     key, url, model = _cleaner_llm_config()
     sig = (key, url, model)
     if _cleaner_client is None or _cleaner_sig != sig:
-        raw = AsyncOpenAI(api_key=key, base_url=url, timeout=60.0)
+        # max_retries=0：重试权威唯一归统一策略层（RetryPolicy 3 次尝试、槽外退避）。
+        # SDK 默认 2 次重试会在并发槽在飞期间放大 3 倍占槽时长，上游故障时把
+        # 批处理配额（默认 2）饿死（2026-10-31 事故：60s 槽等待连环超时）。
+        raw = AsyncOpenAI(api_key=key, base_url=url, timeout=60.0, max_retries=0)
         # 🌟 经 make_tracked_client 包装，调用方代码（client.chat.completions.create）零改动即自动埋点
         _cleaner_client = make_tracked_client(raw, model_default=model, caller="step1_rule_filter")
         _cleaner_sig = sig
@@ -169,12 +180,96 @@ async def push_sse_message(task_id: str, message: str, status="info"):
 async def push_sse_event(task_id: str, event_data: dict):
     if not task_id: return
     try:
+        from app.automation import pipeline_broadcast as _pb
+        _pb.record_phase_progress_event(task_id, event_data)
+    except Exception as e:
+        print(f"⚠️ [SSE] phase_progress 登记失败（不阻断推流）: {e}", flush=True)
+    try:
         from app.tasks.state import task_queues
         if task_id in task_queues:
             msg = f'data: {json.dumps(event_data, ensure_ascii=False)}\n\n'
             await task_queues[task_id].put(msg)
     except Exception:
         pass
+
+
+# ================= 逐岗位流式事件（指挥中心看板实时卡片） =================
+# 清洗/飞书推送原本只在整段结束后由编排器批量补发卡片，看板要等全部岗位跑完才动。
+# 这里按岗位广播 job 事件（node=clean_rule_node / clean_ai_node），前端卡片随处理逐张翻转。
+_JOB_ROW_SQL = (
+    "SELECT rowid, * FROM raw_jobs WHERE job_link IN ({ph}) ORDER BY rowid ASC"
+)
+
+
+def _fetch_job_rows(cursor, links) -> list[dict]:
+    """按 job_link 批量取卡片所需字段（分块防 SQLite 占位符上限）。"""
+    rows: list[dict] = []
+    if not links:
+        return rows
+    chunk_size = 500
+    for i in range(0, len(links), chunk_size):
+        chunk = links[i:i + chunk_size]
+        ph = ','.join(['?'] * len(chunk))
+        cursor.execute(_JOB_ROW_SQL.format(ph=ph), chunk)
+        cols = [c[0] for c in cursor.description]
+        rows.extend(dict(zip(cols, r)) for r in cursor.fetchall())
+    return rows
+
+
+async def _emit_clean_job_event(sse_task_id, row: dict, *, node: str, status: str,
+                                sub_status: str | None = None,
+                                reject_reason: str | None = None,
+                                reject_type: str | None = None,
+                                last_action_desc: str | None = None) -> None:
+    """广播单个清洗岗位的流转事件（job_id 与抓取卡一致：raw_{rowid}）。"""
+    from app.automation import pipeline_broadcast as pb
+    kwargs = {}
+    if sub_status is not None:
+        kwargs["sub_status"] = sub_status
+    if reject_reason is not None:
+        kwargs["reject_reason"] = reject_reason
+    if reject_type is not None:
+        kwargs["reject_type"] = reject_type
+    if last_action_desc is not None:
+        kwargs["last_action_desc"] = last_action_desc
+    try:
+        await pb.emit_job(
+            sse_task_id,
+            job_id=f"raw_{row['rowid']}",
+            job_name=row.get("job_title") or "未知岗位",
+            node=node,
+            status=status,
+            platform=row.get("platform") or "",
+            company_name=row.get("company_name") or "",
+            salary=row.get("salary") or "",
+            city=row.get("city") or "",
+            job_url=row.get("job_link") or "",
+            **kwargs,
+        )
+    except Exception as e:
+        # 流式事件只服务看板，任何异常都不得阻断真实清洗
+        print(f"⚠️ [SSE] 清洗岗位事件广播失败（不阻断）: {e}", flush=True)
+
+
+async def _emit_tier1_job_events(sse_task_id, cursor, target_links) -> None:
+    """Tier 1 完成后逐岗位广播：淘汰卡立刻进淘汰 Tab，通过卡显示排队 AI 排雷。"""
+    for row in _fetch_job_rows(cursor, target_links):
+        p_status = row.get("process_status") or ""
+        if p_status in ('清洗淘汰', 'ai清洗淘汰'):
+            is_ai = p_status == 'ai清洗淘汰'
+            await _emit_clean_job_event(
+                sse_task_id, row,
+                node="clean_rejected", status="rejected",
+                reject_reason=row.get("reject_reason") or ("触发AI排雷规则淘汰" if is_ai else "触发清洗淘汰规则"),
+                reject_type="ai" if is_ai else "rule",
+                last_action_desc="触发AI排雷规则淘汰" if is_ai else "触发规则清洗淘汰",
+            )
+        else:
+            await _emit_clean_job_event(
+                sse_task_id, row,
+                node="clean_rule_node", status="running", sub_status="clean_rule_passed",
+            )
+
 
 class AIScoutEngine:
     def __init__(self, strategy: dict):
@@ -196,24 +291,45 @@ class AIScoutEngine:
             print(f"❌ [AI侦察兵] JSON 解析失败，模型返回内容: {result_text}\n错误详情: {e}", flush=True)
             return None
 
-    def _check_ai_rules(self, result_json: dict, rules: list) -> dict:
+    def _format_evidence_suffix(self, evidence_map: dict, keyword: str, jd_text) -> str:
+        """把模型给出的「触发依据」原句拼进死因，便于人工核对是否误杀。
+
+        摘录能在 JD 原文（空白归一后）逐字命中时标「JD 原句」；否则标「模型转述」，
+        提醒读者该句可能经过模型改写，需回 JD 详情核对。
+        """
+        quote = re.sub(r"\s+", " ", str(evidence_map.get(keyword) or "").strip())
+        if not quote:
+            return ""
+        if len(quote) > 120:
+            quote = quote[:120] + "…"
+        normalized_jd = re.sub(r"\s+", " ", str(jd_text or ""))
+        label = "JD 原句" if (normalized_jd and quote in normalized_jd) else "JD 依据(模型转述)"
+        return f"，{label}: “{quote}”"
+
+    def _check_ai_rules(self, result_json: dict, rules: list, jd_text=None) -> dict:
+        # 触发依据：模型对判定为 true 的维度回摘的 JD 原句（缺省/格式异常时静默降级，不影响判定）
+        evidence_map = result_json.get(EVIDENCE_KEY)
+        if not isinstance(evidence_map, dict):
+            evidence_map = {}
         for rule in rules:
             keyword = rule.get("keyword")
             condition = rule.get("condition")
             is_match = result_json.get(keyword)
-            
+
             if isinstance(is_match, str):
                 is_match = is_match.lower() in ('true', '是', '1', 'yes')
             elif is_match is None:
                 is_match = False
             else:
                 is_match = bool(is_match)
-            
+
             if condition == "must" and not is_match:
                 return {"status": "REJECT", "reject_reason": f"触发 AI 侦察兵排雷: 不满足必须条件 [{keyword}]"}
             if condition == "never" and is_match:
-                return {"status": "REJECT", "reject_reason": f"触发 AI 侦察兵排雷: 触发绝不条件 [{keyword}]"}
-        
+                reason = f"触发 AI 侦察兵排雷: 触发绝不条件 [{keyword}]"
+                reason += self._format_evidence_suffix(evidence_map, keyword, jd_text)
+                return {"status": "REJECT", "reject_reason": reason}
+
         return {"status": "PASS", "reject_reason": None}
 
     async def evaluate_job(self, job_title, jd_text, company_name="", sse_task_id=None):
@@ -227,7 +343,9 @@ class AIScoutEngine:
             desc = rule.get("desc", "")
             schema_fields.append(f'- "{keyword}": Boolean. {desc}')
             example_json[keyword] = False
-            
+        # 死因溯源：要求模型对判定为 true 的维度摘录 JD 原句，人工核对误杀时不用逐条翻 JD
+        example_json[EVIDENCE_KEY] = {}
+
         example_json_str = json.dumps(example_json, ensure_ascii=False, indent=4)
 
         system_prompt = f"""你是一个无情的简历匹配排雷兵。请阅读用户提供的招聘JD，并严格判断几个核心条件。
@@ -236,6 +354,11 @@ class AIScoutEngine:
 
 【判断维度】
 {chr(10).join(schema_fields)}
+
+【触发依据】（强制字段，用于死因溯源）
+- "触发依据" 是一个对象：判定为 true 的每个维度必须收录，键为维度 Key，值为该维度命中的 JD 原文句子——必须一字不差摘抄原文，禁止改写、总结或跨段拼凑；超过 60 字时截取最关键的一句。
+- 判定为 false 的维度绝不能出现在 "触发依据" 中。
+- 所有维度均为 false 时，"触发依据" 返回空对象 {{}}。
 
 返回的 JSON 格式示例（必须使用以下精确的Key）：
 {example_json_str}
@@ -269,19 +392,61 @@ class AIScoutEngine:
             # 🌟 fail-preserve：解析失败返回 None，岗位保留「待AI初筛」等下轮重试，
             # 绝不误判成「不满足 must 条件」误杀，也不无脑 PASS 放行不合格岗位
             if result_json is None:
+                self._report_blocked(sse_task_id, kind="unknown",
+                                     message="模型返回格式异常（JSON 解析失败）",
+                                     gateway_hint=str(result_text)[:200])
                 await push_sse_message(sse_task_id, "⚠️ 模型返回格式异常，本轮保留该岗位在待AI初筛池，等待下轮重试", status="error")
                 return {"status": "PRESERVE", "reject_reason": None}
 
-            formatted_judgement = ", ".join([f"{k}={'是' if v else '否'}" for k, v in result_json.items()])
+            # 判定矩阵只播报布尔维度；「触发依据」是溯源原句对象，不进矩阵文案
+            judge_items = [(k, v) for k, v in result_json.items() if k != EVIDENCE_KEY]
+            formatted_judgement = ", ".join([f"{k}={'是' if v else '否'}" for k, v in judge_items])
             await push_sse_message(sse_task_id, f"🧠 AI 返回判定矩阵: [{formatted_judgement}]")
 
-            return self._check_ai_rules(result_json, self.ai_scout_rules)
+            # 真实 LLM 往返成功（含 PASS/REJECT 判定）：解除任务级阻塞登记
+            self._report_recovered(sse_task_id)
+            return self._check_ai_rules(result_json, self.ai_scout_rules, jd_text=jd_text)
 
         except Exception as e:
             print(f"❌ AI 侦察兵请求异常: {str(e)}")
+            self._report_blocked(sse_task_id, exc=e)
             # 🌟 fail-preserve：网络/配额异常同样保留原池，防止 API 故障时不合格岗位整批漏进待推送池
             await push_sse_message(sse_task_id, f"⚠️ AI 请求异常（{str(e)[:80]}），本轮保留该岗位在待AI初筛池", status="error")
             return {"status": "PRESERVE", "reject_reason": None}
+
+    @staticmethod
+    def _report_blocked(sse_task_id, exc: Exception | None = None, kind: str | None = None,
+                        message: str = "", gateway_hint: str = "") -> None:
+        """把 PRESERVE 根因上报到任务级阻塞登记（dashboard-sync/横幅/继续任务的依据）。"""
+        if not sse_task_id:
+            return
+        try:
+            from app.automation import pipeline_blocked
+            if exc is not None:
+                from app.core.llm_errors import classify_llm_error
+                err_kind, user_msg, retry_after = classify_llm_error(exc)
+                kind = err_kind.value if hasattr(err_kind, "value") else str(err_kind)
+                message = user_msg
+                gateway_hint = str(exc)[:200]
+            try:
+                model = get_cleaner_model()
+            except Exception:
+                model = None
+            pipeline_blocked.report_llm_failure(
+                sse_task_id, kind=kind or "unknown", model=model,
+                message=message, gateway_hint=gateway_hint)
+        except Exception as report_e:
+            print(f"⚠️ [AI侦察兵] 阻塞状态登记失败（不阻断清洗）: {report_e}", flush=True)
+
+    @staticmethod
+    def _report_recovered(sse_task_id) -> None:
+        if not sse_task_id:
+            return
+        try:
+            from app.automation import pipeline_blocked
+            pipeline_blocked.report_llm_success(sse_task_id)
+        except Exception:
+            pass
 
 # ================= 2. 数据清洗专项 =================
 
@@ -396,7 +561,12 @@ def _filter_by_city(cursor, strategy, target_condition, target_links):
         params = [f"%{c}%" for c in allowed_cities] * 2 + list(target_links)
         cursor.execute(
             f"UPDATE raw_jobs SET process_status = '清洗淘汰', reject_reason = '工作城市不在目标范围内' "
-            f"WHERE process_status = '已存入数据' AND ({city_not_like}) AND ({address_not_like}) AND {target_condition}",
+            # 谓词必须是认领后的「清洗中」：_run_tier1_hard_filter 已先把本轮行从
+            # 「已存入数据」翻为「清洗中」，再查旧态会一条都匹配不到（2026-09-03 回归）。
+            # city 与 work_address 同时为空 = 位置字段缺失，交给 AI 判断，不硬杀。
+            f"WHERE process_status = '清洗中' "
+            f"AND (TRIM(IFNULL(city, '')) <> '' OR TRIM(IFNULL(work_address, '')) <> '') "
+            f"AND ({city_not_like}) AND ({address_not_like}) AND {target_condition}",
             params
         )
 
@@ -404,7 +574,7 @@ def _filter_empty_details(cursor, target_condition, target_links):
     cursor.execute(f"UPDATE raw_jobs SET publish_date = REPLACE(publish_date, '更新于 ', '') WHERE platform = '智联招聘' AND {target_condition}", target_links)
     cursor.execute(
         f"UPDATE raw_jobs SET process_status = '清洗淘汰', reject_reason = '岗位详情为空' "
-        f"WHERE process_status = '已存入数据' AND (jd_text IS NULL OR TRIM(jd_text) = '') AND {target_condition}",
+        f"WHERE process_status = '清洗中' AND (jd_text IS NULL OR TRIM(jd_text) = '') AND {target_condition}",
         target_links
     )
 
@@ -417,24 +587,24 @@ def _filter_education(cursor, strategy, target_condition, target_links):
         params = [f"%{edu}%" for edu in exclude_education] + list(target_links)
         cursor.execute(
             f"UPDATE raw_jobs SET process_status = '清洗淘汰', reject_reason = '学历要求不符({edu_label})' "
-            f"WHERE process_status = '已存入数据' AND ({edu_conditions}) AND {target_condition}",
+            f"WHERE process_status = '清洗中' AND ({edu_conditions}) AND {target_condition}",
             params
         )
 
 def _filter_experience(cursor, strategy, target_condition, target_links):
     experience_years_max = strategy.get("experience_years_max", 7)
-    cursor.execute(f"SELECT job_link, experience_req, jd_text FROM raw_jobs WHERE process_status = '已存入数据' AND {target_condition}", target_links)
+    cursor.execute(f"SELECT job_link, experience_req, jd_text FROM raw_jobs WHERE process_status = '清洗中' AND {target_condition}", target_links)
     exp_rejects = [(lk,) for lk, exp, jd in cursor.fetchall() if is_experience_rejected(exp, jd, experience_years_max)]
     if exp_rejects:
-        cursor.executemany(f"UPDATE raw_jobs SET process_status = '清洗淘汰', reject_reason = '要求资历过高(≥{experience_years_max}年)' WHERE job_link = ?", exp_rejects)
+        cursor.executemany(f"UPDATE raw_jobs SET process_status = '清洗淘汰', reject_reason = '要求资历过高(≥{experience_years_max}年)' WHERE process_status = '清洗中' AND job_link = ?", exp_rejects)
 
 def _filter_salary(cursor, strategy, target_condition, target_links):
     min_salary_k = strategy.get("min_salary_k", 10)
     max_salary_k = strategy.get("max_salary_k", 25)
-    cursor.execute(f"SELECT job_link, salary FROM raw_jobs WHERE process_status = '已存入数据' AND {target_condition}", target_links)
+    cursor.execute(f"SELECT job_link, salary FROM raw_jobs WHERE process_status = '清洗中' AND {target_condition}", target_links)
     salary_rejects = [(lk,) for lk, sal in cursor.fetchall() if is_salary_rejected(sal, min_salary_k, max_salary_k)]
     if salary_rejects:
-        cursor.executemany("UPDATE raw_jobs SET process_status = '清洗淘汰', reject_reason = '薪资区间不符' WHERE job_link = ?", salary_rejects)
+        cursor.executemany("UPDATE raw_jobs SET process_status = '清洗淘汰', reject_reason = '薪资区间不符' WHERE process_status = '清洗中' AND job_link = ?", salary_rejects)
 
 def _check_keyword_rejects(title: str, exp: str, keyword_rules: list) -> str:
     title_lower = str(title).lower() if title else ""
@@ -455,19 +625,28 @@ def _filter_keywords(cursor, strategy, target_condition, target_links):
     keyword_rules = strategy.get("keyword_rules", [])
     if not keyword_rules:
         return
-    cursor.execute(f"SELECT job_link, job_title, experience_req FROM raw_jobs WHERE process_status = '已存入数据' AND {target_condition}", target_links)
+    cursor.execute(f"SELECT job_link, job_title, experience_req FROM raw_jobs WHERE process_status = '清洗中' AND {target_condition}", target_links)
     kw_rejects = []
     for lk, title, exp in cursor.fetchall():
         reason = _check_keyword_rejects(title, exp, keyword_rules)
         if reason:
             kw_rejects.append((reason, lk))
     if kw_rejects:
-        cursor.executemany("UPDATE raw_jobs SET process_status = '清洗淘汰', reject_reason = ? WHERE job_link = ?", kw_rejects)
+        cursor.executemany("UPDATE raw_jobs SET process_status = '清洗淘汰', reject_reason = ? WHERE process_status = '清洗中' AND job_link = ?", kw_rejects)
 
-async def _run_tier2_ai_scout(cursor, conn, strategy, sse_task_id, limit, target_links=None):
+async def _run_tier2_ai_scout(cursor, conn, strategy, sse_task_id, limit, target_links=None,
+                              emit_job_events=False, on_job_passed=None):
     print("🤖 [阶段二] 开始执行 AI 侦察兵排雷...")
     engine = AIScoutEngine(strategy)
-    
+
+    # 卡片字段随查询一次取回：逐岗位事件要复用与抓取卡完全一致的 job_id/描述字段。
+    # 用 rowid,* 而不是固定列名：历史/测试库可能缺列，缺列时按空值降级而不是直接崩。
+    select_cols = "rowid, *"
+
+    def _rows_to_dicts(rows):
+        cols = [c[0] for c in cursor.description]
+        return [dict(zip(cols, r)) for r in rows]
+
     if target_links:
         # 精准闭环：优先处理本轮硬过滤锁定的岗位中进入「待AI初筛」的记录
         pending_jobs = []
@@ -475,16 +654,19 @@ async def _run_tier2_ai_scout(cursor, conn, strategy, sse_task_id, limit, target
         for i in range(0, len(target_links), chunk_size):
             chunk = target_links[i:i + chunk_size]
             placeholders = ','.join(['?'] * len(chunk))
-            cursor.execute(f"SELECT job_link, job_title, jd_text, company_name FROM raw_jobs WHERE process_status = '待AI初筛' AND job_link IN ({placeholders})", chunk)
-            pending_jobs.extend(cursor.fetchall())
+            cursor.execute(
+                f"SELECT {select_cols} FROM raw_jobs WHERE process_status = '待AI初筛' AND job_link IN ({placeholders})",
+                chunk,
+            )
+            pending_jobs.extend(_rows_to_dicts(cursor.fetchall()))
         if limit and limit > 0:
             pending_jobs = pending_jobs[:limit]
     else:
-        query = "SELECT job_link, job_title, jd_text, company_name FROM raw_jobs WHERE process_status = '待AI初筛'"
+        query = f"SELECT {select_cols} FROM raw_jobs WHERE process_status = '待AI初筛'"
         if limit and limit > 0:
             query += f" LIMIT {limit}"
         cursor.execute(query)
-        pending_jobs = cursor.fetchall()
+        pending_jobs = _rows_to_dicts(cursor.fetchall())
 
     if pending_jobs:
         await push_sse_message(sse_task_id, f"Tier 1 清洗完毕，有 {len(pending_jobs)} 个岗位进入 Tier 2: AI 侦察兵排雷 (并发=5)")
@@ -497,19 +679,95 @@ async def _run_tier2_ai_scout(cursor, conn, strategy, sse_task_id, limit, target
     completed_count = 0
     passed_count = 0
     rejected_count = 0
+    # D1（2026-10-31 事故）：LLM 网关持续故障时逐岗硬撞只会把每岗全价重试预算烧完
+    # （当时实测每岗约 3 分钟），整轮清洗被拖到收口超时。连续 N 个岗位评估失败即短路
+    # 本轮：剩余岗位不再调用 LLM，直接保留「待AI初筛」，等网关恢复后由「继续任务」
+    # 或下一轮重洗。成功/淘汰即清零计数，间歇性失败不误触发。
+    try:
+        AI_SCOUT_SHORTCUT_THRESHOLD = max(1, int(_cfg("AI_SCOUT_SHORTCUT_THRESHOLD") or 3))
+    except (TypeError, ValueError):
+        AI_SCOUT_SHORTCUT_THRESHOLD = 3
+    consecutive_failures = 0
+    llm_shortcut = False
+    shortcut_skipped = 0
+    # 流式推送后台任务：不占评估槽位，收尾前统一 await 收口
+    push_tasks: list[asyncio.Task] = []
     await push_sse_event(sse_task_id, {"type": "phase_progress", "phase": "ai_scout", "current": 0, "total": total, "passed": 0, "rejected": 0})
 
-    async def _eval_one(idx: int, job_link, job_title, jd_text, company_name):
+    def _persist_one(job_link: str, status: str, reason) -> bool:
+        """单岗位即时落库：先落库再发事件，12 秒快照永远不会把刚判定的状态倒回旧值。
+
+        返回 False 表示落库失败（锁等待超时等）。此时该岗位保持「待AI初筛」，
+        由调用方按未完成处理——绝不能让单岗落库异常炸穿整个清洗段。
+        """
+        for attempt in (1, 2):
+            try:
+                cursor.execute(
+                    "UPDATE raw_jobs SET process_status = ?, reject_reason = ? WHERE job_link = ?",
+                    (status, reason, job_link),
+                )
+                conn.commit()
+                return True
+            except sqlite3.OperationalError as e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if attempt == 2:
+                    print(
+                        f"⚠️ [清洗] 岗位落库失败（保留待AI初筛，可手动重跑 AI 排雷）: "
+                        f"{job_link}: {e}", flush=True)
+        return False
+
+    async def _eval_one(idx: int, job: dict):
         nonlocal completed_count, passed_count, rejected_count
+        nonlocal consecutive_failures, llm_shortcut, shortcut_skipped
+        job_link = job.get("job_link")
+        job_title = job.get("job_title")
+        jd_text = job.get("jd_text")
+        company_name = job.get("company_name")
         if get_stop_flag():
             print(f"🛑 [AI排雷急刹] 收到终止信号，跳过后续岗位: {job_title}")
             return ('待AI初筛', '任务已手动终止', job_link)
+
+        async def _shortcut_skip():
+            """D1 短路跳过单点实现：不再调用 LLM，岗位原样留池，计数照常推进（看板进度不悬挂）。
+            外审 R2-P1：外层快路径与信号量内复检共用本协程——首个事件循环 tick 内
+            排队协程已越过外层判断挂到 sem 门口，sem 内不复检则短路保护完全失效。"""
+            nonlocal shortcut_skipped, completed_count
+            shortcut_skipped += 1
+            completed_count += 1
+            print(f"⏭️ [AI排雷短路] LLM 持续失败，本轮跳过评估，保留待AI初筛: {company_name} - {job_title}", flush=True)
+            if emit_job_events:
+                # 岗位级卡片事件：未评估的岗位在看板上同样翻成「保留待AI初筛」，
+                # 避免看板出现整段无明细的空洞
+                await _emit_clean_job_event(
+                    sse_task_id, job, node="clean_ai_node", status="running",
+                    sub_status="clean_ai_preserved",
+                )
+            await push_sse_event(sse_task_id, {
+                "type": "phase_progress",
+                "phase": "ai_scout",
+                "current": completed_count,
+                "total": total,
+                "passed": passed_count,
+                "rejected": rejected_count
+            })
+            return ('待AI初筛', None, job_link)
+
+        if llm_shortcut:
+            return await _shortcut_skip()
         async with sem:
             if get_stop_flag():
                 print(f"🛑 [AI排雷急刹] 信号生效，跳过未评估岗位: {job_title}")
                 return ('待AI初筛', None, job_link)
+            if llm_shortcut:
+                # 信号量唤醒后复检短路标志：等待期间前序请求可能已把 llm_shortcut 置位
+                return await _shortcut_skip()
             print(f"\n🔍 [AI排雷] {idx+1}/{total}: {company_name} - {job_title}", flush=True)
             await push_sse_message(sse_task_id, f"🔍 开始评估: {company_name} - {job_title}")
+            if emit_job_events:
+                await _emit_clean_job_event(sse_task_id, job, node="clean_ai_node", status="running")
             res = await engine.evaluate_job(job_title, jd_text, company_name, sse_task_id)
 
             # 🌟 急刹二次确认：若在网络请求等待期间收到了终止信号，坚决放弃本次流转，保留在待AI初筛池！
@@ -520,7 +778,22 @@ async def _run_tier2_ai_scout(cursor, conn, strategy, sse_task_id, limit, target
             if res['status'] == 'PRESERVE':
                 # 🌟 fail-preserve：解析失败/API 异常，不计通过也不计拦截，保留原池下轮重试
                 print(f"↩️ [Tier 2 AI排雷保留] 【{job_title}】 -> 模型输出异常，保留在待AI初筛池等待重试", flush=True)
+                consecutive_failures += 1
+                if not llm_shortcut and consecutive_failures >= AI_SCOUT_SHORTCUT_THRESHOLD:
+                    llm_shortcut = True
+                    remaining = max(0, total - completed_count - 1)
+                    print(f"⏸️ [AI排雷短路] 连续 {consecutive_failures} 个岗位评估失败，本轮剩余约 {remaining} 个岗位直接留池，不再调用 LLM", flush=True)
+                    await push_sse_message(
+                        sse_task_id,
+                        f"⏸️ AI 排雷连续 {consecutive_failures} 次失败（疑似 LLM 网关不可用），本轮剩余岗位保留待AI初筛，已短路不再调用 LLM",
+                        status="error",
+                    )
                 completed_count += 1
+                if emit_job_events:
+                    await _emit_clean_job_event(
+                        sse_task_id, job, node="clean_ai_node", status="running",
+                        sub_status="clean_ai_preserved",
+                    )
                 await push_sse_event(sse_task_id, {
                     "type": "phase_progress",
                     "phase": "ai_scout",
@@ -532,14 +805,36 @@ async def _run_tier2_ai_scout(cursor, conn, strategy, sse_task_id, limit, target
                 return ('待AI初筛', None, job_link)
 
             if res['status'] == 'REJECT':
+                consecutive_failures = 0
                 final_status = 'ai清洗淘汰'
-                rejected_count += 1
                 print(f"🚫 [Tier 2 AI排雷淘汰] 【{job_title}】 -> 死因: {res['reject_reason']}", flush=True)
+                if not _persist_one(job_link, final_status, res['reject_reason']):
+                    return ('待AI初筛', None, job_link)
+                rejected_count += 1
+                if emit_job_events:
+                    await _emit_clean_job_event(
+                        sse_task_id, job, node="clean_rejected", status="rejected",
+                        reject_reason=res['reject_reason'], reject_type="ai",
+                        last_action_desc="触发AI排雷规则淘汰",
+                    )
                 await push_sse_message(sse_task_id, f"🚫 {company_name} - {job_title}: {res['reject_reason']}", status="error")
             else:
+                consecutive_failures = 0
                 final_status = '待推送至飞书'
-                passed_count += 1
                 print(f"✅ 侦察兵放行: {company_name} - {job_title}", flush=True)
+                if not _persist_one(job_link, final_status, res['reject_reason']):
+                    return ('待AI初筛', None, job_link)
+                passed_count += 1
+                if emit_job_events:
+                    await _emit_clean_job_event(
+                        sse_task_id, job, node="clean_ai_node", status="running",
+                        sub_status="clean_ai_passed",
+                    )
+                # 流式推送：通过清洗即刻推飞书，不等整批清洗跑完。
+                # 后台任务执行，不占用 Tier2 评估并发槽位；失败只告警——
+                # 行仍是「待推送至飞书」，批量段会再兜底一次。
+                if on_job_passed is not None:
+                    push_tasks.append(asyncio.create_task(on_job_passed(job)))
                 await push_sse_message(sse_task_id, f"✅ {company_name} - {job_title}: 安全放行")
 
             completed_count += 1
@@ -553,17 +848,25 @@ async def _run_tier2_ai_scout(cursor, conn, strategy, sse_task_id, limit, target
             })
             return (final_status, res['reject_reason'], job_link)
 
-    tasks = [
-        _eval_one(i, job_link, job_title, jd_text, company_name)
-        for i, (job_link, job_title, jd_text, company_name) in enumerate(pending_jobs)
-    ]
+    tasks = [_eval_one(i, job) for i, job in enumerate(pending_jobs)]
     update_data = await asyncio.gather(*tasks)
+    # 流式推送是后台任务：必须等全部推送收口再返回，否则批量兜底段会与在途推送并发
+    if push_tasks:
+        await asyncio.gather(*push_tasks, return_exceptions=True)
 
-    # 🌟 仅真正被 AI 判定完成（ai清洗淘汰 或 待推送至飞书）的岗位才落库，未完成/中止的岗位保持原状（待AI初筛）
+    if shortcut_skipped:
+        await push_sse_message(
+            sse_task_id,
+            f"⏸️ 本轮 AI 排雷短路收口：{shortcut_skipped} 个岗位未经评估保留在待AI初筛池，LLM 恢复后可通过「继续任务」重洗",
+            status="error",
+        )
+
+    # 🌟 每个岗位已在 _eval_one 内即时落库，gather 后不再做批量回写：
+    # 流式推送成功的行此时已是「已同步 + is_synced=1」，批量回写会把它打回
+    # 「待推送至飞书」，而批量兜底又按 is_synced=0 过滤 → 行永久卡死（2026-10-31 审查 P0）。
+    # 仅真正被 AI 判定完成（ai清洗淘汰 或 待推送至飞书）的岗位计数播报。
     changed_data = [d for d in update_data if d[0] != '待AI初筛']
     if changed_data:
-        cursor.executemany("UPDATE raw_jobs SET process_status = ?, reject_reason = ? WHERE job_link = ?", changed_data)
-        conn.commit()
         await push_sse_message(sse_task_id, f"🎉 本轮处理完成！共对 {len(changed_data)} 条岗位进行了有效落库。")
 
 async def _generate_cleaning_report(cursor, sse_task_id, target_links):
@@ -583,7 +886,13 @@ async def _generate_cleaning_report(cursor, sse_task_id, target_links):
     total_processed = len(target_links)
     hard_rejected = status_counts.get('清洗淘汰', 0)
     ai_rejected = status_counts.get('ai清洗淘汰', 0)
-    passed = status_counts.get('待推送至飞书', 0) + status_counts.get('已推送飞书', 0)
+    # 「已同步」必须计入通过：流式推送成功的岗位在报告生成前就已建档（process_status.SYNCED），
+    # 漏计会让清洗报表通过数凭空少一截（2026-10-31 审查 P0 连带项）。
+    passed = (
+        status_counts.get('待推送至飞书', 0)
+        + status_counts.get('已推送飞书', 0)   # 存量旧词，读取兼容
+        + status_counts.get('已同步', 0)
+    )
     
     report_data = {
         "total_processed": total_processed,
@@ -596,7 +905,12 @@ async def _generate_cleaning_report(cursor, sse_task_id, target_links):
 
 
 def _run_tier1_hard_filter(cursor, conn, strategy, target_links):
-    """同步执行 Tier 1 绝对硬指标过滤核心逻辑，将合格岗位推进为「待AI初筛」，不合格为「清洗淘汰」"""
+    """同步执行 Tier 1 绝对硬指标过滤核心逻辑，将合格岗位推进为「待AI初筛」，不合格为「清洗淘汰」。
+
+    ⚠️ 状态不变量：本函数先把本轮行原子认领为「清洗中」，之后所有 _filter_*
+    必须按「清洗中」查询/更新（不是「已存入数据」）。改成旧态会让 Tier 1 全部空转
+    （2026-09-03 回归：bb074e26 加认领后谓词未同步，硬规则静默失效两个月）。
+    """
     if not target_links:
         return
     chunk_size = 500
@@ -676,18 +990,27 @@ async def _async_run_hard_filter_only(sse_task_id=None, limit=None):
         finally:
             conn.close()
 
-async def _async_run_ai_scout_only(sse_task_id=None, limit=None):
-    """仅执行阶段二：Tier 2 AI 深度排雷（消耗 Token），对现存「待AI初筛」执行大模型排雷"""
+async def _async_run_ai_scout_only(sse_task_id=None, limit=None, min_rowid=0):
+    """仅执行阶段二：Tier 2 AI 深度排雷（消耗 Token），对现存「待AI初筛」执行大模型排雷
+
+    min_rowid > 0 时只处理该 rowid 之后入库的「待AI初筛」行（「继续任务」按阻塞轮次
+    圈定重洗范围用）；0 = 全表扫描（手动清洗面板既有语义）。
+    """
     async with GLOBAL_CLEAN_LOCK:
         set_stop_flag(False)
         strategy = _get_active_strategy()
         conn = sqlite3.connect(DB_PATH, timeout=30.0)
         try:
             cursor = conn.cursor()
-            query = "SELECT job_link FROM raw_jobs WHERE process_status = '待AI初筛' ORDER BY rowid DESC"
+            query = "SELECT job_link FROM raw_jobs WHERE process_status = '待AI初筛'"
+            query_params: list = []
+            if min_rowid:
+                query += " AND rowid > ?"
+                query_params.append(int(min_rowid))
+            query += " ORDER BY rowid DESC"
             if limit and limit > 0:
                 query += f" LIMIT {limit}"
-            cursor.execute(query)
+            cursor.execute(query, query_params)
             target_links = [r[0] for r in cursor.fetchall()]
 
             if not target_links:
@@ -737,12 +1060,18 @@ async def _async_skip_ai_to_feishu(sse_task_id=None, limit=None):
         finally:
             conn.close()
 
-async def _async_run_pipeline(sse_task_id=None, limit=None, min_rowid=0, platform=None):
+async def _async_run_pipeline(sse_task_id=None, limit=None, min_rowid=0, platform=None,
+                              emit_job_events=False, on_job_passed=None):
     """平台范围参数：None/空 = 全平台（既有行为）；指定平台 = 仅清洗该平台「已存入数据」岗位。
 
     传入口语平台名（如 "zhilian"/"智联"）会先归一为库内规范值；识别不出的平台名
     直接空跑返回，绝不静默放大成全平台清洗（宁可不做也不做错范围）。
     limit 在平台过滤之后生效（该平台范围内取最新 N 条）。
+
+    emit_job_events=True：逐岗位广播 job 事件（全自动链路看板实时卡片）；
+    独立清洗任务不传，保持原有日志/进度协议不变。
+    on_job_passed：岗位通过 Tier 2 后的即时回调（全自动链路用于立刻推飞书，
+    实现「过一个推一条」；失败由后续批量段兜底）。
     """
     canonical_platform = _normalize_clean_platform(platform)
     raw_platform = str(platform or "").strip()
@@ -797,6 +1126,9 @@ async def _async_run_pipeline(sse_task_id=None, limit=None, min_rowid=0, platfor
 
             if target_links:
                 _run_tier1_hard_filter(cursor, conn, strategy, target_links)
+                if emit_job_events:
+                    # Tier 1 毫秒级完成：逐岗位补发事件，淘汰卡立即进回收站、通过卡进入 AI 排队态
+                    await _emit_tier1_job_events(sse_task_id, cursor, target_links)
 
             tier1_passed = 0
             if target_links:
@@ -819,14 +1151,22 @@ async def _async_run_pipeline(sse_task_id=None, limit=None, min_rowid=0, platfor
                 await push_sse_message(sse_task_id, "🛑 任务已被手动终止，阶段二 AI 排雷已取消", "warning")
                 return []
 
-            await _run_tier2_ai_scout(cursor, conn, strategy, sse_task_id, limit, target_links=target_links)
+            await _run_tier2_ai_scout(
+                cursor, conn, strategy, sse_task_id, limit,
+                target_links=target_links, emit_job_events=emit_job_events,
+                on_job_passed=on_job_passed,
+            )
             await _generate_cleaning_report(cursor, sse_task_id, target_links)
 
-            # 🌟 获取本轮真正通过 AI 初筛、进入「待推送至飞书」的岗位列表，供下游精确推送
+            # 🌟 获取本轮真正通过 AI 初筛的岗位列表，供下游精确推送。
+            # 已同步也计入：流式推送会在 Tier2 放行后立刻把行写成「已同步」。
             passed_links = []
             if target_links:
                 ph = ','.join(['?'] * len(target_links))
-                cursor.execute(f"SELECT job_link FROM raw_jobs WHERE process_status = '待推送至飞书' AND job_link IN ({ph})", target_links)
+                cursor.execute(
+                    f"SELECT job_link FROM raw_jobs WHERE process_status IN ('待推送至飞书', '已同步') AND job_link IN ({ph})",
+                    target_links,
+                )
                 passed_links = [r[0] for r in cursor.fetchall()]
             return passed_links
         finally:

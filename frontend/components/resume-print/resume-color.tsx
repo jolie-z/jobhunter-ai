@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import { Phone, Mail, MapPin, Globe, Github, Linkedin } from 'lucide-react';
 import { ResumeDataV2 } from '@/types/resume';
 import { stripConfidenceTags } from '@/lib/utils/text-formatters';
+import { extractItemPrintExtras, formatItemPrintExtras, joinDescriptionBlocks } from './custom-item-fields';
 import baseStyles from './styles/_base.module.css';
 import styles from './styles/color.module.css';
 
@@ -189,18 +190,30 @@ export const ResumeColor: React.FC<ResumeColorProps> = ({ data }) => {
           <div key={modKey} className={baseStyles['resume-section']}>
             <h3 className={styles.sectionTitle}>{title}</h3>
             <div className={baseStyles['resume-items']}>
-              {customItems.map((item, idx) => (
-                <div key={idx} className={baseStyles['resume-item']}>
-                  <EntryBand
-                    primary={item.company || ''}
-                    secondary={item.title || ''}
-                    meta={item.years}
-                  />
-                  {item.description && item.description.length > 0 && (
-                    <MarkdownBlock>{item.description.join('\n')}</MarkdownBlock>
-                  )}
-                </div>
-              ))}
+              {customItems.map((item, idx) => {
+                // 2026-10-28 原文保真：表头带仅在有标准字段时渲染（归一化后新条目纯 description）；
+                // location 与用户自建 KV 字段拼成副标题行打印（本模板的 EntryBand 不接 location，此前被静默丢弃）
+                const subtitleLine = [item.location || '', formatItemPrintExtras(extractItemPrintExtras(item))]
+                  .filter(Boolean)
+                  .join(' · ');
+                const descStr = joinDescriptionBlocks(item.description);
+                const hasBand = !!(item.company || item.title || item.years);
+                return (
+                  <div key={idx} className={baseStyles['resume-item']}>
+                    {hasBand && (
+                      <EntryBand
+                        primary={item.company || ''}
+                        secondary={item.title || ''}
+                        meta={item.years}
+                      />
+                    )}
+                    {subtitleLine && (
+                      <div className="mt-1 text-center text-[11px] text-gray-500">{subtitleLine}</div>
+                    )}
+                    {descStr && <MarkdownBlock>{descStr}</MarkdownBlock>}
+                  </div>
+                );
+              })}
             </div>
           </div>
         );

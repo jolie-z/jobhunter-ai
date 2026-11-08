@@ -51,6 +51,17 @@ _PROGRESS_STAGES = (
 )
 
 
+def _needs_deep_eval(grade: str) -> bool:
+    """高分轨（评级达到精投阈值）才需要独立深评节点；海投轨初评即结案。"""
+    if not grade:
+        return False
+    # 懒加载：避免 app.services 在模块导入期拉起 ai_agents 的重量级依赖
+    from ai_agents.ai_evaluator import get_auto_eval_threshold
+    from app.core.feishu_utils import grade_meets_threshold
+
+    return grade_meets_threshold(grade, get_auto_eval_threshold())
+
+
 def build_progress_card(
     company: str,
     job: str,
@@ -194,17 +205,30 @@ async def _run_pipeline_with_feedback(
         if not ok:
             logger.warning("[聊天录入] 进度卡原地更新失败（继续流程）")
 
-    _NODE_TO_STAGE = {"evaluate_node": "eval", "rewrite_node": "rewrite", "quick_greeting_node": "rewrite"}
-
     async def _on_node_done(node_name: str, update: dict) -> None:
         nonlocal grade
-        stage = _NODE_TO_STAGE.get(node_name)
-        if not stage:
-            return
-        stages[stage] = "done"
         grade_now = str((update or {}).get("grade") or "").strip()
         if grade_now:
             grade = grade_now
+
+        # 节点 → 进度卡阶段。深评已从初评节点拆出：
+        # - 高分轨：初评完成时 eval 阶段还不能结案，等 deep_eval_node 跑完；
+        # - 海投轨：没有深评节点，初评完成即 eval 结案。
+        if node_name == "evaluate_node":
+            if _needs_deep_eval(grade):
+                # 下一步是深评：eval 继续 running，不能提前点亮 rewrite
+                stages["eval"] = "running"
+                await _refresh_card()
+                return
+            stages["eval"] = "done"
+        elif node_name == "deep_eval_node":
+            stages["eval"] = "done"
+        elif node_name in ("rewrite_node", "quick_greeting_node"):
+            stages["eval"] = "done"
+            stages["rewrite"] = "done"
+        else:
+            return
+
         nxt = next((k for k, _ in _PROGRESS_STAGES if stages.get(k) == "pending"), None)
         if nxt:
             stages[nxt] = "running"
@@ -326,13 +350,25 @@ async def _resume_one_inflight(record_id: str, entry: dict[str, Any]) -> None:
         )
         return
 
-    # 按已完成的图节点重建进度卡点阵（LangGraph 只在节点完成后写 checkpoint）
+    # 按已完成的图节点重建进度卡点阵（LangGraph 只在节点完成后写 checkpoint）。
+    # 深评已拆成独立节点：高分轨必须等 deep_diagnosis 落盘，eval 阶段才算完成；
+    # 海投轨没有深评节点，有评级即视为初评结案。
     stages = {k: "pending" for k, _ in _PROGRESS_STAGES}
     resumed_grade = str(vals.get("grade") or "")
-    stages["eval"] = "done" if resumed_grade else "running"
     if resumed_grade:
-        stages["rewrite"] = "running"
+        # 兼容旧 checkpoint：新图用 deep_eval_completed 标记深评已执行（含失败兜底），
+        # 旧图只有 deep_diagnosis 可用。
+        deep_eval_done = bool(vals.get("deep_eval_completed") or vals.get("deep_diagnosis"))
+        if _needs_deep_eval(resumed_grade) and not deep_eval_done:
+            # 断点在深评节点：eval 尚未结案，rewrite 还不能点亮
+            stages["eval"] = "running"
+        else:
+            stages["eval"] = "done"
+            stages["rewrite"] = "running"
+    else:
+        stages["eval"] = "running"
     if vals.get("final_markdown") or vals.get("greeting"):
+        stages["eval"] = "done"
         stages["rewrite"] = "done"
         stages["materials"] = "running"
 

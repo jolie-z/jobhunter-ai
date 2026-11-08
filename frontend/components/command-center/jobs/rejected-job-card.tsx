@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { API_BASE } from "@/lib/api"
 import { getPlatformTheme } from "../types"
+import { nowLocalString } from "@/lib/local-time"
 
 interface RejectedJobCardProps {
   job: PipelineJob
@@ -77,13 +78,18 @@ export const RejectedJobCard = React.memo(function RejectedJobCard({ job }: Reje
       const data = await res.json()
       if (res.ok && (data.status === "success" || data.code === 0)) {
         toast.success("✅ 岗位已放行，正在启动 AI 评估与流转...")
-        // 放行后将岗位状态转为 running/AI初评中
+        // 放行后将岗位状态转为 running/AI初评中。
+        // last_action_desc 必须同步改写：卡片运行态文案直接取该字段，
+        // 残留「触发AI排雷规则淘汰」会让已复活岗位在评估 Tab 里再次显示排雷淘汰（2026-10-30 实测）。
         updateJob(job.job_id, {
           status: "running",
           node: "evaluate_node",
-          sub_status: "ai_eval",
+          sub_status: "ai_eval_queued",
           reject_reason: undefined,
           reject_type: undefined,
+          failure_info: undefined,
+          last_action_time: nowLocalString(),
+          last_action_desc: "♻️ 已放行，等待AI重新初评",
         })
       } else {
         toast.error(`放行失败: ${data.message || data.detail || "未知错误"}`)

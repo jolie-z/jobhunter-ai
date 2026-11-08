@@ -129,7 +129,28 @@ export function PersonalInfo() {
         })
     }
 
-    const effectiveAvatar = resumeData?.personalInfo?.avatar_url || editingItem?.avatar_url
+    // 🌟 照片新鲜度优先级：editingItem（上传头像成功后 fetchConfig 刷新的最新值）
+    // 必须压过 resumeData.personalInfo 里烘焙的历史值——否则旧值永远赢，
+    // 上传的新照片不回显、下次保存又把旧 URL 烘焙回结构化数据（永远第一张根因）。
+    // editingItem 已从配置大盘装载（有云端 record_id 且 avatar_url 为字符串，
+    // 含 ""=确认无照片）时是权威值，不得回退 store 烘焙旧值；本地新建/未装载
+    // （temp_/undefined avatar_url）沿用旧链：store 值 → 启用底稿照片预填
+    const editingLoaded = Boolean(
+      editingItem?.record_id &&
+        !editingItem.record_id.startsWith("temp_") &&
+        typeof editingItem.avatar_url === "string",
+    )
+    if (editingLoaded) {
+      const loadedUrl = editingItem?.avatar_url || ""
+      if (loadedUrl) {
+        fetchAndSetAvatar(loadedUrl)
+      } else {
+        // 该简历确认无照片：清空展示，杜绝烘焙旧图回显
+        setAvatarDataUrl("")
+      }
+      return
+    }
+    const effectiveAvatar = editingItem?.avatar_url || resumeData?.personalInfo?.avatar_url
     if (effectiveAvatar) {
       fetchAndSetAvatar(effectiveAvatar)
       return
@@ -177,6 +198,32 @@ export function PersonalInfo() {
         const res = await fetch(`${API_BASE}/api/strategy/upload_avatar`, { method: "POST", body: formData })
         const data = await res.json()
         if (data.status === "success") {
+            // 换照片成功：预取新 token 的图片并写入 localStorage（avatar_<url> 维度），
+            // 并清掉旧 token 的条目防止配额垃圾；随后 fetchConfig 刷新 editingItem.avatar_url
+            // → 挂载 effect 以新 URL 优先级命中缓存立即回显新照片（永远第一张根因的前端闭环）
+            if (data.file_token) {
+                const newUrl = `${API_BASE}/api/strategy/avatar/${data.file_token}`
+                try {
+                    const oldAvatarUrl = resumeData?.personalInfo?.avatar_url
+                    if (oldAvatarUrl) localStorage.removeItem(`avatar_${oldAvatarUrl}`)
+                    if (editingItem.avatar_url && editingItem.avatar_url !== oldAvatarUrl) {
+                        localStorage.removeItem(`avatar_${editingItem.avatar_url}`)
+                    }
+                } catch { /* storage 不可用时静默降级为每次拉取 */ }
+                try {
+                    const imgRes = await fetch(newUrl)
+                    // 非 2xx 会进 blob 出非法 data URL，必须失败让 effect 按 URL 兜底直显
+                    if (!imgRes.ok) throw new Error(`avatar prefetch HTTP ${imgRes.status}`)
+                    const blob = await imgRes.blob()
+                    const reader = new FileReader()
+                    reader.onloadend = () => {
+                        const base64 = reader.result as string
+                        setAvatarDataUrl(base64)
+                        try { localStorage.setItem(`avatar_${newUrl}`, base64) } catch { /* 配额上限静默 */ }
+                    }
+                    reader.readAsDataURL(blob)
+                } catch { /* 预取失败不阻断，effect 会按 URL 兜底直显 */ }
+            }
             // refresh data to fetch the newly returned temp image URL
             if (fetchConfig) await fetchConfig(editingItem.record_id)
         } else {

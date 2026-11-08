@@ -11,6 +11,33 @@ GLOBAL_TASK_STATE: dict[str, Any] = {
 task_status: dict[str, Any] = {}
 global_task_lock = asyncio.Lock()
 
+# 批量任务停止标志（2026-11-02 审计 P2-15）：executor/wave 批量链此前不查任何终止
+# 状态，一经启动只能等跑完（期间阻塞所有后续批量）。BATCH_STOP_REQUESTED 由 stop
+# 端点置位、批量循环每岗检查；置位同时记录目标 task_id，防止误停后续新任务
+BATCH_STOP_REQUESTED: dict[str, Any] = {"requested": False, "task_id": None}
+
+
+def request_batch_stop(task_id: str) -> bool:
+    """请求停止批量任务（CR-B3-R1 修正；CR-B3-R2-P2 合并双分支）：运行中校验
+    current_task_id，pending（已建队列、尚未持锁）直接受理——executor 启动入口
+    检查标志拒绝启动。两态任一命中即置位。"""
+    is_running = GLOBAL_TASK_STATE.get("current_task_id") == task_id
+    is_pending = (task_status.get(task_id) or {}).get("status") == "pending"
+    if not (is_running or is_pending):
+        return False
+    BATCH_STOP_REQUESTED["requested"] = True
+    BATCH_STOP_REQUESTED["task_id"] = task_id
+    return True
+
+
+def is_batch_stop_requested(task_id: str) -> bool:
+    return bool(BATCH_STOP_REQUESTED.get("requested")) and BATCH_STOP_REQUESTED.get("task_id") == task_id
+
+
+def clear_batch_stop() -> None:
+    BATCH_STOP_REQUESTED["requested"] = False
+    BATCH_STOP_REQUESTED["task_id"] = None
+
 # 后台定时任务活动登记：T2/T3 定时投递等后台批量此前对前端完全不可见（不建 SSE 队列、
 # 不置 GLOBAL_TASK_STATE），用户在并发撞车时无从知晓系统正被谁占用。key 唯一对应一类
 # 后台活动，running=False 即注销；/api/tasks/status 聚合后供前端横幅提示。
@@ -81,6 +108,14 @@ class TaskChannel(asyncio.Queue):
             sub.put_nowait(item)
         self._subscribers.add(sub)
         return sub
+
+    def clear_history(self) -> None:
+        """清空回放历史（「继续任务」受理时调用）。
+
+        阻塞轮的 stage blocked / end(outcome=blocked) 帧绝不能回放给重连的前端：
+        前端 SSE 对 end 帧一律断连，回放的旧 end 会把刚切回 running 的连接立刻掐断，
+        后续恢复事件全部丢失，形成「后端已恢复、前端永久暂停」死锁（2026-11-03 事故）。"""
+        self._history.clear()
 
     def unsubscribe(self, sub: asyncio.Queue):
         self._subscribers.discard(sub)

@@ -14,7 +14,8 @@ import {
 } from "lucide-react"
 import { usePipelineStore } from "@/store/pipeline-store"
 import { cn } from "@/lib/utils"
-import { isJobDelivered, isJobReadyToDeliver, isJobRejected, isJobWaitingReview } from "./job-predicates"
+import { isJobRejected } from "./job-predicates"
+import { computeStageStats } from "./stepper-stats"
 
 export function MissionFunnelCard() {
   const pipelineStatus = usePipelineStore((s) => s.status)
@@ -23,6 +24,7 @@ export function MissionFunnelCard() {
   const hardCleanProgress = usePipelineStore((s) => s.hardCleanProgress)
   const feishuSyncProgress = usePipelineStore((s) => s.feishuSyncProgress)
   const jobs = usePipelineStore((s) => s.jobs)
+  const autoEvalThreshold = usePipelineStore((s) => s.autoEvalThreshold)
 
   const jobList = useMemo(() => Object.values(jobs), [jobs])
 
@@ -56,13 +58,15 @@ export function MissionFunnelCard() {
   const totalScraped = rawScrapeSum > 0 ? rawScrapeSum : (isPipelineActive ? currentRunJobs.length : 0)
   const cleanedCount = hardCleanProgress?.total ?? (totalScraped > 0 ? totalScraped : currentRunJobs.length)
   const syncedCount = feishuSyncProgress?.current ?? (isPipelineActive ? passedJobs.length : 0)
-  const evaluatedCount = useMemo(
-    () => isPipelineActive ? passedJobs.filter((j) => (j.score !== undefined && j.score !== null) || !!j.grade || isJobWaitingReview(j) || isJobReadyToDeliver(j) || isJobDelivered(j) || j.status === "error").length : 0,
-    [passedJobs, isPipelineActive]
+  // 与导轨共用同一套阶段统计，避免「已评估」在漏斗和导轨各算一份而漂移
+  const stageStats = useMemo(
+    () => computeStageStats(jobList, feishuSyncProgress?.total, autoEvalThreshold),
+    [jobList, feishuSyncProgress, autoEvalThreshold]
   )
-  const pendingReviewCount = useMemo(() => jobList.filter(isJobWaitingReview).length, [jobList])
-  const readyToDeliverCount = useMemo(() => jobList.filter(isJobReadyToDeliver).length, [jobList])
-  const deliveredCount = useMemo(() => jobList.filter(isJobDelivered).length, [jobList])
+  const evaluatedCount = isPipelineActive ? stageStats.evalDone : 0
+  const pendingReviewCount = stageStats.pendingCount
+  const readyToDeliverCount = stageStats.readyToDeliverCount
+  const deliveredCount = stageStats.deliveredCount
 
   const deliveryRate = evaluatedCount > 0 ? Math.round((deliveredCount / evaluatedCount) * 100) : 0
 

@@ -93,21 +93,33 @@ def _read_gate_param(name: str, default: T, caster: Callable[[Any], T], *, env_f
     return default
 
 
+def _to_bool(v: Any) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "1", "yes", "on")
+    return bool(v)
+
+
 def is_llm_gate_enabled() -> bool:
     """
     闸门全局启用开关（优先级 settings.json 热控 > 环境变量 > 默认 True）。
     若置为 False，闸门完全旁路直通，零延迟零等待。
     """
-    def _to_bool(v: Any) -> bool:
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, (int, float)):
-            return bool(v)
-        if isinstance(v, str):
-            return v.strip().lower() in ("true", "1", "yes", "on")
-        return bool(v)
-
     return _read_gate_param("LLM_GATE_ENABLED", True, _to_bool)
+
+
+def is_batch_elastic_enabled() -> bool:
+    """批处理弹性并发热控开关（settings.json 热控 > 环境变量 > 默认 True）。
+
+    开启：批处理上限随前台需求弹性伸缩——前台零需求时批处理可用满全局槽
+    （闲时全给全链路指挥中心），前台到来即时收缩、保底不低于 batch_max_concurrency。
+    关闭（LLM_BATCH_ELASTIC=0）：回到硬顶 batch_max_concurrency 的旧行为（2026-11-03
+    之前的「批处理恒 2 槽」契约），作为一键回滚通道。
+    """
+    return _read_gate_param("LLM_BATCH_ELASTIC", True, _to_bool)
 
 
 class SlotGuard:
@@ -115,10 +127,12 @@ class SlotGuard:
     并发槽守卫对象（生命周期受控与幂等释放凭证）。
     支持所有权转移给流代理，__exit__ 与 __del__ 提供双重防泄漏兜底。
     """
-    def __init__(self, gate: LLMGate, caller: str, is_batch: bool = False, bypassed: bool = False):
+    def __init__(self, gate: LLMGate, caller: str, is_batch: bool = False, bypassed: bool = False,
+                 holds_fg: bool = False):
         self._gate = gate
         self.caller = caller
         self.is_batch = is_batch
+        self.holds_fg = holds_fg
         self._bypassed = bypassed
         self._released = bypassed
         self._lock = threading.Lock()
@@ -214,11 +228,15 @@ class LLMGate:
         # 容量与配额参数：环境变量（运维规格优先） > settings.json > 默认值（规范 §二.4）
         self.max_concurrency = _read_gate_param("LLM_MAX_CONCURRENCY", 4, int, env_first=True)
         self.batch_max_concurrency = _read_gate_param("LLM_BATCH_MAX_CONCURRENCY", 2, int, env_first=True)
+        # 弹性批处理上限（闲时前台零需求 → 批处理可用满全局槽；前台到来即时收缩）
+        self.batch_elastic_max = min(
+            _read_gate_param("LLM_BATCH_ELASTIC_MAX", self.max_concurrency, int, env_first=True),
+            self.max_concurrency,
+        )
         self.max_rpm = _read_gate_param("LLM_MAX_RPM", 60, int, env_first=True)
         self.cooldown_seconds = _read_gate_param("LLM_429_COOLDOWN_SECONDS", 5.0, float, env_first=True)
 
         self._global_sem = threading.BoundedSemaphore(self.max_concurrency)
-        self._batch_sem = threading.BoundedSemaphore(self.batch_max_concurrency)
         self._token_bucket = TokenBucket(self.max_rpm)
 
         # 统一使用单调时钟 monotonic 避免墙钟回拨引发误判
@@ -228,7 +246,21 @@ class LLMGate:
         self._total_successes = 0
         self._total_rejected = 0
         self._total_rate_limited = 0
+        self._total_server_breaks = 0
+        # 服务端错误熔断：连续 5xx/账号池不可用达阈值时复用全局冷却窗，
+        # 阻断"逐请求全价烧完重试预算"的硬撞（2026-10-31 上游聚合网关 no_healthy_account 事故）
+        self.server_breaker_threshold = _read_gate_param(
+            "LLM_SERVER_BREAKER_THRESHOLD", 3, int, env_first=True)
+        self.server_breaker_cooldown = _read_gate_param(
+            "LLM_SERVER_BREAKER_COOLDOWN_SECONDS", 45.0, float, env_first=True)
+        self._server_error_streak = 0
         self._lock = threading.Lock()
+        # 弹性批处理状态（与主锁同锁，stats 快照保持一致）：
+        # _batch_active = 持有批处理槽的在飞请求数；_fg_demand = 等待中/持槽中的前台请求数。
+        # 批处理上限不再用固定信号量硬顶（旧 _batch_sem 恒 2），改按前台需求动态钳制。
+        self._batch_active = 0
+        self._fg_demand = 0
+        self._slot_cond = threading.Condition(self._lock)
 
         workers = _read_gate_param(
             "LLM_GATE_EXECUTOR_WORKERS", max(16, self.max_concurrency * 4), int, env_first=True
@@ -286,13 +318,46 @@ class LLMGate:
             return True
         return await self._token_bucket.async_wait_for_token(timeout=timeout)
 
+    def _elastic_batch_cap_locked(self, elastic_on: bool) -> int:
+        """批处理弹性上限（必须在 self._lock/条件下调用）。
+
+        cap = clamp(elastic_ceiling - _fg_demand, batch_max_concurrency, elastic_ceiling)：
+        前台零需求 → 批处理可用满 elastic_ceiling（默认=全局 4 槽全给全链路指挥中心）；
+        前台每 +1 → 批处理上限 -1；触底不低于 batch_max_concurrency（前台保底并发位）。
+        elastic_on=False（热控回滚）→ 恒等于旧硬顶 batch_max_concurrency。
+        """
+        if not elastic_on:
+            return self.batch_max_concurrency
+        ceiling = self.batch_elastic_max
+        return min(max(self.batch_max_concurrency, ceiling - self._fg_demand), ceiling)
+
+    def _acquire_batch_slot(self, timeout: float, elastic_on: bool) -> bool:
+        """等待并占用一个批处理槽位（上限动态，前台到来即时收缩）。超时返回 False。"""
+        deadline = time.monotonic() + timeout
+        with self._slot_cond:
+            while True:
+                if self._batch_active < self._elastic_batch_cap_locked(elastic_on):
+                    self._batch_active += 1
+                    return True
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                # 上限变化（前台到来/离开）与槽位释放都会 notify；1s 切片兜底防丢通知
+                self._slot_cond.wait(min(remaining, 1.0))
+
+    def _release_batch_slot_only(self) -> None:
+        """归还批处理槽位计数并唤醒等待者（全局槽获取失败时的回滚路径）。"""
+        with self._slot_cond:
+            self._batch_active = max(0, self._batch_active - 1)
+            self._slot_cond.notify_all()
+
     def acquire_slot(
         self,
         caller: str = "",
         timeout: float = 60.0,
         force_interactive: bool | None = None,
     ) -> SlotGuard | None:
-        """获取并发槽位凭证（双通道配额隔离）。超时返回 None 表示拒绝，上层严禁旁路放行。
+        """获取并发槽位凭证（双通道配额隔离 + 批处理弹性上限）。超时返回 None 表示拒绝，上层严禁旁路放行。
 
         force_interactive: 显式指定交互通道覆写结果。同步调用链可不传（自动读 ContextVar）；
         异步路径因 run_in_executor 不拷贝上下文，必须在事件循环内先解析再显式传入。
@@ -310,20 +375,28 @@ class LLMGate:
         start = time.monotonic()
 
         if is_batch:
-            if not self._batch_sem.acquire(timeout=timeout):
+            # 弹性开关每次获取现读（settings.json 热控即时生效），不落缓存
+            if not self._acquire_batch_slot(timeout, is_batch_elastic_enabled()):
                 logger.warning("[llm_gate] 批处理请求 %s 等待批处理并发槽超时 (%.1fs)", caller, timeout)
                 with self._lock:
                     self._total_rejected += 1
                 return None
             remaining_timeout = max(0.1, timeout - (time.monotonic() - start))
             if not self._global_sem.acquire(timeout=remaining_timeout):
-                self._batch_sem.release()
+                self._release_batch_slot_only()
                 logger.warning("[llm_gate] 批处理请求 %s 等待全局并发槽超时 (%.1fs)", caller, timeout)
                 with self._lock:
                     self._total_rejected += 1
                 return None
         else:
+            # 前台需求计数先于等待建立：批处理等待者立即感知上限收缩并让位
+            with self._slot_cond:
+                self._fg_demand += 1
+                self._slot_cond.notify_all()
             if not self._global_sem.acquire(timeout=timeout):
+                with self._slot_cond:
+                    self._fg_demand -= 1
+                    self._slot_cond.notify_all()
                 logger.warning("[llm_gate] 交互请求 %s 等待全局并发槽超时 (%.1fs)", caller, timeout)
                 with self._lock:
                     self._total_rejected += 1
@@ -332,25 +405,25 @@ class LLMGate:
         with self._lock:
             self._active_slots += 1
 
-        return SlotGuard(self, caller, is_batch=is_batch, bypassed=False)
+        return SlotGuard(self, caller, is_batch=is_batch, bypassed=False, holds_fg=not is_batch)
 
     def _release_slot(self, guard: SlotGuard) -> None:
         """底层槽位归还。"""
         if guard._bypassed:
             return
-        with self._lock:
+        with self._slot_cond:
             self._active_slots = max(0, self._active_slots - 1)
+            if guard.is_batch:
+                self._batch_active = max(0, self._batch_active - 1)
+            if guard.holds_fg:
+                self._fg_demand = max(0, self._fg_demand - 1)
+            # 唤醒批处理等待者：槽位释放/前台离开都会让弹性上限变大
+            self._slot_cond.notify_all()
 
         try:
             self._global_sem.release()
         except ValueError:
             pass
-
-        if guard.is_batch:
-            try:
-                self._batch_sem.release()
-            except ValueError:
-                pass
 
     async def async_acquire_slot(self, caller: str = "", timeout: float = 60.0) -> SlotGuard | None:
         """异步获取并发槽位（委托独立守护线程池等待 semaphore，不阻塞事件循环）。
@@ -376,19 +449,45 @@ class LLMGate:
             self._total_rate_limited += 1
             logger.warning("[llm_gate] 触发全局 429 冷却窗: 持续 %.1fs", cd)
 
+    def notify_server_error(self) -> None:
+        """上游 5xx/服务端故障（含账号池整体不可用）计数：连续达阈值即开启全局熔断冷却窗。
+
+        与 429 冷却共用同一冷却窗机制（wait_if_global_cooldown 统一闸外等待）；
+        任一次成功即清零计数——间歇性 5xx 不会误触发熔断。
+        """
+        with self._lock:
+            self._server_error_streak += 1
+            if self._server_error_streak < max(1, self.server_breaker_threshold):
+                return
+            self._server_error_streak = 0
+            self._total_server_breaks += 1
+            cd = min(max(1.0, self.server_breaker_cooldown), 300.0)
+            self._cooldown_until = max(self._cooldown_until, time.monotonic() + cd)
+            logger.warning(
+                "[llm_gate] 连续 %d 次上游服务端错误，触发全局熔断冷却窗: 持续 %.1fs",
+                self.server_breaker_threshold, cd,
+            )
+
     def record_success(self) -> None:
-        """记录调用成功。"""
+        """记录调用成功（同时清零服务端错误连击计数）。"""
         with self._lock:
             self._total_successes += 1
+            self._server_error_streak = 0
 
     def stats(self) -> dict[str, Any]:
         """输出闸门当前实时状态快照，供系统诊断与监控。"""
+        elastic_on = is_batch_elastic_enabled()
         with self._lock:
             cooldown_rem = max(0.0, self._cooldown_until - time.monotonic())
             return {
                 "enabled": is_llm_gate_enabled(),
                 "max_concurrency": self.max_concurrency,
                 "batch_max_concurrency": self.batch_max_concurrency,
+                "batch_elastic": elastic_on,
+                "batch_elastic_max": self.batch_elastic_max,
+                "batch_effective_cap": self._elastic_batch_cap_locked(elastic_on),
+                "batch_active": self._batch_active,
+                "fg_demand": self._fg_demand,
                 "active_slots": self._active_slots,
                 "max_rpm": self.max_rpm,
                 "available_tokens": round(self._token_bucket.tokens, 2),
@@ -397,6 +496,8 @@ class LLMGate:
                 "total_successes": self._total_successes,
                 "total_rejected": self._total_rejected,
                 "total_rate_limited": self._total_rate_limited,
+                "total_server_breaks": self._total_server_breaks,
+                "server_error_streak": self._server_error_streak,
             }
 
 

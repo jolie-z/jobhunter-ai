@@ -20,6 +20,7 @@ export function ScrapeLiveProgressBanner() {
 
   const totalCurrent = progressEntries.reduce((acc, [, p]) => acc + (p.current || 0), 0)
   const totalTarget = progressEntries.reduce((acc, [, p]) => acc + (p.total || 0), 0)
+  const totalSkipped = progressEntries.reduce((acc, [, p]) => acc + (p.skipped || 0), 0)
 
   return (
     <div className="rounded-xl border border-violet-500/30 bg-violet-500/[0.04] p-3 space-y-2.5">
@@ -43,6 +44,11 @@ export function ScrapeLiveProgressBanner() {
         <div className="text-xs font-medium text-foreground">
           本轮已入库: <span className="font-bold text-violet-600 dark:text-violet-400 font-mono">{totalCurrent}</span>
           {totalTarget > 0 && <span className="text-muted-foreground font-mono"> / {totalTarget} 条</span>}
+          {totalSkipped > 0 && (
+            <span className="ml-2 text-amber-600 dark:text-amber-400">
+              · 重复跳过: <span className="font-bold font-mono">{totalSkipped}</span> 条
+            </span>
+          )}
         </div>
       </div>
 
@@ -51,6 +57,7 @@ export function ScrapeLiveProgressBanner() {
           const prog = scrapeProgress[plat]
           const current = prog?.current ?? 0
           const total = prog?.total ?? 0
+          const skipped = prog?.skipped ?? 0
           const pct = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0
 
           return (
@@ -73,6 +80,12 @@ export function ScrapeLiveProgressBanner() {
                   style={{ width: `${pct}%` }}
                 />
               </div>
+
+              {skipped > 0 && (
+                <div className="text-[10px] text-amber-600 dark:text-amber-400">
+                  重复跳过 {skipped} 条
+                </div>
+              )}
             </div>
           )
         })}

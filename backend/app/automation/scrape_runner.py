@@ -10,7 +10,9 @@
 import asyncio
 import logging
 import sqlite3
+import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.automation import pipeline_broadcast as pb
@@ -74,6 +76,163 @@ def _derive_search_from_config(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _resolve_platform_limits(
+    scrape_cfg: dict[str, Any],
+    search: dict[str, Any],
+    override_limit: int | None = None,
+) -> dict[str, int]:
+    """解析本轮各平台预算。
+
+    2026-10-30 修复：
+    - 抓取配置里只要存在 platforms 段，就以它为准；enabled=false 或 limit<=0 都算关闭。
+      这样「把平台全部关掉」不会被 autopilot 的 search 平台静默复活。
+    - 只有配置里完全没有 platforms 段（老数据/首次运行）才回落到 autopilot 搜索单。
+    """
+    sc_plats = (scrape_cfg or {}).get("platforms") or {}
+    if sc_plats:
+        out: dict[str, int] = {}
+        for key, conf in sc_plats.items():
+            # 缺省 enabled 视为开（有 limit 即意图抓取）；旧实现视为关，属有意修正
+            if not isinstance(conf, dict) or not conf.get("enabled", True):
+                continue
+            limit = int(conf.get("limit", 0) or 0)
+            if limit <= 0:
+                continue
+            out[key] = int(override_limit) if override_limit and int(override_limit) > 0 else limit
+        return out
+    base = int(override_limit) if override_limit and int(override_limit) > 0 else int(search.get("target_jobs") or 3)
+    return dict.fromkeys(search.get("platforms") or [], base)
+
+
+def _order_active_conditions(active: list[tuple]) -> list[tuple]:
+    """公平轮巡排序：最久没跑过的条件优先；同时间按队列顺序。"""
+    return sorted(active, key=lambda row: (row[4].get("last_run") or "", row[0]))
+
+
+async def _run_platform_condition_worker(
+    p: str,
+    *,
+    pipeline_task_id: str,
+    queue: list[dict[str, Any]],
+    budgets: dict[str, int],
+    default_city: str,
+    default_salary: str,
+    start_rowid: int,
+    count_new,
+    emit_scraped_jobs,
+    budget_label: str,
+) -> None:
+    """单平台 worker：公平轮巡队列里的未抓尽条件。
+
+    2026-10-30 重构：
+    - 不再「队首条件吃满整轮预算」。每轮把预算均分给所有未抓尽条件，至少 1 条/条件；
+      条件按 last_run 升序排序（最久没跑的优先），因此 cap < 条件数 时也会逐轮轮换，
+      不会出现队首永远复活、后面条件饿死。
+    - 抓尽判定改用台账持久状态（hit_bottom / 连续0新增 / TTL），不再用单轮内存集合。
+    """
+    from app.api.routes.crawlers import run_dispatch_collect, running_platform_tasks
+    from app.automation import abort as abort_mod
+    from app.automation import platform_mutex
+    from app.session.scrape_sessions import get_condition_state
+
+    cap = int(budgets.get(p, 0) or 0)
+    cn = PLATFORM_CN.get(p, p)
+    zero_new_seen: set[int] = set()  # 本平台本轮「成功但 0 新增」的条件，下一轮跳过
+
+    def _triple(item: dict[str, Any]):
+        return (
+            (item.get("keyword") or "").strip(),
+            (item.get("city") or "").strip() or default_city,
+            (item.get("salary") or "").strip() or default_salary,
+        )
+
+    try:
+        while cap > 0 and not abort_mod.is_aborted() and not abort_mod.is_platform_aborted(p):
+            active = []
+            for idx, item in enumerate(queue):
+                if idx in zero_new_seen:
+                    continue
+                kw, c, s = _triple(item)
+                state = await asyncio.to_thread(get_condition_state, kw, c, s, p)
+                if not state.get("exhausted"):
+                    active.append((idx, kw, c, s, state))
+            if not active:
+                await pb.emit_log(pipeline_task_id, f"✅ [{cn}] 所有条件均已抓尽或本轮无新增，本平台本轮收工")
+                break
+
+            # 公平轮巡：最久没跑过的条件优先；同轮内按剩余预算均分
+            active = _order_active_conditions(active)
+            per_cond = max(1, cap // len(active))
+            progressed = False
+
+            for idx, kw, c, s, state in active:
+                if cap <= 0 or abort_mod.is_aborted() or abort_mod.is_platform_aborted(p):
+                    break
+                scraped = int(state.get("scraped") or 0)
+                predicted = int(state.get("predicted") or 0)
+                remaining = max(1, predicted - scraped) if predicted > 0 else per_cond
+                target = max(1, min(cap, per_cond, remaining))
+
+                # 平台级抓取↔投递互斥：派发前冷静等待同平台投递清场（最长 10 分钟）。
+                # 外审 R2-P1-1：条件变量等待不感知终止标志——按 1s 切片轮询终止标志
+                # （全局/单平台终止后 ≤1s 退出等待，不再挂满 10 分钟），且清场返回后、
+                # 派发前重检终止标志，绝不给已终止的链路幽灵拉起新一轮浏览器抓取
+                cleared = False
+                clear_deadline = time.monotonic() + platform_mutex.SCRAPE_WAIT_DELIVERY_TIMEOUT_S
+                while not (abort_mod.is_aborted() or abort_mod.is_platform_aborted(p)):
+                    if await platform_mutex.wait_delivery_clear(p, timeout_s=1.0):
+                        cleared = True
+                        break
+                    if time.monotonic() >= clear_deadline:
+                        break
+                if abort_mod.is_aborted() or abort_mod.is_platform_aborted(p):
+                    await pb.emit_log(pipeline_task_id, f"🛑 [{cn}] 投递清场等待期间收到终止指令，本轮抓取取消")
+                    return
+                if not cleared:
+                    await pb.emit_log(
+                        pipeline_task_id,
+                        f"⏭️ [{cn}] 投递进行中且超 10 分钟未清场，本轮抓取跳过（下轮波次/续抓自动补上）", "error")
+                    return
+                if any(not t.done() for t in running_platform_tasks.get(p, ())):
+                    await pb.emit_log(
+                        pipeline_task_id,
+                        f"⚠️ [{cn}] 上一轮抓取任务未结束，本轮放弃新派发以避免并发超抓", "error")
+                    return
+
+                base = (await asyncio.to_thread(count_new)).get(cn, 0)
+                await run_dispatch_collect(
+                    keyword=kw, city=c, salary=s, target_jobs=target,
+                    platforms=[p], master_task_id=pipeline_task_id,
+                    platform_search={p: {"keyword": kw, "city": c, "salary": s, "target": target}},
+                )
+                inserted = (await asyncio.to_thread(count_new)).get(cn, 0) - base
+                cap -= max(0, inserted)
+                if inserted > 0:
+                    progressed = True
+                    await emit_scraped_jobs(pipeline_task_id, start_rowid, p, cn)
+                else:
+                    zero_new_seen.add(idx)
+
+                new_state = await asyncio.to_thread(get_condition_state, kw, c, s, p)
+                ttl_txt = (
+                    f"{new_state['scraped']}/{new_state['predicted']}"
+                    if new_state["predicted"] > 0 else f"{new_state['scraped']}/分母待获取"
+                )
+                exhausted_txt = " | 已抓尽" if new_state.get("exhausted") else ""
+                await pb.emit_log(
+                    pipeline_task_id,
+                    f"🕷️ [{cn}] 条件「{kw}」本轮 +{inserted} | 累计进度 {ttl_txt} | {budget_label} {cap}{exhausted_txt}",
+                )
+
+            if not progressed:
+                break
+        if abort_mod.is_platform_aborted(p):
+            await pb.emit_log(pipeline_task_id, f"🛑 [{cn}] 已按指令终止")
+    except Exception as we:
+        logger.error(f"[FullAuto] 平台 {p} 抓取 worker 异常: {we}", exc_info=True)
+        await pb.emit_log(pipeline_task_id, f"⚠️ [{cn}] 抓取异常: {we}", "error")
+
+
 async def _reap_orphan_scrapers(pipeline_task_id: str, timeout: float = 30.0) -> None:
     """收尾点名：对仍有未结束抓取任务的平台拉急刹并限时等其退出。"""
     from app.api.routes.crawlers import running_platform_tasks, stop_platform
@@ -121,17 +280,23 @@ async def _emit_scraped_jobs(pipeline_task_id: str, start_rowid: int, platform: 
 async def execute_pipeline_scrape(
     pipeline_task_id: str,
     search: dict[str, Any],
+    on_start: Callable[[int], Awaitable[None]] | None = None,
+    on_rows_inserted: Callable[[], None] | None = None,
 ) -> tuple[int, dict[str, int], list[str]]:
-    """执行全自动链路中的「平台抓取」阶段。"""
+    """执行全自动链路中的「平台抓取」阶段。
+
+    on_start(start_rowid)：拿到本轮权威起始 rowid 后、派发抓取前回调
+    （编排器用它启动抓取期清洗泵；start_rowid 由本函数查库确定，避免调用方
+    提前查库与手动抓取并发插入产生边界漂移）。
+    on_rows_inserted()：任一平台本轮有新行入库并已广播卡片后回调
+    （唤醒清洗泵，缩短「入库→开始清洗」延迟）。
+    """
     await pb.emit_stage(pipeline_task_id, "scraping", "running")
 
-    from app.api.routes.crawlers import run_dispatch_collect, running_platform_tasks
-    from app.automation import abort as abort_mod
     from app.automation import run_snapshot as run_snapshot_mod
     from app.pipeline import add_keyword_history, get_scrape_config
     from app.session.preflight import ensure_platforms_ready
     from app.session.scrape_sessions import get_condition_progress
-    from app.session.scrape_sessions import is_exhausted as ss_exhausted
 
     with sqlite3.connect(_get_raw_db_path()) as _c:
         start_rowid = _c.execute("SELECT IFNULL(MAX(rowid),0) FROM raw_jobs").fetchone()[0]
@@ -144,13 +309,7 @@ async def execute_pipeline_scrape(
 
     scrape_cfg = get_scrape_config() or {}
     queue = [k for k in (scrape_cfg.get("keywords") or []) if (k.get("keyword") or "").strip()]
-    sc_plats = scrape_cfg.get("platforms") or {}
-    limits_map = {
-        k: int(v.get("limit", 0) or 0) for k, v in sc_plats.items()
-        if isinstance(v, dict) and v.get("enabled") and int(v.get("limit", 0) or 0) > 0
-    }
-    if not limits_map:
-        limits_map = dict.fromkeys(search["platforms"], search["target_jobs"])
+    limits_map = _resolve_platform_limits(scrape_cfg, search)
 
     ready_map = await ensure_platforms_ready(
         list(limits_map.keys()),
@@ -173,6 +332,15 @@ async def execute_pipeline_scrape(
     default_salary = (scrape_cfg.get("default_salary") or "").strip() or search["salary"]
     run_snapshot_mod.begin(pipeline_task_id, start_rowid, budgets, disabled_platforms)
 
+    if on_start is not None:
+        try:
+            # begin() 之后再启动清洗泵：泵内推送会 register_record_ids，
+            # begin 会重置 record_ids，必须在重置完成后才允许登记。
+            await on_start(int(start_rowid))
+        except Exception as e:
+            # 回调只服务流式清洗，任何异常不得阻断抓取
+            logger.warning(f"[FullAuto] 抓取启动回调异常（不阻断抓取）: {e}")
+
     if not queue:
         queue = [{"keyword": search["keyword"], "city": "", "salary": ""}]
 
@@ -192,62 +360,39 @@ async def execute_pipeline_scrape(
     if not budgets:
         await pb.emit_log(pipeline_task_id, "⚠️ 无可用抓取平台（limit 均为 0 或登录态全部失效），跳过抓取段", "error")
     else:
+        async def _emit_and_wake(pid: str, sr: int, platform: str, cn: str) -> None:
+            """先广播抓取卡，再唤醒清洗泵：保证前端先收到 scraped 事件，卡片不会倒序。"""
+            try:
+                await _emit_scraped_jobs(pid, sr, platform, cn)
+            finally:
+                if on_rows_inserted is not None:
+                    try:
+                        on_rows_inserted()
+                    except Exception as wake_e:
+                        logger.warning(f"[FullAuto] 清洗泵唤醒回调异常（不阻断抓取）: {wake_e}")
+
         await pb.emit_log(
             pipeline_task_id,
-            f"🕷️ 条件队列 {len(queue)} 组 × 平台 {list(budgets)}（抓尽制：分子追平分母即切下一条件，limit 为本任务上限）")
-        zero_new_seen = set()
-
-        async def _platform_worker(p):
-            cap = budgets[p]
-            cn = PLATFORM_CN.get(p, p)
-            try:
-                while cap > 0 and not abort_mod.is_aborted() and not abort_mod.is_platform_aborted(p):
-                    cur = None
-                    for idx, item in enumerate(queue):
-                        if (p, idx) in zero_new_seen:
-                            continue
-                        kw, c, s = _cond_triple(item)
-                        scraped, predicted = await asyncio.to_thread(get_condition_progress, kw, c, s, p)
-                        if not ss_exhausted(scraped, predicted):
-                            cur = (idx, kw, c, s, scraped, predicted)
-                            break
-                    if cur is None:
-                        await pb.emit_log(pipeline_task_id, f"✅ [{cn}] 所有条件均已抓尽，本平台本轮收工")
-                        break
-                    idx, kw, c, s, scraped, predicted = cur
-                    target = max(1, min(cap, (predicted - scraped) if predicted > 0 else cap))
-
-                    if any(not t.done() for t in running_platform_tasks.get(p, ())):
-                        await pb.emit_log(
-                            pipeline_task_id,
-                            f"⚠️ [{cn}] 上一轮抓取任务未结束，本轮放弃新派发以避免并发超抓", "error")
-                        break
-                    base = (await asyncio.to_thread(_count_new)).get(cn, 0)
-                    await run_dispatch_collect(
-                        keyword=kw, city=c, salary=s, target_jobs=target,
-                        platforms=[p], master_task_id=pipeline_task_id,
-                        platform_search={p: {"keyword": kw, "city": c, "salary": s, "target": target}},
-                    )
-                    inserted = (await asyncio.to_thread(_count_new)).get(cn, 0) - base
-                    cap -= inserted
-                    if inserted > 0:
-                        await _emit_scraped_jobs(pipeline_task_id, start_rowid, p, cn)
-
-                    new_scraped, new_predicted = await asyncio.to_thread(get_condition_progress, kw, c, s, p)
-                    ttl_txt = f"{new_scraped}/{new_predicted}" if new_predicted > 0 else f"{new_scraped}/分母待获取"
-                    await pb.emit_log(
-                        pipeline_task_id,
-                        f"🕷️ [{cn}] 条件「{kw}」本轮 +{inserted} | 累计进度 {ttl_txt} | 本任务剩余上限 {cap}")
-                    if inserted <= 0:
-                        zero_new_seen.add((p, idx))
-                if abort_mod.is_platform_aborted(p):
-                    await pb.emit_log(pipeline_task_id, f"🛑 [{cn}] 已按指令终止")
-            except Exception as we:
-                logger.error(f"[FullAuto] 平台 {p} 抓取 worker 异常: {we}", exc_info=True)
-                await pb.emit_log(pipeline_task_id, f"⚠️ [{cn}] 抓取异常: {we}", "error")
-
+            f"🕷️ 条件队列 {len(queue)} 组 × 平台 {list(budgets)}"
+            "（抓尽制：到平台底部 / 连续0新增 / 分母追平即抓尽；预算在未抓尽条件间均分轮巡，limit 为本任务上限）")
         worker_results = await asyncio.gather(
-            *[_platform_worker(p) for p in list(budgets)], return_exceptions=True)
+            *[
+                _run_platform_condition_worker(
+                    p,
+                    pipeline_task_id=pipeline_task_id,
+                    queue=queue,
+                    budgets=budgets,
+                    default_city=default_city,
+                    default_salary=default_salary,
+                    start_rowid=start_rowid,
+                    count_new=_count_new,
+                    emit_scraped_jobs=_emit_and_wake,
+                    budget_label="本任务剩余上限",
+                )
+                for p in list(budgets)
+            ],
+            return_exceptions=True,
+        )
         for p, r in zip(list(budgets), worker_results, strict=False):
             if isinstance(r, Exception):
                 logger.error(f"[FullAuto] 平台 {p} worker 抛出: {r}", exc_info=True)
@@ -295,7 +440,7 @@ async def run_scrape_stage_only(
         "keyword": keyword or derived["keyword"],
         "city": city or derived["city"],
         "salary": salary or derived["salary"],
-        "target_jobs": platforms_limit or derived["target_jobs"] or 10,
+        "target_jobs": platforms_limit or derived["target_jobs"] or 3,
         "platforms": platforms or derived["platforms"],
     }
 
@@ -305,13 +450,11 @@ async def run_scrape_stage_only(
 
 async def _execute_scrape_only(pipeline_task_id: str, search: dict[str, Any], override_limit: int | None = None):
     """独立抓取执行：前置登录检查 → 条件队列轮询 → 并发抓取 → 台账回写 → 抓取完成收尾。"""
-    from app.api.routes.crawlers import run_dispatch_collect, running_platform_tasks
     from app.automation import abort as abort_mod
     from app.automation import run_snapshot as run_snapshot_mod
     from app.pipeline import add_keyword_history, get_scrape_config
     from app.session.preflight import ensure_platforms_ready
     from app.session.scrape_sessions import get_condition_progress
-    from app.session.scrape_sessions import is_exhausted as ss_exhausted
 
     try:
         await pb.emit_log(pipeline_task_id, f"🕷️ [平台抓取 · 独立试跑] 任务已启动 | 目标平台: {search['platforms']}")
@@ -328,22 +471,7 @@ async def _execute_scrape_only(pipeline_task_id: str, search: dict[str, Any], ov
 
         scrape_cfg = get_scrape_config() or {}
         queue = [k for k in (scrape_cfg.get("keywords") or []) if (k.get("keyword") or "").strip()]
-        sc_plats = scrape_cfg.get("platforms") or {}
-
-        if override_limit and override_limit > 0:
-            limits_map = {
-                k: override_limit for k, v in sc_plats.items()
-                if isinstance(v, dict) and v.get("enabled", True)
-            }
-            if not limits_map:
-                limits_map = dict.fromkeys(search.get("platforms") or ["boss", "liepin", "51job", "zhilian"], override_limit)
-        else:
-            limits_map = {
-                k: int(v.get("limit", 0) or 0) for k, v in sc_plats.items()
-                if isinstance(v, dict) and v.get("enabled") and int(v.get("limit", 0) or 0) > 0
-            }
-            if not limits_map:
-                limits_map = dict.fromkeys(search["platforms"], search["target_jobs"])
+        limits_map = _resolve_platform_limits(scrape_cfg, search, override_limit)
 
         ready_map = await ensure_platforms_ready(
             list(limits_map.keys()),
@@ -379,56 +507,29 @@ async def _execute_scrape_only(pipeline_task_id: str, search: dict[str, Any], ov
         else:
             await pb.emit_log(
                 pipeline_task_id,
-                f"🕷️ 条件队列 {len(queue)} 组 × 平台 {list(budgets)}（抓尽制推进，单平台上限为本轮预算）")
-            zero_new_seen = set()
-
-            async def _platform_worker(p):
-                cap = budgets[p]
-                cn = PLATFORM_CN.get(p, p)
-                try:
-                    while cap > 0 and not abort_mod.is_aborted() and not abort_mod.is_platform_aborted(p):
-                        cur = None
-                        for idx, item in enumerate(queue):
-                            if (p, idx) in zero_new_seen:
-                                continue
-                            kw, c, s = _cond_triple(item)
-                            scraped, predicted = await asyncio.to_thread(get_condition_progress, kw, c, s, p)
-                            if not ss_exhausted(scraped, predicted):
-                                cur = (idx, kw, c, s, scraped, predicted)
-                                break
-                        if cur is None:
-                            await pb.emit_log(pipeline_task_id, f"✅ [{cn}] 所有条件均已抓尽，本平台收工")
-                            break
-                        idx, kw, c, s, scraped, predicted = cur
-                        target = max(1, min(cap, (predicted - scraped) if predicted > 0 else cap))
-
-                        if any(not t.done() for t in running_platform_tasks.get(p, ())):
-                            await pb.emit_log(pipeline_task_id, f"⚠️ [{cn}] 上一轮抓取未结束，放弃新派发", "error")
-                            break
-
-                        base = (await asyncio.to_thread(_count_new)).get(cn, 0)
-                        await run_dispatch_collect(
-                            keyword=kw, city=c, salary=s, target_jobs=target,
-                            platforms=[p], master_task_id=pipeline_task_id,
-                            platform_search={p: {"keyword": kw, "city": c, "salary": s, "target": target}},
-                        )
-                        inserted = (await asyncio.to_thread(_count_new)).get(cn, 0) - base
-                        cap -= inserted
-                        if inserted > 0:
-                            await _emit_scraped_jobs(pipeline_task_id, start_rowid, p, cn)
-
-                        new_scraped, new_predicted = await asyncio.to_thread(get_condition_progress, kw, c, s, p)
-                        ttl_txt = f"{new_scraped}/{new_predicted}" if new_predicted > 0 else f"{new_scraped}/分母待获取"
-                        await pb.emit_log(
-                            pipeline_task_id,
-                            f"🕷️ [{cn}] 条件「{kw}」本轮 +{inserted} | 累计进度 {ttl_txt} | 剩余预算 {cap}")
-                        if inserted <= 0:
-                            zero_new_seen.add((p, idx))
-                except Exception as we:
-                    logger.error(f"[ScrapeOnly] 平台 {p} worker 异常: {we}", exc_info=True)
-                    await pb.emit_log(pipeline_task_id, f"⚠️ [{cn}] 抓取异常: {we}", "error")
-
-            await asyncio.gather(*[_platform_worker(p) for p in list(budgets)], return_exceptions=True)
+                f"🕷️ 条件队列 {len(queue)} 组 × 平台 {list(budgets)}"
+                "（抓尽制推进：预算在未抓尽条件间均分轮巡，单平台上限为本轮预算）")
+            worker_results = await asyncio.gather(
+                *[
+                    _run_platform_condition_worker(
+                        p,
+                        pipeline_task_id=pipeline_task_id,
+                        queue=queue,
+                        budgets=budgets,
+                        default_city=default_city,
+                        default_salary=default_salary,
+                        start_rowid=start_rowid,
+                        count_new=_count_new,
+                        emit_scraped_jobs=_emit_scraped_jobs,
+                        budget_label="剩余预算",
+                    )
+                    for p in list(budgets)
+                ],
+                return_exceptions=True,
+            )
+            for p, r in zip(list(budgets), worker_results, strict=False):
+                if isinstance(r, Exception):
+                    logger.error(f"[ScrapeOnly] 平台 {p} worker 抛出: {r}", exc_info=True)
             await _reap_orphan_scrapers(pipeline_task_id)
 
             for idx, item in enumerate(queue):

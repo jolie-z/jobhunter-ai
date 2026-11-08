@@ -12,12 +12,26 @@ import asyncio
 import logging
 import re
 import sqlite3
+import time
 from datetime import datetime
 from typing import Any
 
 from app.automation import db as automation_db
+from app.automation import pipeline_broadcast as pb
 from app.automation import run_snapshot as _rs
 from app.core import process_status
+from app.core.feishu_utils import POST_DELIVERY_FOLLOW_STATUSES
+from app.automation.snapshot_dispatch import (  # 拆分子任务：分诊/失败卡/SQLite 映射抽离（<500 行门禁）
+    _map_sqlite_process_status,
+    _mass_review_reason,
+    _triage_classify,
+    build_failure_job,
+    build_failure_suggestion,
+    classify_feishu_followup,
+    _RUNNING_CLEAN_STATES,
+    _SQLITE_REJECTED_STATUSES,
+)
+from app.core.process_status import APPROVAL_FOLLOW_STATUSES
 from app.core.utils import is_greeting_supported_platform, normalize_platform_code
 from app.services import feishu_service
 
@@ -25,27 +39,6 @@ logger = logging.getLogger(__name__)
 
 _last_snapshot_params: tuple[Any, ...] | None = None
 _last_jobs_status_sig: tuple[Any, ...] | None = None
-
-
-def _mass_review_reason(grade: Any, platform: Any, feishu_fields: dict, config: dict) -> str:
-    """复算海投岗停留「人工复核」的真实原因，替换旧硬编码「命中大厂规则，待人工过目」。
-
-    2026-10-07 Windows 真机实证：待审批岗绝大多数是「评级 B 未在自动投递白名单」而非
-    大厂规模拦截，旧文案让用户误以为 5000 阈值失效。这里与 workflow.evaluate_delivery_gate
-    用同一判定口径复算（config 注入避免逐条读库）；安检全过却停在复核 = 物料挂载未完成
-    （\\tmp 路径 bug 期间的遗留形态），文案如实区分。
-    """
-    try:
-        from app.automation.workflow import evaluate_delivery_gate
-
-        state = {"grade": grade, "platform": platform or "", "feishu_fields": feishu_fields or {}}
-        gate_ok, reason = evaluate_delivery_gate(state, config=config)
-        if gate_ok:
-            return "安检已过，物料未就绪/流程中断，待人工处理"
-        return f"{reason}，待人工过目"
-    except Exception as e:
-        logger.warning(f"复算海投拦截原因失败，回退通用文案: {e}")
-        return "命中大厂规则，待人工过目"
 
 
 def _get_raw_db_path() -> str:
@@ -67,126 +60,123 @@ def _get_raw_db_path() -> str:
 # 不在白名单，兜底把它画成「评估中」幽灵卡）。未知值兜底为 rejected+告警文案——绝不输出
 # 裸 running 或活跃近似态伪装岗位在流转（旧兜底 running+ai_eval_queued 正是幽灵卡根源；
 # 词表漂移宁可显示为淘汰态让人发现，也不能让已归档岗位假装还在评估）。
-_SQLITE_REJECTED_STATUSES = process_status.REJECTED_STATUSES
+_FEISHU_TERMINAL_STATUSES = {
+    "delivered", "已投递", "error", "failed", "执行失败", "投递失败",
+}
+# 实时 running 态超过 30 分钟没有任何更新，视为崩溃遗留，不再覆盖快照
+_LIVE_RUNNING_TTL_SECONDS = 30 * 60
 
 
-_RUNNING_CLEAN_STATES = (process_status.CLEANING, process_status.PENDING_AI, process_status.PENDING_AI_LEGACY)
+def _live_action_desc(st: dict) -> str:
+    # 文案唯一事实源在 pipeline_broadcast，避免前后端双份中文映射漂移
+    return pb.node_action_desc(st.get("node"), st.get("sub_status"))
 
 
-def _map_sqlite_process_status(p_status: str) -> dict[str, str | None]:
-    """把 raw_jobs.process_status 映射为快照卡片的 {status, sub_status, last_action_desc}。
-
-    取值一律来自 app/core/process_status 词表(含旧变体归一),不再内联硬编码字符串。
-    """
-    p_status = process_status.normalize_legacy((p_status or "").strip())
-    if not p_status:
-        # NULL/空串真实可达（import_service 自建表无默认值）——按建表默认「已存入数据」语义呈现
-        return {"status": "scraped", "sub_status": None, "last_action_desc": "入库待清洗"}
-    if p_status == process_status.REJECT_AI:
-        return {"status": "rejected", "sub_status": None, "last_action_desc": "触发AI排雷规则淘汰"}
-    if p_status == process_status.REJECT_RULE:
-        return {"status": "rejected", "sub_status": None, "last_action_desc": "触发规则清洗淘汰"}
-    if p_status == process_status.REJECT_CONFIRMED:
-        return {"status": "rejected", "sub_status": None, "last_action_desc": "已确认淘汰"}
-    if p_status == process_status.REJECT_ARCHIVED_LEGACY:
-        # [存量兼容] 2026-10-09 前飞书卡片归档旧词（现行归档统一写「已确认淘汰」）
-        return {"status": "rejected", "sub_status": None, "last_action_desc": "已确认淘汰（历史归档）"}
-    if p_status == process_status.ABANDONED:
-        return {"status": "rejected", "sub_status": None, "last_action_desc": "已放弃"}
-    if p_status == process_status.STORED:
-        return {"status": "scraped", "sub_status": None, "last_action_desc": "入库待清洗"}
-    if p_status == process_status.RECALL_PENDING_EVAL:
-        return {"status": "running", "sub_status": "ai_eval_queued", "last_action_desc": "♻️ 已召回，等待AI重新初评"}
-    if p_status == process_status.PUSH_PENDING:
-        return {"status": "running", "sub_status": "ai_eval_queued", "last_action_desc": "已入库，待推送至飞书"}
-    if p_status == process_status.SCORED:
-        return {"status": "running", "sub_status": "ai_eval_queued", "last_action_desc": "AI打分完成，等待流转"}
-    if p_status in _RUNNING_CLEAN_STATES:
-        return {"status": "running", "sub_status": "ai_eval_queued", "last_action_desc": "清洗排雷处理中"}
-    if p_status == process_status.READY_TO_DELIVER:
-        return {"status": "ready_to_deliver", "sub_status": None, "last_action_desc": "待投递"}
-    if p_status == process_status.SYNCED:
-        return {"status": "done", "sub_status": None, "last_action_desc": "已同步飞书"}
-    # 未知状态兜底：按淘汰呈现+告警文案（绝不伪装成活跃流转态——词表漂移宁可显眼也不误导）
+def build_live_job(st: dict) -> dict:
+    """把实时登记表里的在途岗位组装成快照卡片（快照各分段都没覆盖到时兜底）。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return {
-        "status": "rejected",
-        "sub_status": None,
-        "last_action_desc": f"⚠️ 未知状态「{p_status[:12]}」按淘汰兜底，请反馈开发者",
+        "job_id": str(st.get("job_id") or ""),
+        "job_name": st.get("job_name") or "未知岗位",
+        "company_name": st.get("company_name") or "",
+        "platform": st.get("platform") or "",
+        "salary": st.get("salary") or "",
+        "city": st.get("city") or "",
+        "education": st.get("education") or "",
+        "experience": st.get("experience") or "",
+        "job_url": st.get("job_url") or "",
+        "jd_text": st.get("jd_text") or "",
+        "company_scale": st.get("company_scale") or "",
+        "grade": st.get("grade") or "",
+        "score": st.get("score"),
+        "review_type": st.get("review_type"),
+        "has_rewrite": bool(st.get("has_rewrite")),
+        "greeting_msg": st.get("greeting_msg") or "",
+        "status": "running",
+        "node": st.get("node") or "evaluate_node",
+        "sub_status": st.get("sub_status"),
+        "failure_info": None,
+        "deep_eval_done": bool(st.get("deep_eval_done")),
+        "is_current_run": True,
+        "crawl_time": "",
+        "last_action_time": now,
+        "last_action_desc": _live_action_desc(st),
     }
 
 
-def _triage_classify(error: str) -> str:
-    """快照展示用：复用 L1 分诊对错误文本的分类结果。"""
-    try:
-        from app.automation.failure_triage import classify_delivery_failure
-        return classify_delivery_failure(error)
-    except Exception:
-        return "unknown"
+def apply_live_job_overlay(jobs: list[dict], live_jobs: dict[str, dict]) -> list[dict]:
+    """用进程内实时岗位态覆盖 Feishu/SQLite 派生快照。
 
-
-def build_failure_suggestion(err_msg: str) -> str:
-    """按失败文本生成执行失败卡片的推进建议。
-
-    结构化标签（引擎明确断言的事实）必须先于自由关键词匹配：
-    「[物料] 打招呼语为非法内容」含"打招呼"却是物料问题，先匹配自由关键词会误导向补发打招呼。
-    "附件已送达"只在引擎带 [微聊受阻] 标签时才成立，自由文本命中不做该断言。
+    只覆盖 status=running 的实时项：终态（waiting/ready/delivered/error）必须让 Feishu
+    权威数据获胜，否则用户放行/投递后会被旧实时态拉回。运行态则相反——Feishu 的
+    「已完成初步评估 / 简历人工复核」无法表达深评/改写/打招呼/投递进行中，必须由
+    SSE 实时态覆盖，否则 12 秒轮询会把卡片打回「AI初评完成 / 待审批」。
     """
-    text = str(err_msg or "")
-    lower = text.lower()
-    if "附件未送达" in text:
-        return "打招呼语已成功送达！简历附件选择受阻，可点击右下角【重试】单独补发附件简历。"
-    if "微聊受阻" in text:
-        return "附件简历已成功送达！可点击右下角【重试】单独补发专属打招呼语。"
-    if any(k in text for k in ("[下架]", "已下线", "已下架", "已关闭")):
-        return "岗位已在对应平台下架或关闭，建议点击【放弃】移除。"
-    if any(k in text for k in ("[物料]", "缺少", "简历下载失败")):
-        return "物料缺失或异常，请在飞书检查简历附件与字段后重试。"
-    if any(k in text for k in ("[登录]", "登录态", "未登录")):
-        return "检测到平台会话失效，请前往对应浏览器重新扫码登录后点击【重试】。"
-    if "超时" in text or "timeout" in lower:
-        return "投递过程等待超时，多为页面加载或网络波动，可稍后点击【重试】。"
-    if "tab" in lower:
-        return "已修复微聊标签页捕获逻辑，可点击重试重新发射。"
-    if any(k in text for k in ("微聊", "打招呼")):
-        return "打招呼环节受阻，可点击右下角【重试】重新发起沟通。"
-    return "建议检查投递日志或平台页面状态后点击重试。"
+    if not live_jobs:
+        return jobs
 
+    index: dict[str, dict] = {}
+    for j in jobs:
+        jid = str(j.get("job_id") or "")
+        if jid:
+            index[jid] = j
+        raw_id = str(j.get("raw_job_id") or "")
+        if raw_id:
+            index.setdefault(raw_id, j)
 
-def build_failure_job(fid: str, fval: dict, *, is_current_run: bool, crawl_time: str) -> dict:
-    """把失败台账条目组装成执行失败 Tab 的卡片数据。
+    now = time.time()
+    for jid, st in live_jobs.items():
+        if st.get("status") != "running":
+            continue
+        updated_at = float(st.get("updated_at") or 0)
+        if updated_at and now - updated_at > _LIVE_RUNNING_TTL_SECONDS:
+            # 长时间无更新的 running 视为崩溃/丢事件遗留，不再覆盖 Feishu 快照
+            continue
+        jid = str(jid)
+        raw_key = str(st.get("raw_job_id") or "")
+        rec_target = index.get(jid)
+        raw_target = index.get(raw_key) if raw_key else None
+        target = rec_target or raw_target
+        if target is None:
+            target = build_live_job({**st, "job_id": jid})
+            jobs.append(target)
+            index[jid] = target
+            continue
 
-    reason 必须原样透传台账里的引擎真实报错：前端 failed-job-card 在该字段缺失时
-    会回退成固定文案「流水线节点处理超时或网络连接异常」，等于把真实原因再次抹平。
-    """
-    err_msg = str(fval.get("error") or "投递异常")
-    failed_at = str(fval.get("failed_at") or "")
-    triage_kind = _triage_classify(err_msg)
-    return {
-        "job_id": fid,
-        "job_name": fval.get("job_name") or "投递受阻岗位",
-        "company_name": fval.get("company_name") or "",
-        "platform": fval.get("platform") or "zhilian",
-        "grade": fval.get("grade") or "D",
-        "status": "error",
-        "node": "error",
-        "failure_info": {
-            "stage": "delivery",
-            "step": fval.get("step") or "自动投递阶段",
-            "reason": err_msg,
-            "suggestion": build_failure_suggestion(err_msg),
-            "can_retry": True,
-            "failure_count": int(fval.get("failure_count") or 1),
-            "triage": triage_kind,
-            "triage_note": ("持久性故障：自动重试无法自愈，已停止波次自动发射" if triage_kind == "persistent"
-                            else ("暂时性故障：保留自动重试，连续失败达上限后停止" if triage_kind == "transient" else "")),
-            "heal_log": fval.get("heal_log") or [],
-            "diagnosis": fval.get("diagnosis") or None,
-        },
-        "is_current_run": is_current_run,
-        "crawl_time": crawl_time,
-        "last_action_time": failed_at or crawl_time,
-        "last_action_desc": "尝试自动投递受阻",
-    }
+        if target.get("status") in _FEISHU_TERMINAL_STATUSES:
+            # Feishu 已落终态：宁可显示终态，也不被崩溃遗留的 running 拉回运行中
+            continue
+
+        # 同一岗位已有 rec 卡：先移除 raw 卡，避免去重执行前的短暂双卡/顶卡
+        if rec_target is not None and raw_target is not None and raw_target is not rec_target:
+            try:
+                jobs.remove(raw_target)
+            except ValueError:
+                pass
+            index.pop(str(raw_target.get("job_id") or ""), None)
+            index.pop(raw_key, None)
+
+        target["node"] = st.get("node") or target.get("node")
+        target["status"] = "running"
+        target["sub_status"] = st.get("sub_status")
+        if st.get("grade"):
+            target["grade"] = st["grade"]
+        if st.get("score") is not None:
+            target["score"] = st["score"]
+        if st.get("review_type"):
+            target["review_type"] = st["review_type"]
+        target["failure_info"] = None
+        target["deep_eval_done"] = bool(st.get("deep_eval_done") or target.get("deep_eval_done"))
+        target["last_action_desc"] = _live_action_desc(st)
+        target["last_action_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        target["is_current_run"] = True
+        # 只有「仅有 raw 卡、尚无 rec 卡」时才原地升级 ID；已有 rec 卡时让 rec 卡获胜
+        if target is raw_target and rec_target is None and raw_key and not jid.startswith("raw_"):
+            target["job_id"] = jid
+            index[jid] = target
+            index.pop(raw_key, None)
+
+    return jobs
 
 
 async def build_jobs_snapshot() -> dict[str, Any]:
@@ -317,6 +307,11 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                     cols = {c[1] for c in cursor.fetchall()}
                     date_expr = "publish_date" if "publish_date" in cols else ("created_at" if "created_at" in cols else "'' AS publish_date")
                     crawl_expr = "crawl_time" if "crawl_time" in cols else "'' AS crawl_time"
+                    # is_synced 必须真的查出来：下方「已同步行不再上板」的判定依赖它。
+                    # 历史库可能没有该列（step2 首次同步时才 ALTER），缺列时补 0 保持旧行为。
+                    is_synced_expr = "is_synced" if "is_synced" in cols else "0 AS is_synced"
+                    # updated_at：淘汰行的真实流转时刻（判定于展示用），缺列时回退抓取时间
+                    updated_expr = "updated_at" if "updated_at" in cols else "'' AS updated_at"
 
                     # 已确认淘汰与已放弃同为终态归档，不再上板（2026-10-10 用户报修：
                     # 飞书卡片确认淘汰后桌面端淘汰tab仍显示待确认——看板语义是
@@ -324,7 +319,7 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                     # （confirm-reject 后 removeJob）。词取自单一事实源。）
                     query = f"""
                         SELECT rowid, platform, job_title, company_name, salary, city,
-                               education_req, experience_req, jd_text, job_link, process_status, reject_reason, {crawl_expr}, {date_expr}
+                               education_req, experience_req, jd_text, job_link, process_status, reject_reason, {crawl_expr}, {date_expr}, {is_synced_expr}, {updated_expr}
                         FROM raw_jobs
                         WHERE rowid > ? AND process_status NOT IN (?, ?)
                         ORDER BY rowid DESC
@@ -375,7 +370,9 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                     "is_current_run": True,
                     "created_at": r.get("publish_date") or "",
                     "crawl_time": r.get("crawl_time") or r.get("publish_date") or "",
-                    "last_action_time": r.get("crawl_time") or r.get("publish_date") or "",
+                    # 最后动作时间用 updated_at（真实流转时刻）：此前用抓取时间，淘汰卡的
+                    # 「判定于」会错显示成抓取时刻而非实际淘汰时刻（2026-11-01 用户实测）
+                    "last_action_time": r.get("updated_at") or r.get("crawl_time") or r.get("publish_date") or "",
                     "last_action_desc": mapped["last_action_desc"],
                 })
         except Exception as e:
@@ -390,7 +387,9 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                 pj_id = pj.get("job_id") or pj.get("record_id")
                 if pj_id not in run_record_ids:
                     continue
-                if pj.get("follow_status") == "待投递":
+                if pj.get("follow_status") in ("待投递", "已完成初步评估"):
+                    # 防御性过滤：审批查询只应返回复核门牌。待投递归 2.5 段，
+                    # 已完成初步评估归第 4 段 done 映射，均不属于审批断点。
                     continue
                 c_time = _lookup_crawl_time(pj.get("job_url", ""), pj.get("company_name", ""), pj.get("job_name", ""))
                 is_custom_job = bool(pj.get("is_custom"))
@@ -408,7 +407,10 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                     "job_url": pj.get("job_url"),
                     "company_scale": pj.get("company_scale") or "",
                     "review_type": "custom_tailored" if is_custom_job else "mass_apply",
+                    "has_rewrite": bool(pj.get("has_rewrite")),
                     "greeting_msg": pj.get("greeting_msg") or pj.get("greeting_text") or "",
+                    # 透传跟进状态：疑似重复等特殊审批态要在卡片上渲染专属徽章
+                    "follow_status": pj.get("follow_status") or "",
                     "status": "waiting",
                     "node": "manual_review_node",
                     "is_current_run": True,
@@ -443,6 +445,7 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                     "city": rj.get("city"),
                     "job_url": rj.get("job_url"),
                     "company_scale": rj.get("company_scale") or "",
+                    "has_rewrite": bool(rj.get("has_rewrite")),
                     "status": "rejected_manual",
                     "node": "manual_rejected",
                     "reject_type": "manual",
@@ -473,6 +476,10 @@ async def build_jobs_snapshot() -> dict[str, Any]:
             if not f_jid or f_jid in delivery_failures or f_jid in dismissed_ids or str(f_jid) in retrying_ids:
                 continue
             c_time = _lookup_crawl_time(fj.get("job_url", ""), fj.get("company_name", ""), fj.get("job_name", ""))
+            # 🌟 failure_info 透出（2026-11-02 审计 P2-13）：飞书侧投递失败岗此前缺该字段，
+            # 前端 failed-job-card 回退成万能文案「流水线节点处理超时或网络连接异常」，
+            # 真实报错被抹平。与台账卡（build_failure_job）同构：真实原因+分诊建议原样透传
+            _fj_err = fj.get("error_msg") or "投递执行失败"
             jobs.append({
                 "job_id": f_jid,
                 "job_name": fj.get("job_name") or "未知岗位",
@@ -486,9 +493,20 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                 "is_current_run": False,
                 "created_at": c_time,
                 "last_action_time": c_time,
-                "last_action_desc": fj.get("error_msg") or "投递执行失败",
-                "error_msg": fj.get("error_msg") or "投递执行失败",
-                "delivery_error": fj.get("error_msg") or "投递执行失败",
+                "last_action_desc": _fj_err,
+                "error_msg": _fj_err,
+                "delivery_error": _fj_err,
+                "failure_info": {
+                    "stage": "delivery",
+                    "step": "自动投递阶段",
+                    "reason": _fj_err,
+                    "suggestion": build_failure_suggestion(_fj_err),
+                    "can_retry": True,
+                    "failure_count": 1,
+                    "triage": _triage_classify(_fj_err),
+                    "heal_log": [],
+                    "diagnosis": None,
+                },
                 "node": "delivery_node",
                 "is_custom": fj.get("is_custom", False)
             })
@@ -532,6 +550,7 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                 # 🌟 精投/海投只信 is_custom_record 统一口径（含 AI改写JSON），
                 # 此前按评级 A/B 硬算，曾把 C 级定制改写岗误标成海投
                 "review_type": "custom_tailored" if rj.get("is_custom") else "mass_apply",
+                "has_rewrite": bool(rj.get("has_rewrite")),
                 "greeting_msg": rj.get("greeting_msg") or rj.get("greeting_text") or "",
                 "status": "ready_to_deliver",
                 "node": "ready_to_deliver",
@@ -565,6 +584,7 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                 "company_scale": dj.get("company_scale") or "",
                 # 🌟 与待投递同口径：已投递卡片的精投/海投只信 is_custom_record，不再让前端按评级 A/B 兜底反推
                 "review_type": "custom_tailored" if dj.get("is_custom") else "mass_apply",
+                "has_rewrite": bool(dj.get("has_rewrite")),
                 "greeting_msg": dj.get("greeting_msg") or "",
                 "status": "delivered",
                 "node": "delivery_node",
@@ -600,6 +620,7 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                 )
                 from app.core.feishu_utils import (
                     extract_job_grade,
+                    has_rewrite_output,
                     is_custom_record,
                 )
                 detail_gate_config = automation_db.get_autopilot_config()  # 复算真实拦截原因，一次读取整批复用
@@ -626,74 +647,51 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                     raw_plat = _txt(f.get("招聘平台", "")) or "zhilian"
                     plat = "zhilian" if "智联" in raw_plat else ("boss" if "boss" in raw_plat.lower() else ("liepin" if "猎聘" in raw_plat else "51job"))
 
-                    is_waiting = f_status in ("简历人工复核", "海投人工复核", "待审批")
-                    is_ready_to_deliver = f_status == "待投递"
-                    is_delivered = f_status == "已投递"
-                    is_done = f_status in ("已完成初步评估", "已深度初步评估", "已完成深度评估")
-                    is_rejected_manual = f_status == "已拒绝"
                     is_custom_job = is_custom_record(f)
 
                     pipeline_stopped = not runtime.get("running")
                     norm_grade = str(grade).strip().upper() if grade else ""
                     has_rating = norm_grade in ("A", "B", "C", "D")
 
-                    if is_rejected_manual:
-                        status, node, sub_status = "rejected_manual", "manual_rejected", "rejected_manual"
-                        last_action_desc = "老板已拒绝"
-                    elif is_ready_to_deliver:
-                        status, node, sub_status = "ready_to_deliver", "ready_to_deliver", "ready_to_deliver"
-                        last_action_desc = "已加入待投递队列"
-                    elif is_waiting:
-                        status, node, sub_status = "waiting", "manual_review_node", "waiting"
-                        last_action_desc = "已生成定制简历，待细审放行" if is_custom_job else _mass_review_reason(
-                            grade, raw_plat, f, detail_gate_config,
-                        )
-                    elif is_delivered:
-                        status, node, sub_status = "delivered", "delivery_node", "ai_eval"
-                        last_action_desc = "已成功投递"
-                    elif is_done:
-                        status, node, sub_status = "done", "evaluate_node", "eval_done"
-                        last_action_desc = "已完成初步评估"
-                    elif norm_grade in ("E", "F"):
-                        status, node, sub_status = "rejected_auto", "clean_rule_rejected", "rejected_auto"
-                        last_action_desc = "初评未达门槛，已自动淘汰"
-                    elif f_status in ("清洗淘汰", "ai清洗淘汰", "ai 清洗淘汰") and not has_rating:
-                        # Q19：清洗淘汰门牌且无有效评级（人工置牌/异常数据触达面）归自动淘汰，
-                        # 不再落到 pipeline_stopped 的 error 半成品形态；与 Section 1 语义对齐。
-                        # 置于 E/F 分支之后且要求无评级：生产波次流水线（wave_pipeline）对 F 级
-                        # 同时写门牌「清洗淘汰」+评级 F，保持走 E/F 分支原分诊不变；
-                        # 「门牌+A-D 评级」怪异组合同样维持 has_rating→waiting 旧行为；
-                        # 「无效评级（如 G）」是否走本分支取决于 has_rating 的 A-D 有效性判定。
-                        status, node, sub_status = "rejected_auto", "clean_rule_rejected", "rejected_auto"
-                        # 词形耦合锁定：ai 系变体均以 "ai" 开头；扩词表时同步维护此判定
-                        last_action_desc = "触发AI排雷规则淘汰" if f_status.startswith("ai") else "触发规则清洗淘汰"
-                    elif has_rating:
-                        # 🌟 无论在线还是停机，只要已有客观评级且尚未落盘待投递，均安全归入「待审批」人工把关池，杜绝误投
-                        status, node, sub_status = "waiting", "manual_review_node", "waiting"
-                        if is_custom_job:
-                            last_action_desc = "已生成定制简历，待细审放行"
-                        else:
-                            # 海投轨（C/D 级）安检免审、不需要人工审批——窗口期只是物料尚在装配/门牌未落位，
-                            # 「待人工审批」字样会制造假审批观感（2026-10-09 用户实测三 tab 之谜）
-                            last_action_desc = "评估完成，海投物料装配中，过安检后自动进待投递"
-                    elif pipeline_stopped:
-                        # 流水线已停机且无评级：区分「刚入库还在排队评估」与「本轮评估没跑到/没评成」——
-                        # 停机+无评级一律不再标 error（曾让新岗位在边界期闪现执行失败 tab，
-                        # 2026-10-09 用户实测三 tab 之谜），改归 waiting 中性可见：
-                        # 真故障不进失败 tab 制造「投递失败」恐慌，但在待审批 tab 持续可见、描述直说。
-                        crawl_recent = _is_recent_crawl(
+                    _section4_failure_info = None  # 循环每条记录重置（CR-B2-R2-P1：防跨条污染/UnboundLocal）
+                    # 分诊唯一实现（CR-B2-R1-P4；R3-P2：「已拒绝」分支并入纯函数，调用方无特判）：
+                    # classify_feishu_followup 纯函数，测试与生产共用（此前测试文件重抄分支、
+                    # 生产改错测试照过的盲区）
+                    _verdict = classify_feishu_followup(
+                        f_status, norm_grade, is_custom_job=is_custom_job,
+                        pipeline_stopped=pipeline_stopped,
+                        crawl_recent=_is_recent_crawl(
                             _txt(f.get("抓取时间", "")) or _lookup_crawl_time(
                                 _txt(f.get("岗位链接", "")), _txt(f.get("公司名称", "")), _txt(f.get("岗位名称", ""))
                             )
-                        )
-                        status = "waiting"
-                        node = "evaluate_node"
-                        sub_status = "eval_pending" if crawl_recent else "eval_incomplete"
-                        last_action_desc = "已入库，评估排队中" if crawl_recent else "本轮评估未完成，建议在详情页重新评估"
-                    else:
-                        # 仅当流水线在线运行中且完全未出评级时，才展示为评估中
-                        status, node, sub_status = "running", "evaluate_node", "ai_eval"
-                        last_action_desc = "流水线处理中"
+                        ) if (not norm_grade or norm_grade not in ("A", "B", "C", "D")) else False,
+                    )
+                    status, node, sub_status = _verdict["status"], _verdict["node"], _verdict["sub_status"]
+                    last_action_desc = _verdict["last_action_desc"]
+                    if _verdict.get("failure_reason"):
+                        _section4_failure_info = {
+                            "stage": "delivery" if node == "delivery_node" else "evaluate",
+                            "step": f_status,
+                            "reason": _verdict["failure_reason"],
+                            "suggestion": build_failure_suggestion(_verdict["failure_reason"]),
+                            "can_retry": True,
+                            "failure_count": 1,
+                            "triage": _triage_classify(_verdict["failure_reason"]),
+                            "heal_log": [],
+                            "diagnosis": None,
+                        }
+                    # waiting 文案回填（CR-B2-R1 回归修复·逐字对齐原版两分支）：
+                    # ① 显式状态表（跟进状态∈审批集合）：精投固定文案在纯函数内；
+                    #   海投回填 _mass_review_reason（原 is_waiting 分支行为）
+                    # ② has_rating 兜底（跟进状态空/不在集合）：精投/海投各一句
+                    #   硬编码（0c5a5d1f 三 tab 根治版），不区分停机
+                    if status == "waiting" and node == "manual_review_node" and sub_status == "waiting":
+                        if f_status in APPROVAL_FOLLOW_STATUSES:
+                            if not is_custom_job and f_status != "疑似重复":
+                                last_action_desc = _mass_review_reason(grade, raw_plat, f, detail_gate_config)
+                        else:
+                            last_action_desc = ("已生成定制简历，待细审放行" if is_custom_job
+                                                else "评估完成，海投物料装配中，过安检后自动进待投递")
 
                     job_name = _txt(f.get("岗位名称", "")) or "未知岗位"
                     comp_name = _txt(f.get("公司名称", "")) or "未知公司"
@@ -715,6 +713,7 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                         "job_url": job_link,
                         # 🌟 统一口径：与待审批/待投递/投递编排同源 is_custom_record，不再按评级硬算
                         "review_type": "custom_tailored" if is_custom_job else "mass_apply",
+                        "has_rewrite": has_rewrite_output(f),
                         "status": status,
                         "node": node,
                         "sub_status": sub_status,
@@ -722,9 +721,22 @@ async def build_jobs_snapshot() -> dict[str, Any]:
                         "crawl_time": c_time,
                         "last_action_time": c_time,
                         "last_action_desc": last_action_desc,
+                        # 跟进状态原文下发（审计 C-5）：疑似重复等门牌徽章依赖此字段渲染
+                        "follow_status": f_status,
+                        # 失败卡补 failure_info（CR-B2-R1-P2）：与台账卡同构，前端不再回退万能文案
+                        **({"failure_info": _section4_failure_info} if _section4_failure_info else {}),
                     })
         except Exception as e:
             logger.warning(f"jobs_snapshot 补齐飞书初评岗位异常: {e}")
+
+    # 4.5 实时岗位态覆盖：SSE 是直播，快照是 12 秒轮询；在途岗位的节点/子状态
+    # 只能以进程内实时登记表为准，否则改写中的岗位会被打回「AI初评完成 / 待审批」。
+    try:
+        live_jobs = pb.get_live_jobs(runtime.get("task_id"))
+        if live_jobs:
+            jobs = apply_live_job_overlay(jobs, live_jobs)
+    except Exception as e:
+        logger.warning(f"jobs_snapshot 实时岗位态覆盖异常（不阻断快照）: {e}")
 
     # 跨段强去重
     try:

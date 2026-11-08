@@ -1,8 +1,8 @@
 """
 自动化测试：双阀门动态路由联动 (精投流转阈值 vs 海投自动投递等级)
 1. 测试 route_after_evaluate 动态读取 get_auto_eval_threshold
-   - threshold="A" 时：A级走 rewrite_node，B/C级走 quick_greeting_node
-   - threshold="B" 时：A/B级走 rewrite_node，C级走 quick_greeting_node
+   - threshold="A" 时：A级走 deep_eval_node（再进 rewrite_node），B/C级走 quick_greeting_node
+   - threshold="B" 时：A/B级走 deep_eval_node（再进 rewrite_node），C级走 quick_greeting_node
 2. 测试 route_before_delivery 动态读取 auto_deliver_grades 与大厂规模
    - 命中白名单且规模<1000人 -> delivery_node
    - 未在白名单中 -> manual_review_node
@@ -12,6 +12,21 @@
 import pytest
 from app.automation.workflow import route_after_evaluate, route_before_delivery
 from app.automation.db import update_autopilot_config
+from app.services.eval_pipeline_feedback import _needs_deep_eval
+
+
+def test_needs_deep_eval_matches_route_after_evaluate(monkeypatch):
+    """进度卡/断点恢复的深评判定必须与实际路由完全同源（只看评级，不看分数）。"""
+    import ai_agents.ai_evaluator as evaluator
+
+    for threshold in ("A", "B"):
+        monkeypatch.setattr(evaluator, "get_auto_eval_threshold", lambda t=threshold: t)
+        for grade in ("A", "B", "C", "D", "F", ""):
+            state = {"grade": grade, "error": "", "ai_score": 99}
+            routed_to_deep_eval = route_after_evaluate(state) == "deep_eval_node"
+            assert _needs_deep_eval(grade) is routed_to_deep_eval, (
+                f"阈值 {threshold} / 评级 {grade!r}: 进度卡判定与路由分叉"
+            )
 
 
 def test_route_after_evaluate_threshold_A(monkeypatch):
@@ -20,7 +35,7 @@ def test_route_after_evaluate_threshold_A(monkeypatch):
 
     # A 级 -> 精投
     state_a = {"grade": "A", "error": ""}
-    assert route_after_evaluate(state_a) == "rewrite_node"
+    assert route_after_evaluate(state_a) == "deep_eval_node"
 
     # B 级 -> 动态降级为海投
     state_b = {"grade": "B", "error": ""}
@@ -37,11 +52,11 @@ def test_route_after_evaluate_threshold_B(monkeypatch):
 
     # A 级 -> 精投
     state_a = {"grade": "A", "error": ""}
-    assert route_after_evaluate(state_a) == "rewrite_node"
+    assert route_after_evaluate(state_a) == "deep_eval_node"
 
     # B 级 -> 精投
     state_b = {"grade": "B", "error": ""}
-    assert route_after_evaluate(state_b) == "rewrite_node"
+    assert route_after_evaluate(state_b) == "deep_eval_node"
 
     # C 级 -> 海投
     state_c = {"grade": "C", "error": ""}
@@ -51,7 +66,7 @@ def test_route_after_evaluate_threshold_B(monkeypatch):
     state_c_high_score = {"grade": "C", "ai_score": 99, "error": ""}
     assert route_after_evaluate(state_c_high_score) == "quick_greeting_node"
     state_b_low_score = {"grade": "B", "ai_score": 10, "error": ""}
-    assert route_after_evaluate(state_b_low_score) == "rewrite_node"
+    assert route_after_evaluate(state_b_low_score) == "deep_eval_node"
 
 
 def test_route_before_delivery_auto_grades_and_scale(tmp_path, monkeypatch):

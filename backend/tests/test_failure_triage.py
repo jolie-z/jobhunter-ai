@@ -43,6 +43,31 @@ def test_classify_persistent_wins_when_both_matched():
     assert triage.classify_delivery_failure("登录失效且缺少 PDF 附件") == "persistent"
 
 
+def test_classify_user_terminated_is_persistent():
+    """人工终止是显式决策：按钮语义即「流转至执行失败」，不得按 unknown 当暂时性故障。"""
+    err = "[用户主动终止] 在指挥中心手动终止投递流程"
+    assert triage.classify_delivery_failure(err) == "persistent"
+
+
+def test_user_terminated_never_auto_reenters_wave():
+    err = "[用户主动终止] 在指挥中心手动终止投递流程"
+    skip, reason = triage.should_skip_auto_delivery({"error": err, "failure_count": 1})
+    assert skip and "持久性" in reason
+    # 首次失败（count=1）也不得保留「待投递」门牌自动重投
+    assert triage.should_retry_delivery(err, "rec_user_stop") is False
+
+
+def test_global_pipeline_abort_keeps_next_wave_retry():
+    """全局「终止任务」不是单岗决策：不得被持久性分类误伤。
+
+    该分支文案是「[用户主动终止] 收到全局终止指令，投递已拦截（未执行）」，
+    只是本次波次中断，岗位仍应保留「待投递」由下一轮自然重投（沿用修复前语义）。
+    """
+    err = "[用户主动终止] 收到全局终止指令，投递已拦截（未执行）"
+    assert triage.classify_delivery_failure(err) == "unknown"
+    assert triage.should_retry_delivery(err, "rec_pipeline_abort") is True
+
+
 # ---------------- 分诊 should_skip_auto_delivery ----------------
 
 def test_skip_persistent_failure_immediately():

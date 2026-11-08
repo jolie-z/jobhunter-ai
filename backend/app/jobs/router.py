@@ -152,6 +152,8 @@ async def parse_import_payload(payload: JobImportParseRequest):
 async def confirm_import_payload(payload: JobImportConfirmRequest):
     """极速录入第二步：确认落库（唯一写入口，服务端二次校验+查重兜底）。
     硬缺失 422、查重命中 409（force_duplicate=true 放行）；成功返回回执与多维表格复核链接。"""
+    from app.core import usage_counters
+    usage_counters.bump("job_import")
     try:
         data = await service.confirm_job_import(payload.fields, payload.force_duplicate)
     except (service.InvalidJobFieldsError, service.DuplicateJobError) as e:
@@ -479,6 +481,8 @@ async def get_temp_data(job_id: str):
 
 @router.post("/api/jobs/resume-pdf")
 async def export_v2_resume_pdf(payload: JobResumePdfRequest):
+    from app.core import usage_counters
+    usage_counters.bump("resume_print_pdf")
     from app.services.feishu_service import extract_record_id
     pure_record_id = extract_record_id(payload.job_id)
 
@@ -523,6 +527,8 @@ async def export_v2_resume_pdf(payload: JobResumePdfRequest):
 
 @router.post("/api/jobs/resume-images")
 async def export_v2_resume_images(payload: JobResumePdfRequest):
+    from app.core import usage_counters
+    usage_counters.bump("resume_print_images")
     from app.services.feishu_service import extract_record_id
     pure_record_id = extract_record_id(payload.job_id)
 

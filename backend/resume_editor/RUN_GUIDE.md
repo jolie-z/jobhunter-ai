@@ -262,9 +262,7 @@ cp -r resume_editor/data resume_editor/data_backup_$(date +%Y%m%d)
 
 ## 📚 相关文档
 
-- [项目总结](backend/resume_editor/FULL_SUMMARY.md)
-- [进度报告](backend/resume_editor/PROGRESS_REPORT.md)
-- [API文档](backend/app/api/resume_editor.py)
+- [API 文档](../app/api/resume_editor/)
 
 ---
 

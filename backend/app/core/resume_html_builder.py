@@ -3,6 +3,7 @@ Pure Python standalone HTML renderer for ResumeDataV2.
 Generates self-contained, pixel-perfect, clean HTML for PDF and Image rendering
 100% aligned with the Frontend Web Preview (ResumeClassic, ResumeColor, ResumeColorV2).
 """
+import html
 import re
 from typing import Any
 
@@ -130,6 +131,61 @@ def _consolidate_technical_skills(skills: list) -> list:
             consolidated.append(f"- {'、'.join(chunk)}")
 
     return consolidated
+
+
+# 自定义模块条目渲染时跳过的标准键：其余标量键 = 用户在编辑器「新增字段」自建的 KV，需随 PDF 输出
+_CUSTOM_ITEM_RENDER_KEYS = {"company", "title", "years", "location", "description", "originalContent", "_key", "id"}
+
+
+def _render_custom_item_html(item: Any) -> str:
+    """自定义模块条目 → HTML。
+
+    表头行（company/title/years 三列）仅在有内容时渲染（归一化后新条目纯 description，
+    空表头不再留空行）；location 与条目上的标量 KV 字段拼一行副标题；description 走通用
+    markdown 渲染。表头/副标题是用户原文直出，统一 html.escape——论文题名常含 `p < 0.05`、
+    `&` 等字符，不转义会截断排版甚至注入标签。
+    """
+    if not isinstance(item, dict):
+        text_html = _markdown_to_html_snippet(str(item))
+        return f'<div class="resume-item"><div class="item-desc">{text_html}</div></div>'
+
+    # strip 后再判空：存量脏数据里的纯空白字符串在 Python 中为真值，否则会渲染出空表头行
+    c_company = html.escape(str(item.get("company") or "").strip())
+    c_title = html.escape(str(item.get("title") or "").strip())
+    c_years = html.escape(str(item.get("years") or "").strip())
+    header_html = ""
+    if c_company or c_title or c_years:
+        header_html = f"""
+                    <div class="item-grid">
+                        <div class="col-left">{c_company}</div>
+                        <div class="col-center">{c_title}</div>
+                        <div class="col-right">{c_years}</div>
+                    </div>"""
+
+    subtitle_parts = []
+    location = str(item.get("location") or "").strip()
+    if location:
+        subtitle_parts.append(html.escape(location))
+    subtitle_parts.extend(
+        f"{html.escape(str(k))}：{html.escape(str(v).strip())}" for k, v in item.items()
+        if k not in _CUSTOM_ITEM_RENDER_KEYS and isinstance(v, (str, int, float)) and str(v).strip()
+    )
+    extras_html = f'<div class="item-subtitle">{" · ".join(subtitle_parts)}</div>' if subtitle_parts else ""
+
+    desc = item.get("description")
+    if isinstance(desc, list):
+        desc_html = _markdown_to_html_snippet("\n".join(str(d) for d in desc if str(d or "").strip()))
+    elif desc:
+        desc_html = _markdown_to_html_snippet(str(desc))
+    else:
+        desc_html = ""
+
+    return f"""
+                <div class="resume-item">
+                    {header_html}
+                    {extras_html}
+                    {f'<div class="item-desc">{desc_html}</div>' if desc_html else ''}
+                </div>"""
 
 
 def build_resume_html(data: dict[str, Any], skin: str = "classic") -> str:
@@ -349,8 +405,18 @@ def build_resume_html(data: dict[str, Any], skin: str = "classic") -> str:
             """)
 
         elif mod in custom_modules:
+            # 2026-10-28：此前对条目列表直接 str() 输出 Python 字典原文（渲染乱码）。
+            # 与前端打印模板对齐：表头行仅非空时渲染，条目自建 KV 拼副标题行，description 走通用渲染
             c_val = custom_modules[mod]
-            if c_val:
+            if isinstance(c_val, list) and c_val:
+                items_html = [_render_custom_item_html(item) for item in c_val]
+                sections_html.append(f"""
+                <section class="resume-section">
+                    <h3 class="section-title">{title_text}</h3>
+                    <div class="resume-items">{"".join(items_html)}</div>
+                </section>
+                """)
+            elif c_val:
                 content_html = _markdown_to_html_snippet(str(c_val))
                 sections_html.append(f"""
                 <section class="resume-section">
@@ -490,9 +556,12 @@ def build_resume_html(data: dict[str, Any], skin: str = "classic") -> str:
             text-align: justify;
         }}
         .resume-items {{
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
+            /* 打印分页三弹修复（与前端 _base.module.css 同源，2026-11-03 同步）：
+               Chromium 对 flex column 容器的分页支持差——剩余空间放不下整个容器时
+               会把整块推到下页，前一页底部留出大段空白。退回 block 布局让内容
+               自然流式分页；原 flex gap 4px 不再叠加，间距统一由 .resume-item
+               自身 margin-bottom（3px）承担，整体略紧凑。 */
+            display: block;
         }}
         .resume-item {{
             margin-bottom: 3px;
@@ -501,12 +570,16 @@ def build_resume_html(data: dict[str, Any], skin: str = "classic") -> str:
             margin-bottom: 0;
         }}
         .item-grid {{
-            display: grid;
-            grid-template-columns: 1fr auto 1fr;
+            /* 弹2：grid 容器跨页特性与 flex 同病——整块推下页致前页留白。
+               直接用 flex 三段左右分布（视觉等价），允许行内跨页。 */
+            display: flex;
+            justify-content: space-between;
             align-items: baseline;
+            gap: 8px;
             margin-bottom: 1px;
         }}
         .col-left {{
+            flex: 1;
             text-align: left;
             font-weight: 700;
             font-size: 12.5px;
@@ -520,6 +593,7 @@ def build_resume_html(data: dict[str, Any], skin: str = "classic") -> str:
             padding: 0 8px;
         }}
         .col-right {{
+            flex: 1;
             text-align: right;
             font-size: 11.5px;
             color: var(--text-primary);
@@ -529,6 +603,12 @@ def build_resume_html(data: dict[str, Any], skin: str = "classic") -> str:
             margin-top: 2px;
             font-size: 11.5px;
             line-height: 1.48;
+        }}
+        .item-subtitle {{
+            margin-top: 1px;
+            text-align: center;
+            font-size: 11px;
+            color: #374151;
         }}
         .resume-ul {{
             margin: 2px 0 4px 18px;
@@ -570,10 +650,23 @@ def build_resume_html(data: dict[str, Any], skin: str = "classic") -> str:
                 page-break-inside: auto;
             }}
             .resume-item {{
-                page-break-inside: avoid;
+                /* 条目尽量不跨页，但超大条目（高度超一页的 60%）允许跨页——
+                   捆死会让页底剩余空间放不下整条时让出大段空白（2026-11-03 复现实测
+                   单条可达 248pt，页底 121pt 剩余时整条让位 = 前页 14%+ 空白） */
+                page-break-inside: auto;
+                orphans: 2;
+                widows: 2;
             }}
-            h1, h2, h3, .section-title {{
+            h1, h2, h3 {{
                 page-break-after: avoid;
+            }}
+            /* 弹3：章节标题不再与后续内容捆死（page-break-after: avoid 的代价是
+               页底放不下「标题+首条」整捆时连标题带位置一起让给下页，前页出现
+               整段空白）。标题自身用 orphans 防孤儿行，正文自然流式分页 */
+            .section-title {{
+                page-break-after: auto;
+                orphans: 2;
+                widows: 2;
             }}
         }}
     </style>

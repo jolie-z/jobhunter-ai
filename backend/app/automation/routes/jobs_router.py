@@ -22,7 +22,34 @@ from app.automation.full_auto import RAW_DB_PATH
 from app.automation.snapshot_service import build_jobs_snapshot
 
 logger = logging.getLogger(__name__)
+
+# 裸 asyncio.create_task 强引用（2026-11-02 审计 P2-25）：CPython 事件循环只持弱引用，
+# 不持引用的任务可能在长 await 期间被 GC 静默消失（对照 delivery_router._BACKGROUND_TASKS
+# 与 batch_retry_service 的既有正确做法）
+_BACKGROUND_TASKS: set = set()
+
+
+def _spawn_tracked(coro):
+    t = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(t)
+    t.add_done_callback(_BACKGROUND_TASKS.discard)
+    return t
 router = APIRouter()
+
+# 手动单岗操作（重试/补发打招呼）的预检登录等待窗口：用户当面操作，60s 足够扫码，
+# 且等待期可被「终止投递」1 秒内打断；定时波次仍沿用默认 300s。
+MANUAL_PREFLIGHT_WAIT_S = 60
+
+
+def _is_inflight_block_error(msg: str) -> bool:
+    """判断失败文案是否为「同一岗位正在另一条投递链路执行中」的防重复拦截。
+
+    这类结果不是一次真实投递尝试：不得登记失败、不得消耗 MAX_AUTO_RETRIES 额度。
+    标记常量由 workflow 单点定义，禁止在此硬编码文案（避免文案漂移导致判据静默失效）。
+    """
+    from app.automation.workflow import DELIVERY_INFLIGHT_ERROR_MARKER
+
+    return DELIVERY_INFLIGHT_ERROR_MARKER in str(msg)
 
 
 class RetryJobRequest(BaseModel):
@@ -79,7 +106,7 @@ async def retry_single_job(req: RetryJobRequest):
             if dedicated:
                 await pb.emit_end(broadcast_task_id, {"retry": req.thread_id})
 
-    task = asyncio.create_task(_runner())
+    task = _spawn_tracked(_runner())
     _RETRY_BG_TASKS.add(task)
     task.add_done_callback(_RETRY_BG_TASKS.discard)
 
@@ -180,12 +207,20 @@ async def retry_failed_job(req: RetryFailedJobRequest):
         async def _do_delivery_retry(job_id: str, job_url: str):
             from app.automation.scheduler import _resume_job_delivery
             try:
-                ok, msg = await _resume_job_delivery(job_id)
+                # 手动重试是用户当面操作：登录等待窗口从 300s 收紧到
+                # MANUAL_PREFLIGHT_WAIT_S（等待期点「终止投递」也会在 1 秒内生效），
+                # 避免点一次重试要盯 5 分钟才有结果
+                ok, msg = await _resume_job_delivery(job_id, preflight_wait_s=MANUAL_PREFLIGHT_WAIT_S)
                 if ok:
                     logger.info(f"✅ [retry_failed_job] 重试投递成功: job_id={job_id}, {msg}")
                     _rs.remove_delivery_failure(job_id)
                 else:
                     logger.warning(f"❌ [retry_failed_job] 重试投递仍受阻: job_id={job_id}, error={msg}")
+                    # 防重复发射拦截不是一次真实投递尝试（上一跳仍在飞），计入失败次数会
+                    # 白占 MAX_AUTO_RETRIES 额度、把可重试岗位误推进「停止自动重试」
+                    if _is_inflight_block_error(msg):
+                        logger.info(f"ℹ️ [retry_failed_job] 岗位 {job_id} 仍在途，跳过失败登记（不消耗重试额度）")
+                        return
                     from app.core.feishu_utils import extract_feishu_text as _txt
                     from app.core.feishu_utils import extract_job_grade
                     from app.services.feishu_service import (
@@ -241,7 +276,7 @@ async def retry_failed_job(req: RetryFailedJobRequest):
             finally:
                 _rs.unmark_job_retrying(job_id)
 
-        asyncio.create_task(_do_delivery_retry(req.job_id, req.job_url or ""))
+        _spawn_tracked(_do_delivery_retry(req.job_id, req.job_url or ""))
         return {"status": "success", "message": f"岗位 {req.job_id} 已重新拉起自动投递引擎进行重试"}
     else:
         from app.automation.full_auto import run_single_job_pipeline_async
@@ -258,7 +293,7 @@ async def retry_failed_job(req: RetryFailedJobRequest):
             finally:
                 _rs.unmark_job_retrying(job_id)
 
-        asyncio.create_task(_do_raw_retry(raw_id, req.pipeline_task_id or None, req.job_id))
+        _spawn_tracked(_do_raw_retry(raw_id, req.pipeline_task_id or None, req.job_id))
         return {"status": "success", "message": f"岗位 {req.job_id} 已重新拉起流水线进行重试"}
 
 
@@ -274,7 +309,9 @@ async def resend_greeting(req: ResendGreetingRequest):
     from app.automation.delivery_tasks import _resume_job_delivery
     _rs.mark_job_retrying(req.job_id)
     try:
-        ok, msg = await _resume_job_delivery(req.job_id)
+        # 同为手动触发的单岗操作：登录等待窗口与「重试」保持一致（MANUAL_PREFLIGHT_WAIT_S），
+        # 避免用户点击后盯着 5 分钟的预检等待
+        ok, msg = await _resume_job_delivery(req.job_id, preflight_wait_s=MANUAL_PREFLIGHT_WAIT_S)
         if ok:
             _rs.remove_delivery_failure(req.job_id)
             return {"status": "success", "message": "专属打招呼语已成功送达 HR 微聊！"}

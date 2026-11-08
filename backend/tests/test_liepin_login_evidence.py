@@ -11,6 +11,7 @@ import asyncio
 import os
 import sqlite3
 import time
+import types
 
 from app.session import health_checker as hc
 
@@ -39,6 +40,29 @@ def test_judge_rejects_expired_and_accepts_session():
     assert hc._judge_login_keys({"lt_auth": now - 10, "liepin_login_valid": now + 3600}) is False
     # 会话 cookie（expires<=0）落账即有效
     assert hc._judge_login_keys({"lt_auth": 0.0, "liepin_login_valid": 0.0}) is True
+
+
+def test_has_valid_auth_cookies_from_browser_list():
+    now = time.time()
+    both = [
+        {"name": "lt_auth", "value": "v1", "expires": now + 3600},
+        {"name": "liepin_login_valid", "value": "v2", "expires": now + 3600},
+    ]
+    assert hc.has_valid_liepin_auth_cookies(both) is True
+    assert hc.has_valid_liepin_auth_cookies(both[:1]) is False  # 缺键
+    assert hc.has_valid_liepin_auth_cookies([
+        {"name": "lt_auth", "expires": now - 10},
+        {"name": "liepin_login_valid", "expires": now + 3600},
+    ]) is False  # 过期
+    assert hc.has_valid_liepin_auth_cookies([
+        {"name": "lt_auth", "expires": -1},
+        {"name": "liepin_login_valid", "expires": 0},
+    ]) is True  # 会话 cookie
+    assert hc.has_valid_liepin_auth_cookies([
+        {"name": "lt_auth", "expires": "not-a-time"},
+        {"name": "liepin_login_valid", "expires": now + 3600},
+    ]) is False  # 无法解析按失效处理
+    assert hc.has_valid_liepin_auth_cookies([None, "x", {"name": ""}]) is False
 
 
 # ==========================================
@@ -85,6 +109,71 @@ def test_fail_closed_when_cdp_unreadable(monkeypatch):
     monkeypatch.setattr(hc, "probe_port", lambda port, timeout=2.0: True)
     monkeypatch.setattr(hc, "_read_login_keys_via_cdp", lambda port: None)
     assert hc.check_liepin_login_evidence(port=9226, profile_dir="/x") is False
+
+
+def test_port_up_cdp_unreadable_falls_back_to_profile_db(monkeypatch):
+    """2026-10-30：DrissionPage 拉起的 Edge 与 Playwright context 不兼容时，
+    端口 UP 但 CDP 读不到 cookie，必须回退离线 profile 库，不能误判未登录。"""
+    now = time.time()
+    monkeypatch.setattr(hc, "probe_port", lambda port, timeout=2.0: True)
+    monkeypatch.setattr(hc, "_read_login_keys_via_cdp", lambda port: None)
+    monkeypatch.setattr(
+        hc, "_read_login_keys_via_profile_db",
+        lambda profile_dir: {"lt_auth": now + 3600, "liepin_login_valid": now + 3600},
+    )
+    assert hc.check_liepin_login_evidence(port=9226, profile_dir="/x") is True
+
+
+def test_read_login_keys_via_cdp_uses_browser_session(monkeypatch):
+    """CDP 取数走 browser 级 Storage.getCookies，不遍历 contexts（避免 setDownloadBehavior 报错）。"""
+    now = time.time()
+    calls = {}
+
+    class _Session:
+        def send(self, method):
+            calls["method"] = method
+            return {"cookies": [
+                {"name": "lt_auth", "expires": now + 3600},
+                {"name": "liepin_login_valid", "expires": now + 3600},
+                {"name": "unrelated", "expires": now + 3600},
+            ]}
+
+        def detach(self):
+            calls["detached"] = True
+
+    class _Browser:
+        def new_browser_cdp_session(self):
+            return _Session()
+
+        @property
+        def contexts(self):
+            raise AssertionError("不得遍历 browser.contexts")
+
+        def close(self):
+            calls["closed"] = True
+
+    class _Chromium:
+        def connect_over_cdp(self, *a, **k):
+            calls["connected"] = True
+            return _Browser()
+
+    class _Playwright:
+        chromium = _Chromium()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    import playwright.sync_api as ps
+    monkeypatch.setattr(ps, "sync_playwright", lambda: _Playwright())
+
+    found = hc._read_login_keys_via_cdp(9226)
+
+    assert set(found) == {"lt_auth", "liepin_login_valid"}
+    assert calls["method"] == "Storage.getCookies"
+    assert calls["detached"] is True and calls["closed"] is True
 
 
 # ==========================================
@@ -139,15 +228,101 @@ def test_profile_db_garbage_returns_none(tmp_path):
 # ==========================================
 
 def test_collect_ready_file_short_circuits(monkeypatch, tmp_path):
+    """文件有效（存在且凭证未过期）→ 直接放行，不触发实证探测。
+
+    2026-10-31 事故根治：短路条件从「存在」升级为「有效」——空壳/过期文件
+    曾让本门放行、引擎访客态跑完全程静默 0 条。
+    """
     cookie_file = os.path.join(str(tmp_path), "liepin_cookies.json")
+    future = time.time() + 7 * 24 * 3600
     with open(cookie_file, "w", encoding="utf-8") as f:
-        f.write("[]")
+        import json
+        json.dump([
+            {"name": "lt_auth", "value": "valid", "expires": future},
+            {"name": "liepin_login_valid", "value": "1", "expires": future},
+        ], f)
 
     def _boom(*a, **k):
-        raise AssertionError("文件存在时不得触发实证探测")
+        raise AssertionError("文件有效时不得触发实证探测")
 
     monkeypatch.setattr(hc, "check_liepin_login_evidence", _boom)
     assert hc.liepin_collect_ready(cookie_file) is True
+
+
+def test_collect_ready_rejects_stale_file(monkeypatch, tmp_path):
+    """文件存在但凭证过期/内容损坏 → 不再短路放行，转实证复检判据。
+
+    2026-10-31 晚间事故回归：DrissionPage Edge 上 CDP 读 cookie 会闪断
+    （预检通过、采集门 6 秒后翻转拦截），复检带界重试 3 次，全失败才判死。
+    """
+    import json
+
+    stale_file = os.path.join(str(tmp_path), "stale.json")
+    past = time.time() - 100
+    with open(stale_file, "w", encoding="utf-8") as f:
+        json.dump([
+            {"name": "lt_auth", "value": "expired", "expires": past},
+            {"name": "liepin_login_valid", "value": "1", "expires": past},
+        ], f)
+
+    corrupt_file = os.path.join(str(tmp_path), "corrupt.json")
+    with open(corrupt_file, "w", encoding="utf-8") as f:
+        f.write("{not-json")
+
+    monkeypatch.setattr(hc, "_LIEPIN_EVIDENCE_RETRY_INTERVAL_S", 0)
+    evidence_calls = {"n": 0}
+
+    def _flaky_false(*a, **k):
+        evidence_calls["n"] += 1
+        return False
+
+    monkeypatch.setattr(hc, "check_liepin_login_evidence", _flaky_false)
+    assert hc.liepin_collect_ready(stale_file) is False
+    assert evidence_calls["n"] == hc._LIEPIN_EVIDENCE_ATTEMPTS  # 重试预算烧完才 fail-closed
+
+    # 任一次复检成功即放行（模拟闪断恢复：第 2 次成功）
+    evidence_calls["n"] = 0
+
+    def _flip_flop(*a, **k):
+        evidence_calls["n"] += 1
+        return evidence_calls["n"] >= 2
+
+    monkeypatch.setattr(hc, "check_liepin_login_evidence", _flip_flop)
+    assert hc.liepin_collect_ready(stale_file) is True
+
+    # 实证有效时仍可放行（profile 带活登录态，引擎启动后自愈回写新文件）
+    monkeypatch.setattr(hc, "check_liepin_login_evidence", lambda *a, **k: True)
+    assert hc.liepin_collect_ready(stale_file) is True
+
+
+def test_cookie_file_validity_unit(tmp_path):
+    """is_liepin_cookie_file_valid：有效/过期/损坏/缺失四态。"""
+    import json
+
+    future = time.time() + 3600
+    valid_file = os.path.join(str(tmp_path), "valid.json")
+    with open(valid_file, "w", encoding="utf-8") as f:
+        json.dump([
+            {"name": "lt_auth", "value": "v", "expires": future},
+            {"name": "liepin_login_valid", "value": "1", "expires": future},
+        ], f)
+    assert hc.is_liepin_cookie_file_valid(valid_file) is True
+
+    expired_file = os.path.join(str(tmp_path), "expired.json")
+    with open(expired_file, "w", encoding="utf-8") as f:
+        json.dump([
+            {"name": "lt_auth", "value": "v", "expires": time.time() - 10},
+            {"name": "liepin_login_valid", "value": "1", "expires": time.time() + 3600},
+        ], f)
+    assert hc.is_liepin_cookie_file_valid(expired_file) is False
+
+    corrupt_file = os.path.join(str(tmp_path), "corrupt.json")
+    with open(corrupt_file, "w", encoding="utf-8") as f:
+        f.write("not json at all")
+    assert hc.is_liepin_cookie_file_valid(corrupt_file) is False
+
+    assert hc.is_liepin_cookie_file_valid(os.path.join(str(tmp_path), "missing.json")) is False
+    assert hc.is_liepin_cookie_file_valid("") is False
 
 
 def test_collect_ready_falls_back_to_evidence(monkeypatch, tmp_path):

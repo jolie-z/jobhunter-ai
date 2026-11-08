@@ -26,6 +26,7 @@ for _p in (_SCRIPT_DIR, _PROJECT_ROOT):
 from app.core.config import settings
 from app.services.feishu_service import get_job_record_from_feishu, update_feishu_record
 from app.core.feishu_utils import download_feishu_file, extract_feishu_text
+from engine_guard import cross_process_port_lock
 
 # 1. 会话与基础层导出
 from liepin_session import (
@@ -76,8 +77,14 @@ from liepin_resume_manager import (
     _find_target_resume_to_delete,
     _delete_oldest_resume,
     _ensure_resume_slots,
+    _close_upload_modal_if_open,
+)
+
+# 3b. 附件上传执行层导出（2026-10-29 自 resume_manager 拆分）
+from liepin_attachment_uploader import (
     _get_upload_btn,
-    _execute_hidden_input_injection,
+    _open_upload_modal,
+    _save_failure_shot,
     _upload_attachment_resume,
     _manage_and_upload_resume,
 )
@@ -112,8 +119,8 @@ __all__ = [
     "_click_delete_in_dropdown_menu", "_confirm_delete_in_modal",
     "_delete_resume_card", "_find_target_resume_to_delete",
     "_delete_oldest_resume", "_ensure_resume_slots", "_get_upload_btn",
-    "_execute_hidden_input_injection", "_upload_attachment_resume",
-    "_manage_and_upload_resume",
+    "_open_upload_modal", "_close_upload_modal_if_open", "_save_failure_shot",
+    "_upload_attachment_resume", "_manage_and_upload_resume",
     # IM
     "_open_chat_box", "_send_chat_message", "_send_resume_in_chat",
     "_chat_and_send_resume", "_select_resume_in_modal",
@@ -122,6 +129,7 @@ __all__ = [
 ]
 
 
+@cross_process_port_lock(_port, "liepin", timeout_s=300, on_busy="false")
 def deliver_job(job_data: dict) -> bool:
     """全链路执行引擎入口。
 

@@ -51,13 +51,6 @@ const GRADE_OPTIONS: GradeOption[] = [
     color: "text-orange-600 dark:text-orange-400 border-orange-500/20 bg-orange-500/[0.04]",
   },
   {
-    id: "E",
-    name: "E 级",
-    track: "mass",
-    desc: "一般",
-    color: "text-zinc-600 dark:text-zinc-400 border-zinc-500/20 bg-zinc-500/[0.04]",
-  },
-  {
     id: "F",
     name: "F 级",
     track: "mass",

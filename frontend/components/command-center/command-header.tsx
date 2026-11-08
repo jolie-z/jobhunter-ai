@@ -17,6 +17,7 @@ import {
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { usePipelineStore } from "@/store/pipeline-store"
+import { resumeBlockedTask, terminateBlockedTask } from "@/store/blocked-task-actions"
 import { STAGES_META, StageKey } from "./types"
 import { API_BASE } from "@/lib/api"
 import { useSchedulePanel } from "./use-schedule-panel"
@@ -58,10 +59,12 @@ export function CommandHeader({
   // 每日定时调度面板（Q10 拆分批次 1 抽离至 use-schedule-panel.ts）
   const {
     mode, setMode, dailyTime, setDailyTime, scheduledEnabled, setScheduledEnabled,
+    scheduleLoadFailed, retryLoadSchedule,
     startDate, setStartDate, endDate, setEndDate, skipNonWorkdays, setSkipNonWorkdays,
     savingSchedule, scheduleMsg, holidayStatus, updatingHoliday,
     showHolidayUpdate, handleUpdateHolidayData, handleSaveSchedule,
   } = useSchedulePanel()
+  const scheduleLoading = scheduledEnabled === null
 
   // Token 消耗统计
   const [tokenStats, setTokenStats] = useState<{
@@ -96,7 +99,27 @@ export function CommandHeader({
     }
   }, [])
 
-  // 启动全链路
+  // 启动全链路（2026-11-05 双击确认防误触）：全链路是分钟级真实动作面（抓取→评估→
+  // 投递），单击即发射对焦点键盘激活（回车/空格触发 click，无鼠标痕迹）/触控板误触
+  // 形同虚设——后端 confirm 守卫由本函数代填，拦不住"合法但非本意"的请求。改为
+  // 两段式：首击进入待确认态（按钮变「再次点击确认」），400ms~5s 窗口内的二击才
+  // 真正发射，超时自动回退。键盘长按 repeat（<400ms 连击）与超 5s 的滞后二击均被滤除。
+  const [startConfirming, setStartConfirming] = useState(false)
+  const startConfirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const startConfirmAtRef = useRef(0)
+  useEffect(() => () => {
+    if (startConfirmTimerRef.current) clearTimeout(startConfirmTimerRef.current)
+  }, [])
+
+  const resetStartConfirm = () => {
+    setStartConfirming(false)
+    startConfirmAtRef.current = 0
+    if (startConfirmTimerRef.current) {
+      clearTimeout(startConfirmTimerRef.current)
+      startConfirmTimerRef.current = null
+    }
+  }
+
   const handleStart = async () => {
     if (!allConfigured) {
       const missing = STAGES_META.filter((s) => s.requiredConfig && !configStatus[s.key])
@@ -119,7 +142,19 @@ export function CommandHeader({
       }
       return
     }
-    if (pipelineStatus === "running" || starting) return
+    if (pipelineStatus === "running" || pipelineStatus === "blocked" || starting) return
+    // 第一击：进入待确认态；5 秒无二击自动回退（误触单发就此终结）
+    if (!startConfirming) {
+      setStartConfirming(true)
+      startConfirmAtRef.current = Date.now()
+      if (startConfirmTimerRef.current) clearTimeout(startConfirmTimerRef.current)
+      startConfirmTimerRef.current = setTimeout(resetStartConfirm, 5000)
+      return
+    }
+    // 二击最小间隔守卫（R1-P2）：键盘长按 repeat 可在百毫秒内连发两次 click，
+    // 间隔 <400ms 的「二击」按机器节奏处理——视为 repeat 噪音，忽略但不退出待确认态
+    if (Date.now() - startConfirmAtRef.current < 400) return
+    resetStartConfirm()
     setStarting(true)
     try {
       const res = await fetch(`${API_BASE}/api/automation/trigger`, {
@@ -138,6 +173,27 @@ export function CommandHeader({
     } finally {
       setStarting(false)
     }
+  }
+
+  // 继续任务（blocked 态主按钮）：与阻塞横幅共用同一入口（blocked-task-actions），
+  // 受理后横幅转进行时态、SSE 重连（含刷新恢复场景的 pipelineTaskId 补建）
+  const [resuming, setResuming] = useState(false)
+  const handleResume = async () => {
+    if (resuming) return
+    setResuming(true)
+    try {
+      await resumeBlockedTask()
+    } finally {
+      setResuming(false)
+    }
+  }
+
+  // 终止阻塞任务：链路已收尾（无运行中协程），此处是放弃继续这条链路的显式出口
+  const handleTerminateBlocked = () => {
+    if (!window.confirm(
+      "确定终止并关闭该阻塞任务？\n剩余「待AI初筛」岗位将保留在清洗池，可稍后在清洗面板手动重跑 AI 排雷。"
+    )) return
+    terminateBlockedTask()
   }
 
   // 终止后对账（0928 事故修复）：轮询后端 current-pipeline，确认协程已不存在即复位本地
@@ -261,11 +317,13 @@ export function CommandHeader({
                     "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium border transition-colors",
                     pipelineStatus === "running"
                       ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                      : pipelineStatus === "done"
-                        ? "border-blue-500/30 bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                        : pipelineStatus === "error"
-                          ? "border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400"
-                          : "border-border bg-muted/50 text-muted-foreground"
+                      : pipelineStatus === "blocked"
+                        ? "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                        : pipelineStatus === "done"
+                          ? "border-blue-500/30 bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                          : pipelineStatus === "error"
+                            ? "border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400"
+                            : "border-border bg-muted/50 text-muted-foreground"
                   )}
                 >
                   <span
@@ -273,20 +331,24 @@ export function CommandHeader({
                       "h-1.5 w-1.5 rounded-full",
                       pipelineStatus === "running"
                         ? "bg-emerald-500 animate-pulse"
-                        : pipelineStatus === "done"
-                          ? "bg-blue-500"
-                          : pipelineStatus === "error"
-                            ? "bg-red-500"
-                            : "bg-muted-foreground/50"
+                        : pipelineStatus === "blocked"
+                          ? "bg-amber-500 animate-pulse"
+                          : pipelineStatus === "done"
+                            ? "bg-blue-500"
+                            : pipelineStatus === "error"
+                              ? "bg-red-500"
+                              : "bg-muted-foreground/50"
                     )}
                   />
                   {pipelineStatus === "running"
                     ? `正在执行: ${currentStageLabel}`
-                    : pipelineStatus === "done"
-                      ? "任务完成 · 待命"
-                      : pipelineStatus === "error"
-                        ? "任务异常 · 请查看日志"
-                        : "就绪"}
+                    : pipelineStatus === "blocked"
+                      ? "已暂停 · LLM 异常"
+                      : pipelineStatus === "done"
+                        ? "任务完成 · 待命"
+                        : pipelineStatus === "error"
+                          ? "任务异常 · 请查看日志"
+                          : "就绪"}
                 </span>
               </div>
               <p className="text-[11px] text-muted-foreground">
@@ -338,7 +400,7 @@ export function CommandHeader({
             </div>
           )}
 
-          {/* 启动 / 终止按钮 */}
+          {/* 启动 / 终止 / 继续按钮 */}
           {pipelineStatus === "running" ? (
             <button
               onClick={handleAbort}
@@ -349,20 +411,54 @@ export function CommandHeader({
               <Square className="h-3.5 w-3.5 fill-current" />
               {aborting || abortPending ? "终止中…" : "终止任务"}
             </button>
+          ) : pipelineStatus === "blocked" ? (
+            // 阻塞态：主按钮转「继续任务」，旁边保留小的终止入口——
+            // 绝不能出现「任务完成但按钮又能重新启动」的误导组合
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleResume}
+                disabled={resuming}
+                className="flex items-center gap-1.5 rounded-lg bg-amber-600 px-3.5 py-1.5 text-xs font-medium text-white shadow-sm shadow-amber-500/25 transition-all hover:bg-amber-500 active:scale-95 disabled:opacity-50"
+                title="重新评估遗留的待AI初筛岗位，并继续飞书推送等后续链路"
+              >
+                <Play className="h-3.5 w-3.5 fill-current" />
+                {resuming ? "启动中…" : "继续任务"}
+              </button>
+              <button
+                onClick={handleTerminateBlocked}
+                className="flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-2.5 py-1.5 text-xs font-medium text-red-600 transition-all hover:bg-red-500/20 active:scale-95"
+                title="放弃继续这条链路（遗留岗位保留在清洗池）"
+              >
+                <Square className="h-3 w-3 fill-current" />
+                终止
+              </button>
+            </div>
           ) : (
             <button
               onClick={handleStart}
               disabled={starting}
               className={cn(
                 "flex items-center gap-2 rounded-lg px-4 py-1.5 text-xs font-medium text-white shadow-sm transition-all active:scale-95",
-                allConfigured
-                  ? "bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 shadow-violet-500/25"
-                  : "bg-amber-600 hover:bg-amber-500 cursor-pointer shadow-amber-500/25"
+                startConfirming
+                  ? "bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 shadow-red-500/25 animate-pulse"
+                  : allConfigured
+                    ? "bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 shadow-violet-500/25"
+                    : "bg-amber-600 hover:bg-amber-500 cursor-pointer shadow-amber-500/25"
               )}
-              title={allConfigured ? "启动全链路任务" : `点击立即配置未就绪规则: ${missingConfigs.map((s) => s.label).join("、")}`}
+              title={startConfirming
+                ? "5 秒内再次点击确认启动（误触保护）"
+                : allConfigured
+                  ? "启动全链路任务（需点击两次确认）"
+                  : `点击立即配置未就绪规则: ${missingConfigs.map((s) => s.label).join("、")}`}
             >
               {allConfigured ? <Play className="h-3.5 w-3.5 fill-current" /> : <Settings2 className="h-3.5 w-3.5" />}
-              {starting ? "启动中…" : allConfigured ? "启动全链路" : `待配置规则 (${missingConfigs.length})`}
+              {starting
+                ? "启动中…"
+                : startConfirming
+                  ? "再次点击确认启动"
+                  : allConfigured
+                    ? "启动全链路"
+                    : `待配置规则 (${missingConfigs.length})`}
             </button>
           )}
 
@@ -449,24 +545,46 @@ export function CommandHeader({
             <div className="flex items-center gap-1.5">
               <span className="text-[11px]">定时开关:</span>
               <button
-                onClick={() => setScheduledEnabled(!scheduledEnabled)}
+                onClick={() => !scheduleLoading && setScheduledEnabled(!scheduledEnabled)}
+                disabled={scheduleLoading}
+                title={scheduleLoading ? "正在读取当前定时配置…" : undefined}
                 className={cn(
                   "relative h-5 w-9 rounded-full transition-colors",
-                  scheduledEnabled ? "bg-amber-500" : "bg-muted"
+                  scheduleLoading && "animate-pulse",
+                  !scheduleLoading && scheduledEnabled && "bg-amber-500",
+                  !scheduleLoading && !scheduledEnabled && "bg-muted"
                 )}
               >
-                <span
-                  className={cn(
-                    "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform shadow-sm",
-                    scheduledEnabled ? "left-[18px]" : "left-0.5"
-                  )}
-                />
+                {scheduleLoading ? (
+                  // 加载中渲染中性横条（不呈现开/关任何一侧），读到结果后才出现滑块——彻底消除首帧「关→开」跳变
+                  <span className="absolute inset-x-1.5 top-1/2 h-0.5 -translate-y-1/2 rounded-full bg-muted-foreground/40" />
+                ) : (
+                  <span
+                    className={cn(
+                      "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform shadow-sm",
+                      scheduledEnabled ? "left-[18px]" : "left-0.5"
+                    )}
+                  />
+                )}
               </button>
               <span className={cn("text-[11px]", scheduledEnabled ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")}>
-                {scheduledEnabled
-                  ? `开启 · 每天 ${dailyTime} 采集评估（停在待审批，投递由发射时间控制）`
-                  : "已关闭"}
+                {scheduleLoading
+                  ? scheduleLoadFailed
+                    ? "定时配置读取失败"
+                    : "读取配置中…"
+                  : scheduledEnabled
+                    ? `开启 · 每天 ${dailyTime} 采集评估（停在待审批，投递由发射时间控制）`
+                    : "已关闭"}
               </span>
+              {scheduleLoading && scheduleLoadFailed && (
+                <button
+                  onClick={retryLoadSchedule}
+                  className="flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 transition-all hover:bg-amber-500/20 active:scale-95 dark:text-amber-300"
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  重试
+                </button>
+              )}
             </div>
           </div>
 
@@ -478,7 +596,8 @@ export function CommandHeader({
             )}
             <button
               onClick={handleSaveSchedule}
-              disabled={savingSchedule}
+              disabled={savingSchedule || scheduleLoading}
+              title={scheduleLoading ? "定时配置读取完成前不可保存" : undefined}
               className="flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[11px] font-medium text-amber-700 dark:text-amber-300 transition-all hover:bg-amber-500/20 active:scale-95 disabled:opacity-50"
             >
               <Clock className="h-3 w-3" />

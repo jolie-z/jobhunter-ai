@@ -9,6 +9,11 @@ export interface KVField {
   key: string
   value: string
   valuePlaceholder?: string
+  /**
+   * 条目标准字段回写键（自定义模块老数据兼容行专用）：设置后 onChange 由调用方按该键
+   * 写回条目的原始字段（如 company），而非把界面 label 当作新的自定义字段名持久化
+   */
+  stdKey?: string
 }
 
 let kvSeed = 5000

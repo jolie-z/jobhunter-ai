@@ -18,7 +18,7 @@ PARENT_DIR = os.path.dirname(CURRENT_DIR)
 if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 
-from engine_guard import verify_browser_identity
+from engine_guard import cross_process_port_lock, verify_browser_identity
 from app.core.db_paths import job_hunter_db_path, writable_path
 
 # 端口/profile 口径与 51job_auto_delivery 同源：registry 优先，独立脚本环境 fallback（同其 :50-57 先例）
@@ -198,6 +198,8 @@ def navigate_to_target_page(search_page, target_page, captured_data):
                 search_page.wait_for_selector(".joblist-item", timeout=10000)
             else:
                 print(f"      ⚠️ 无法继续翻页，在第 {step} 页卡住：已到达最后一页（没有更多数据了）。")
+                # 结构化底部哨兵：只有「分页按钮确实不可用」才是真底部。
+                print("[[HIT_BOTTOM]]")
                 return False
         
         # 到达目标页后，稍微缓冲一下
@@ -205,6 +207,8 @@ def navigate_to_target_page(search_page, target_page, captured_data):
         return True
     except Exception as e:
         print(f"      ❌ 翻页操作出现异常: {e}")
+        # 异常（超时/风控/DOM 变化）不是底部，交给控制器按失败轮处理，绝不误标抓尽。
+        print("[[PAGE_LOAD_FAILED]]")
         return False
 
 def extract_job_items(captured_data):
@@ -233,6 +237,101 @@ def _extract_search_total(job_node):
         return 0
     except Exception:
         return 0
+
+
+def _is_confirmed_empty_search(captured_data) -> bool:
+    """搜索 API 已应答且明确 0 命中 → 真底部，而不是页面加载失败。
+
+    2026-10-31 复审 P1：`items=[]` 有两种来源——真实的 0 命中搜索，以及验证码/
+    接口异常/页面没加载出来。前者必须走 [[HIT_BOTTOM]]（否则该条件永不抓尽、每个
+    调度周期重试）；后者必须走 [[PAGE_LOAD_FAILED]]。判据：必须有
+    resultbody.job 节点（证明搜索 API 正常应答），且 items 为空、搜索总数为 0。
+    无 API 数据 / 无 job 节点 / 解析异常一律返回 False。
+
+    边界：若平台把 totalCount 键改名导致读 0，越界页的空响应可能被误判为底部；
+    非首页场景由控制器 stale_cursor 自愈兜底（重置回第 1 页），只有从第 1 页触发
+    的真空结果才会直接落账抓尽。
+    """
+    if not captured_data:
+        return False
+    try:
+        job_node = captured_data[-1].get("resultbody", {}).get("job")
+        if not isinstance(job_node, dict) or not job_node:
+            return False
+        if job_node.get("items"):
+            return False
+        return _extract_search_total(job_node) == 0
+    except Exception:
+        return False
+
+def _empty_result_marker(captured_data) -> str:
+    """空 items 时的协议哨兵：真实 0 命中=底部，其余=加载失败。"""
+    return "[[HIT_BOTTOM]]" if _is_confirmed_empty_search(captured_data) else "[[PAGE_LOAD_FAILED]]"
+
+
+def _has_valid_api_data(captured_data) -> bool:
+    """判断是否已捕获到有效的 51job 岗位 API 响应（含岗位列表或明确 0 命中）"""
+    if not captured_data:
+        return False
+    try:
+        job_node = captured_data[-1].get("resultbody", {}).get("job")
+        if not isinstance(job_node, dict):
+            return False
+        items = job_node.get("items")
+        if isinstance(items, list) and len(items) > 0:
+            return True
+        return _is_confirmed_empty_search(captured_data)
+    except Exception:
+        return False
+
+
+def _save_failure_screenshot(page, prefix="51job_failure"):
+    """失败现场留痕，落盘 51job_failure_shots/"""
+    try:
+        shot_dir = str(writable_path(
+            os.path.join(PARENT_DIR, "51job_failure_shots"), "51job_failure_shots"
+        ))
+        os.makedirs(shot_dir, exist_ok=True)
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        shot_path = os.path.join(shot_dir, f"{stamp}_{prefix}.png")
+        if hasattr(page, "screenshot"):
+            page.screenshot(path=shot_path, full_page=False)
+            print(f"      📸 失败现场截图已留存: {shot_path}")
+    except Exception as e:
+        print(f"      ⚠️ 失败现场截图留存异常（不影响中止流程）: {e}")
+
+
+def _wait_for_search_ready(search_page, captured_data, target_page=1, timeout_ms=25000) -> bool:
+    """智能等待页面就绪（API 优先 + DOM 兜底）：
+    1. 轮询期间：若已捕获有效 API 数据，首页直接放行；
+    2. 若 DOM 选择器已出现，亦视为就绪；
+    3. 超时返回 False。
+    """
+    start_time = time.time()
+    max_wait = timeout_ms / 1000.0
+    while time.time() - start_time < max_wait:
+        # 1. 优先判定：API 数据已捕获
+        if _has_valid_api_data(captured_data):
+            if target_page == 1:
+                print("      ⚡ [51job] 核心搜索 API 响应已就绪，优先放行数据处理。")
+                return True
+            try:
+                search_page.wait_for_selector(".btn-next, .bottom-page, .joblist-item", timeout=1000)
+                return True
+            except Exception:
+                pass
+
+        # 2. 检查 DOM 是否已渲染
+        try:
+            search_page.wait_for_selector(".joblist-item, .btn-next", timeout=1000)
+            return True
+        except Exception:
+            pass
+
+        time.sleep(0.5)
+
+    return False
+
 
 def process_job_items(context, job_items, target=0):
     """处理单页提取到的所有岗位记录并入库，返回成功条数。
@@ -314,11 +413,23 @@ def collect_51job_task(context, keyword, city_name, target_page, target_salary, 
     except Exception:
         print("      💡 提示：页面加载超时，但核心数据可能已渲染，强制放行...")
 
-    # 🌟 核心修复 1：死等！必须确认页面上的职位列表或者分页条已经加载完毕，最多等 15 秒
-    try:
-        search_page.wait_for_selector(".joblist-item, .btn-next", timeout=15000)
-    except Exception:
-        print("      ⚠️ 页面加载超时，可能网络卡顿或该关键词无任何岗位数据。")
+    # 🌟 智能等待：API 数据优先放行 + DOM 选择器兜底（最多 25 秒），未就绪则刷新自愈 1 次
+    ready = _wait_for_search_ready(search_page, captured_data, target_page=target_page, timeout_ms=25000)
+    if not ready:
+        print("      ⚠️ 首次等待超时且未捕获到有效 API 数据，尝试强制刷新（reload）自愈...")
+        try:
+            search_page.reload(wait_until="domcontentloaded", timeout=30000)
+            ready = _wait_for_search_ready(search_page, captured_data, target_page=target_page, timeout_ms=20000)
+        except Exception as e:
+            print(f"      ⚠️ 强制刷新重试异常: {e}")
+
+    if not ready:
+        # 2026-10-31：这里可能是网络超时/风控，也可能是真的空结果。旧文案含
+        # “无任何岗位数据”，被控制器子串匹配成 hit_bottom，导致一次加载超时就把
+        # 条件误标抓尽。改为结构化失败哨兵，由控制器按失败轮处理。
+        print("      ⚠️ 页面加载超时（网络/风控或页面结构变化），本页按失败处理，不判定为平台到底。")
+        _save_failure_screenshot(search_page, f"51job_p{target_page}")
+        print("[[PAGE_LOAD_FAILED]]")
         search_page.close()
         return
 
@@ -329,6 +440,12 @@ def collect_51job_task(context, keyword, city_name, target_page, target_salary, 
 
     job_items, search_total = extract_job_items(captured_data)
     if not job_items:
+        # 2026-10-31 复审 P1：区分“真实 0 命中”与“页面没加载出来”。
+        # 前者是真底部（否则该条件永不抓尽、每个调度周期重试）；后者按失败轮处理。
+        marker = _empty_result_marker(captured_data)
+        if marker == "[[HIT_BOTTOM]]":
+            print("      ⚠️ 搜索 API 已应答且 0 命中，判定为平台到底。")
+        print(marker)
         search_page.close()
         return
 
@@ -361,6 +478,7 @@ def _inject_cookies_if_available(context):
         return False
 
 
+@cross_process_port_lock(L51_PORT, "51job", on_busy="exit")
 def start_collector(target_page, keyword=None, city=None, salary=None, target=0):
     print(f"🚀 启动 51job 精准代码采集矩阵 (目标提取页码: {target_page}, 剩余配额: {target or '不限'})...")
 

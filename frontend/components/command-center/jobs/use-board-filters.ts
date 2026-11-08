@@ -6,11 +6,12 @@ import {
   isJobEvaluating,
   isJobFailed,
   isJobReadyToDeliver,
+  isJobPendingReeval,
   isJobRejected,
   isJobWaitingReview,
 } from "../job-predicates"
 
-const VALID_TABS = ["all", "rejected", "review", "ready_to_deliver", "evaluating", "delivered", "failed"]
+const VALID_TABS = ["all", "rejected", "reeval", "review", "ready_to_deliver", "evaluating", "delivered", "failed"]
 
 // 时间字符串统一转毫秒时间戳：兼容 "YYYY-MM-DD HH:mm:ss"（快照/SQLite）与 ISO（前端乐观写入）
 function toTimeTs(timeStr?: string | null): number {
@@ -48,6 +49,7 @@ export function useBoardFilters() {
 
   // 各状态列表（统一走 job-predicates，只保留当次任务纯净数据）
   const rejectedJobs = useMemo(() => jobList.filter(isJobRejected), [jobList])
+  const pendingReevalJobs = useMemo(() => jobList.filter(isJobPendingReeval), [jobList])
   const evaluatingJobs = useMemo(() => jobList.filter(isJobEvaluating), [jobList])
   const waitingJobs = useMemo(() => jobList.filter(isJobWaitingReview), [jobList])
   const readyToDeliverJobs = useMemo(() => jobList.filter(isJobReadyToDeliver).sort(byLatestActionDesc), [jobList])
@@ -61,6 +63,8 @@ export function useBoardFilters() {
       list = jobList
     } else if (filterTab === "rejected") {
       list = rejectedJobs
+    } else if (filterTab === "reeval") {
+      list = pendingReevalJobs
     } else if (filterTab === "evaluating") {
       list = evaluatingJobs
     } else if (filterTab === "review") {
@@ -88,6 +92,7 @@ export function useBoardFilters() {
     filterTab,
     searchQuery,
     rejectedJobs,
+    pendingReevalJobs,
     evaluatingJobs,
     waitingJobs,
     readyToDeliverJobs,
@@ -102,6 +107,7 @@ export function useBoardFilters() {
     setSearchInput,
     allJobs: jobList,
     rejectedJobs,
+    pendingReevalJobs,
     waitingJobs,
     readyToDeliverJobs,
     evaluatingJobs,

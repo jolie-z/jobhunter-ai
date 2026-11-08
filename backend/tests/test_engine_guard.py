@@ -55,7 +55,7 @@ def _primitives_must_not_run(monkeypatch):
 
 
 # ============================================================
-# 判定矩阵（五格，编号对齐 engine_guard docstring）
+# 判定矩阵（编号对齐 engine_guard docstring；Windows 专有路径另见 test_engine_guard_windows.py）
 # ============================================================
 
 def test_port_free_allows_launch(monkeypatch):
@@ -119,6 +119,162 @@ def test_profile_match_allows_attach(monkeypatch):
     assert ok and reason == "profile_match"
 
 
+def test_profile_path_with_spaces_allows_attach(monkeypatch):
+    """2026-10-30 真机事故回归：macOS 打包态 profile 含空格（Application Support）。
+
+    ps -ww -o command= 输出不给含空格参数加引号；旧 (\\S+) 提取在空格处截断成
+    /Users/<user>/Library/Application，与预期不等 → 自家 Edge 被 fail-closed 误杀。
+    """
+    prof = "/Users/example/Library/Application Support/jobhunter-desktop/profiles/boss"
+    cmd = (
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge "
+        "--remote-debugging-port=19222 "
+        f"--user-data-dir={prof} "
+        "--remote-allow-origins=* --disable-blink-features=AutomationControlled"
+    )
+    _mock_primitives(monkeypatch, http_ok="ok", pids=["100"], commands={"100": cmd})
+    assert eg._extract_user_data_dir(cmd) == prof
+    ok, reason = verify_browser_identity(19222, prof, platform="boss")
+    assert ok and reason == "profile_match"
+
+
+def test_profile_path_with_spaces_quoted_forms(monkeypatch):
+    """POSIX 引号形态（双引号/单引号）同样完整提取，不因空格截断。"""
+    prof = "/Users/fake/Library/Application Support/jobhunter-desktop/profiles/51job"
+    for cmd in (
+        f'/Applications/Edge --user-data-dir="{prof}" --remote-allow-origins=*',
+        f"/Applications/Edge --user-data-dir='{prof}' --remote-allow-origins=*",
+        f"/Applications/Edge --user-data-dir={prof}",
+        f"/Applications/Edge --user-data-dir={prof} https://www.51job.com/",
+    ):
+        assert eg._extract_user_data_dir(cmd) == prof
+
+
+def test_desktop_app_profile_allows_attach(monkeypatch, tmp_path):
+    """矩阵⑦（2026-10-30 真机事故）：dev 实例期望 backend/data/profiles，端口占用者
+    是同产品桌面版 userData profile（含空格）→ 放行复用，不再误杀 BOSS/51job。"""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("JOBHUNTER_DATA_DIR", raising=False)
+    monkeypatch.setattr(eg.sys, "platform", "darwin")
+    desktop_prof = str(
+        tmp_path / "Library" / "Application Support" / "jobhunter-desktop" / "profiles" / "boss"
+    )
+    cmd = f"/Applications/Edge --user-data-dir={desktop_prof} --remote-allow-origins=*"
+    _mock_primitives(monkeypatch, http_ok="ok", pids=["100"], commands={"100": cmd})
+    ok, reason = verify_browser_identity(19222, _FAKE_PROF, platform="boss")
+    assert ok and reason == "sibling_profile_match"
+
+
+def test_JobHunter_product_name_variant_allows_attach(monkeypatch, tmp_path):
+    """productName=JobHunter 的 userData 落点同样是可信兄弟根（行为级，不只 roots 断言）。"""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("JOBHUNTER_DATA_DIR", raising=False)
+    monkeypatch.setattr(eg.sys, "platform", "darwin")
+    prof = str(tmp_path / "Library" / "Application Support" / "JobHunter" / "profiles" / "boss")
+    cmd = f"/Applications/Edge --user-data-dir={prof}"
+    _mock_primitives(monkeypatch, http_ok="ok", pids=["100"], commands={"100": cmd})
+    ok, reason = verify_browser_identity(19222, _FAKE_PROF, platform="boss")
+    assert ok and reason == "sibling_profile_match"
+
+
+def test_display_name_platform_arg_still_allows(monkeypatch, tmp_path):
+    """platform 参数传展示名（BOSS直聘）也不失配：平台键以 expected_profile 末段为准。"""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("JOBHUNTER_DATA_DIR", raising=False)
+    monkeypatch.setattr(eg.sys, "platform", "darwin")
+    prof = str(tmp_path / "Library" / "Application Support" / "jobhunter-desktop" / "profiles" / "boss")
+    cmd = f"/Applications/Edge --user-data-dir={prof}"
+    _mock_primitives(monkeypatch, http_ok="ok", pids=["100"], commands={"100": cmd})
+    ok, reason = verify_browser_identity(19222, _FAKE_PROF, platform="BOSS直聘")
+    assert ok and reason == "sibling_profile_match"
+
+
+def test_empty_platform_falls_back_to_expected_basename(monkeypatch, tmp_path):
+    """platform 缺省（调用方未传）时回退 expected_profile 末段，矩阵⑦仍生效。"""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("JOBHUNTER_DATA_DIR", raising=False)
+    monkeypatch.setattr(eg.sys, "platform", "darwin")
+    prof = str(tmp_path / "Library" / "Application Support" / "jobhunter-desktop" / "profiles" / "boss")
+    cmd = f"/Applications/Edge --user-data-dir={prof}"
+    _mock_primitives(monkeypatch, http_ok="ok", pids=["100"], commands={"100": cmd})
+    ok, reason = verify_browser_identity(19222, _FAKE_PROF)
+    assert ok and reason == "sibling_profile_match"
+
+
+def test_reverse_packaged_expected_rejects_dev_browser(monkeypatch, tmp_path):
+    """矩阵⑦是单向放行：打包态期望桌面版 profile，遇到 dev 浏览器仍 fail-closed。
+
+    锁定「只放行兄弟、不引入新放行」的另一端——避免有人把匹配放宽成根目录级。
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("JOBHUNTER_DATA_DIR", raising=False)
+    monkeypatch.setattr(eg.sys, "platform", "darwin")
+    desktop_prof = str(tmp_path / "Library" / "Application Support" / "jobhunter-desktop" / "profiles" / "boss")
+    cmd = f"/Applications/Edge --user-data-dir={_FAKE_PROF}"
+    _mock_primitives(monkeypatch, http_ok="ok", pids=["100"], commands={"100": cmd})
+    ok, reason = verify_browser_identity(19222, desktop_prof, platform="boss")
+    assert not ok
+    assert "非预期 profile" in reason
+
+
+def test_desktop_app_profile_roots_per_platform(monkeypatch, tmp_path):
+    """矩阵⑦根目录推导：macOS / Windows / Linux + JOBHUNTER_DATA_DIR 显式覆盖。
+
+    Windows 分支用 os.path.join 构造期望值（不手写 "/"），避免真 Windows CI 上
+    分隔符归一差异造成假失败。
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(eg.sys, "platform", "darwin")
+    monkeypatch.delenv("JOBHUNTER_DATA_DIR", raising=False)
+    roots = eg._desktop_profile_roots()
+    assert os.path.join(str(tmp_path), "Library", "Application Support", "jobhunter-desktop", "profiles") in roots
+    assert os.path.join(str(tmp_path), "Library", "Application Support", "JobHunter", "profiles") in roots
+
+    monkeypatch.setattr(eg.sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", os.path.join(str(tmp_path), "AppData", "Roaming"))
+    assert os.path.join(str(tmp_path), "AppData", "Roaming", "jobhunter-desktop", "profiles") in eg._desktop_profile_roots()
+
+    monkeypatch.setattr(eg.sys, "platform", "linux")
+    monkeypatch.setenv("XDG_CONFIG_HOME", os.path.join(str(tmp_path), ".config"))
+    assert os.path.join(str(tmp_path), ".config", "jobhunter-desktop", "profiles") in eg._desktop_profile_roots()
+
+    monkeypatch.setenv("JOBHUNTER_DATA_DIR", str(tmp_path / "custom-data"))
+    assert os.path.join(str(tmp_path), "custom-data", "profiles") in eg._desktop_profile_roots()
+
+    # ~ 展开 + 相对路径归一（与 expected_profile 的 isabs 规则对齐）
+    monkeypatch.setenv("JOBHUNTER_DATA_DIR", "~/custom-data")
+    assert os.path.join(str(tmp_path), "custom-data", "profiles") in eg._desktop_profile_roots()
+
+
+def test_worktree_profile_still_rejected(monkeypatch, tmp_path):
+    """矩阵⑦只放行安装版 userData：worktree / 沙箱 profile 仍 fail-closed（Q24 语义）。"""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("JOBHUNTER_DATA_DIR", raising=False)
+    monkeypatch.setattr(eg.sys, "platform", "darwin")
+    for foreign_prof in (
+        "/Users/fakeproj/experimental/qa-custom-panel/backend/data/profiles/boss",
+        "/Users/fakeproj/jobhunter_mac_sandbox/profiles/boss",
+    ):
+        cmd = f"/Applications/Edge --user-data-dir={foreign_prof}"
+        _mock_primitives(monkeypatch, http_ok="ok", pids=["100"], commands={"100": cmd})
+        ok, reason = verify_browser_identity(19222, _FAKE_PROF, platform="boss")
+        assert not ok
+        assert "非预期 profile" in reason  # 不能是「探测异常」等其它拒绝原因假绿
+
+
+def test_empty_platform_key_does_not_trust_whole_profiles_root(monkeypatch, tmp_path):
+    """平台键为空时不得把整个 profiles 根当可信兄弟（防 join(root, "") 扩大信任面）。"""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("JOBHUNTER_DATA_DIR", raising=False)
+    monkeypatch.setattr(eg.sys, "platform", "darwin")
+    root = str(tmp_path / "Library" / "Application Support" / "jobhunter-desktop" / "profiles")
+    cmd = f"/Applications/Edge --user-data-dir={root}"
+    _mock_primitives(monkeypatch, http_ok="ok", pids=["100"], commands={"100": cmd})
+    ok, reason = verify_browser_identity(19222, "/", platform="")
+    assert not ok
+    assert "非预期 profile" in reason
+
+
 def test_prefix_collision_rejected(monkeypatch):
     """P1-2 前缀碰撞：预期 …/profiles/boss，占用者 …/profiles/boss_test → 拒绝。"""
     cmd = f"edge --user-data-dir=/Users/fakeproj/backend/data/profiles/boss_test"
@@ -151,11 +307,56 @@ def test_lsof_failure_fail_closed(monkeypatch):
     assert "fail-closed" in reason
 
 
-def test_ps_failure_fail_closed(monkeypatch):
-    """矩阵⑤：有监听 PID 但 ps 查询失败 → fail-closed。"""
-    _mock_primitives(monkeypatch, http_ok="ok", pids=["100"], commands={"100": None})
+def test_ps_failure_then_port_freed_allows(monkeypatch):
+    """矩阵⑥（2026-10-29 修订）：命令行查询失败且复探已无监听（占用者退出）→ 放行自起。
+
+    2026-10-28 真机事故：PowerShell CIM 高负载超时 → 一票否决 fail-closed 误杀自家浏览器。
+    查询失败 ≠ 身份不可信：复探 refused（确定性 RST）= 占用者已在探测间隙退出，按矩阵①
+    语义归类为端口空闲。
+    """
+    seq = iter([["100"], []])  # 首探有监听者 → 复探已无监听
+    monkeypatch.setattr(eg, "_lsof_pids", lambda port: next(seq))
+    monkeypatch.setattr(eg, "_probe_http", lambda port: "refused")
+    monkeypatch.setattr(eg, "_ps_command", lambda pid: None)
+    ok, reason = verify_browser_identity(19222, _FAKE_PROF, platform="boss")
+    assert ok and reason == "port_free"
+
+
+def test_ps_failure_still_listening_fail_closed(monkeypatch):
+    """矩阵⑥：命令行查询失败且复探仍有监听者 → 维持 fail-closed，文案含可操作 runbook。"""
+    seq = iter([["100"], ["100"]])  # 复探仍有监听者
+    monkeypatch.setattr(eg, "_lsof_pids", lambda port: next(seq))
+    monkeypatch.setattr(
+        eg, "_probe_http",
+        lambda port: (_ for _ in ()).throw(AssertionError("仍有监听者时不应发 HTTP 探测")),
+    )
+    monkeypatch.setattr(eg, "_ps_command", lambda pid: None)
     ok, reason = verify_browser_identity(19222, _FAKE_PROF, platform="boss")
     assert not ok
+    assert "fail-closed" in reason and eg.EXEMPT_ENV in reason
+
+
+def test_ps_failure_reprobe_blindspot_rejected(monkeypatch):
+    """矩阵⑥ × 矩阵②：查询失败 + 复探无监听但 HTTP 2xx（盲区浮现）→ 维持拒绝，不弱化矩阵②。"""
+    seq = iter([["100"], []])
+    monkeypatch.setattr(eg, "_lsof_pids", lambda port: next(seq))
+    monkeypatch.setattr(eg, "_probe_http", lambda port: "ok")
+    monkeypatch.setattr(eg, "_ps_command", lambda pid: None)
+    ok, reason = verify_browser_identity(19222, _FAKE_PROF, platform="boss")
+    assert not ok
+    assert "盲区" in reason
+
+
+def test_query_failed_pid_does_not_mask_matching_pid(monkeypatch):
+    """多监听 PID：任一匹配即放行的既有语义——死 PID 查询失败不再一票否决遮蔽合法匹配
+    （旧实现首个查询失败 PID 直接 return False，netstat 残留死 PID 会卡死合法浏览器）。"""
+    cmds = {
+        "1": None,  # 查询失败（如进程已死、netstat 残留监听项）
+        "2": f"edge --user-data-dir={_FAKE_PROF}",
+    }
+    _mock_primitives(monkeypatch, http_ok="ok", pids=["1", "2"], commands=cmds)
+    ok, reason = verify_browser_identity(19222, _FAKE_PROF, platform="boss")
+    assert ok and reason == "profile_match"
 
 
 def test_multiple_pids_any_match_allows(monkeypatch):
@@ -255,8 +456,14 @@ def test_win_netstat_pids(monkeypatch):
 
 
 def test_win_commandline_and_quoted_profile(monkeypatch):
-    """Windows：PowerShell CIM 查命令行；--user-data-dir 引号包裹路径需完整提取（否则假拒绝）。"""
+    """Windows：PowerShell CIM 兜底路径查命令行；--user-data-dir 引号包裹路径需完整提取（否则假拒绝）。
+
+    2026-10-29 分层后 _win_commandline 以 psutil 为主路径：本用例把 eg.psutil 置 None
+    强制走 CIM 兜底，隔离真实进程；rc=1 走「重试一次再失败」路径（sleep 打桩）。
+    """
     monkeypatch.setattr(eg.sys, "platform", "win32")
+    monkeypatch.setattr(eg, "psutil", None)
+    monkeypatch.setattr(eg.time, "sleep", lambda s: None)
     quoted = 'msedge.exe --user-data-dir="C:\\Users\\Jo hn\\AppData\\Roaming\\jobhunter-desktop\\profiles\\51job" --flag'
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: _run_proc(0, quoted))
     assert eg._ps_command("123") == quoted
@@ -268,9 +475,9 @@ def test_win_commandline_and_quoted_profile(monkeypatch):
     assert eg._extract_user_data_dir("msedge.exe --other=1") is None
 
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: _run_proc(1, ""))
-    assert eg._ps_command("123") is None  # 查询失败 fail-closed
+    assert eg._ps_command("123") is None  # 查询失败：重试一次仍失败 → None（矩阵⑥重探归类）
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: _run_proc(0, ""))
-    assert eg._ps_command("123") is None  # 进程已死（空输出）fail-closed
+    assert eg._ps_command("123") is None  # 进程已死（空输出）→ dead 短路，直接 None
 
 
 def test_probe_http_three_states(monkeypatch):

@@ -10,6 +10,13 @@ import { API_BASE, apiFetch } from "@/lib/api"
 import type { PipelineJob } from "@/store/pipeline-store"
 
 let globalMassGreetingCache: string | null = null
+let globalMassGreetingCacheAt = 0
+const GREETING_CACHE_TTL_MS = 60_000
+/** 通用打招呼语缓存失效（审计 P2-22）：greeting 配置面板保存成功后调用，杜绝改完话术后预览仍发旧文案 */
+export function invalidateMassGreetingCache() {
+  globalMassGreetingCache = null
+  globalMassGreetingCacheAt = 0
+}
 
 interface JobMaterialPreviewModalProps {
   job: PipelineJob | null
@@ -136,12 +143,15 @@ export function JobMaterialPreviewModal({
     setIsLoadingGreeting(true)
 
     const loadMassGreeting = async (): Promise<string> => {
-      if (globalMassGreetingCache) return globalMassGreetingCache
+      if (globalMassGreetingCache && Date.now() - globalMassGreetingCacheAt < GREETING_CACHE_TTL_MS) {
+        return globalMassGreetingCache
+      }
+      if (globalMassGreetingCache) globalMassGreetingCache = null  // 过期即弃
       try {
         const res = await apiFetch("/api/automation/config")
         const d = await res.json()
         const msg = (d?.data?.mass_apply_greeting || "").trim()
-        if (msg) { globalMassGreetingCache = msg; return msg }
+        if (msg) { globalMassGreetingCache = msg; globalMassGreetingCacheAt = Date.now(); return msg }
       } catch { /* ignore */ }
       return ""
     }

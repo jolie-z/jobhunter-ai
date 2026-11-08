@@ -21,6 +21,7 @@ import { DeliveryScheduleBanner } from "./jobs/delivery-schedule-banner"
 import { JobCard } from "./jobs/job-card"
 import { RejectedJobCard } from "./jobs/rejected-job-card"
 import { FailedJobCard } from "./jobs/failed-job-card"
+import { resolvePlatformKey } from "./job-predicates"
 import { FailedBatchBar } from "./jobs/failed-batch-bar"
 import { useBoardActions } from "./jobs/use-board-actions"
 import { useBoardFilters } from "./jobs/use-board-filters"
@@ -31,6 +32,7 @@ interface LiveJobsBoardProps {
   onOpenConfig?: (stageKey: StageKey) => void
 }
 
+
 export function LiveJobsBoard({ onOpenConfig }: LiveJobsBoardProps = {}) {
   const deliverySchedule = usePipelineStore((s) => s.deliverySchedule)
   const {
@@ -40,6 +42,7 @@ export function LiveJobsBoard({ onOpenConfig }: LiveJobsBoardProps = {}) {
     setSearchInput,
     allJobs,
     rejectedJobs,
+    pendingReevalJobs,
     waitingJobs,
     readyToDeliverJobs,
     evaluatingJobs,
@@ -73,6 +76,7 @@ export function LiveJobsBoard({ onOpenConfig }: LiveJobsBoardProps = {}) {
     handleDismissFailedJob,
     handleBatchRetryFailedJobs,
     handleBatchDismissFailedJobs,
+    deliveringJobIds,
   } = useBoardActions(waitingJobs, readyToDeliverJobs)
 
   // 失败岗位单选切换
@@ -99,16 +103,10 @@ export function LiveJobsBoard({ onOpenConfig }: LiveJobsBoardProps = {}) {
   }, [])
 
   // 按平台快捷勾选
+
   const handleSelectFailedByPlatform = useCallback((platformKey: string) => {
     const matchedIds = failedJobs
-      .filter((job) => {
-        const raw = (job.platform || "").toLowerCase()
-        if (platformKey === "51job") return raw.includes("51") || raw.includes("前程")
-        if (platformKey === "zhilian") return raw.includes("智联") || raw.includes("zhilian")
-        if (platformKey === "boss") return raw.includes("boss")
-        if (platformKey === "liepin") return raw.includes("猎聘") || raw.includes("liepin")
-        return false
-      })
+      .filter((job) => resolvePlatformKey(job.platform || "", platformKey))
       .map((j) => j.job_id)
     setSelectedFailedJobIds(new Set(matchedIds))
   }, [failedJobs])
@@ -188,6 +186,25 @@ export function LiveJobsBoard({ onOpenConfig }: LiveJobsBoardProps = {}) {
             {evaluatingJobs.length > 0 && (
               <span className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-violet-500 text-[10px] text-white px-1 font-bold">
                 {evaluatingJobs.length}
+              </span>
+            )}
+          </button>
+
+          {/* 待重评（停机未评估岗位，审计 P1-5：不可放行，下次链路自动补评估） */}
+          <button
+            onClick={() => setFilterTab("reeval")}
+            className={cn(
+              "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all shrink-0 cursor-pointer",
+              filterTab === "reeval"
+                ? "bg-sky-600 text-white shadow-xs"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/60"
+            )}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            待重评
+            {pendingReevalJobs.length > 0 && (
+              <span className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-sky-500 text-[10px] text-white px-1 font-bold">
+                {pendingReevalJobs.length}
               </span>
             )}
           </button>
@@ -282,6 +299,13 @@ export function LiveJobsBoard({ onOpenConfig }: LiveJobsBoardProps = {}) {
           )}
 
           {/* 待审批专属批量放行按钮：仅切到待审批 Tab 且有待审批岗位时显示 */}
+          {filterTab === "reeval" && pendingReevalJobs.length > 0 && (
+            <div className="mb-3 rounded-xl border border-sky-200 bg-sky-50 px-4 py-2.5 text-xs text-sky-800">
+              以下 {pendingReevalJobs.length} 个岗位停机期间未经 AI 评估，<b>不可放行投递</b>。下次启动全链路时会自动补评估。
+            </div>
+          )}
+
+          {/* 待审批专属批量放行按钮（CR-B2-R1-P2 注释归位） */}
           {filterTab === "review" && waitingJobs.length > 0 && (
             <button
               onClick={() => handleBatchApprove(waitingJobs)}
@@ -385,6 +409,7 @@ export function LiveJobsBoard({ onOpenConfig }: LiveJobsBoardProps = {}) {
                   onToggleSelect={handleToggleSelectFailedJob}
                   onRetry={handleRetryFailedJob}
                   onDismiss={handleDismissFailedJob}
+                  delivering={Boolean(deliveringJobIds?.[job.job_id])}
                 />
               )
             }
@@ -397,6 +422,7 @@ export function LiveJobsBoard({ onOpenConfig }: LiveJobsBoardProps = {}) {
                 isCancelling={Boolean(cancellingJobIds?.[job.job_id])}
                 onApprove={handleApprove}
                 onDeliverSingle={handleTriggerDeliverSingle}
+                delivering={Boolean(deliveringJobIds?.[job.job_id])}
                 onCancelDelivery={handleCancelDelivery}
               />
             )

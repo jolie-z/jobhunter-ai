@@ -5,6 +5,7 @@ import { Save, RefreshCw } from "lucide-react"
 import { SkillSelectorCard, SkillItem } from "./rewrite/skill-selector-card"
 import { RewritePromptCard } from "./rewrite/rewrite-prompt-card"
 import { RewriteCollaborationCard } from "./rewrite/rewrite-collaboration-card"
+import { MaterialSkinCard } from "./rewrite/material-skin-card"
 import { useStageConfig, saveStageConfig } from "./use-stage-config"
 
 interface RewriteConfigPanelProps {
@@ -15,6 +16,7 @@ interface RewriteConfigData {
   skills?: SkillItem[]
   current_skill_id?: string
   include_diagnosis?: boolean
+  material_skin?: string
   prompt_rules?: string[]
 }
 
@@ -26,6 +28,7 @@ export function RewriteConfigPanel({ onSaved }: RewriteConfigPanelProps) {
 
   const [currentSkillId, setCurrentSkillId] = useState("resume_rewrite")
   const [includeDiagnosis, setIncludeDiagnosis] = useState(true)
+  const [materialSkin, setMaterialSkin] = useState("classic")
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState("")
   // 保存成功提示自动清除定时器（组件卸载时清理，防止 setState 泄漏）
@@ -44,6 +47,7 @@ export function RewriteConfigPanel({ onSaved }: RewriteConfigPanelProps) {
     setSynced(true)
     if (data.current_skill_id) setCurrentSkillId(data.current_skill_id)
     if (data.include_diagnosis !== undefined) setIncludeDiagnosis(data.include_diagnosis)
+    if (data.material_skin) setMaterialSkin(data.material_skin)
   }, [data, synced])
 
   const handleSave = async () => {
@@ -52,7 +56,7 @@ export function RewriteConfigPanel({ onSaved }: RewriteConfigPanelProps) {
     const ok = await saveStageConfig(
       "/api/pipeline/rewrite-config",
       "POST",
-      { skill_id: currentSkillId, include_diagnosis: includeDiagnosis },
+      { skill_id: currentSkillId, include_diagnosis: includeDiagnosis, material_skin: materialSkin },
       "简历改写规则已保存生效"
     )
     if (ok) {
@@ -87,6 +91,9 @@ export function RewriteConfigPanel({ onSaved }: RewriteConfigPanelProps) {
         includeDiagnosis={includeDiagnosis}
         onIncludeDiagnosisChange={setIncludeDiagnosis}
       />
+
+      {/* 2.5 物料简历模板（投递 PDF/长图外观，classic 黑白 / color_v1 商务蓝 / color_v2 极客高密） */}
+      <MaterialSkinCard materialSkin={materialSkin} onSkinChange={setMaterialSkin} />
 
       {/* 3. 底部：改写 Prompt 核心红线与排版规范 */}
       <RewritePromptCard promptRules={data?.prompt_rules || []} />

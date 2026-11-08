@@ -1,16 +1,19 @@
 """飞书配置连通性自检（配置页「检测连通性」按钮的后端）。
 
-只读探测，不写任何数据。按依赖顺序逐项检查：
-  credentials —— App ID/Secret 已填且格式合法（cli_ 前缀）
-  token       —— 能换取 tenant_access_token（凭证正确 + 应用已发布）
-  bitable     —— App Token 可读（token 正确 + 应用已加为文档协作者）
-  tables      —— 各张已配置的数据表 ID 可读
-  chats       —— 机器人所在群列表（机器人能力 + im 权限 + 已拉群的综合体现）
-  ws          —— WebSocket 长连接状态
+按依赖顺序逐项检查（除写探针外均为只读探测）：
+  credentials   —— App ID/Secret 已填且格式合法（cli_ 前缀）
+  token         —— 能换取 tenant_access_token（凭证正确 + 应用已发布）
+  bitable       —— App Token 可读（token 正确 + 应用已加为文档协作者）
+  tables        —— 各张已配置的数据表 ID 可读
+  write_resumes —— 简历库真实写探针（create→delete，验证记录级编辑权限；保存简历的必经链路）
+  write_jobs    —— 岗位总表真实写探针（同上；岗位状态回写/结果落表的必经链路）
+  chats         —— 机器人所在群列表（机器人能力 + im 权限 + 已拉群的综合体现）
+  ws            —— WebSocket 长连接状态
 
 每项返回 {key, label, ok, detail, fix}；fail 时 detail 给出最可能的死因、
 fix 给出修复动作。新手排错 90% 的死点：应用未发布版本、应用未加为表格协作者、
-机器人能力未开、im 权限未开通、机器人没拉群——诊断文案围绕这些死点组织。
+协作者只给了「可阅读」（读全绿但写 403，2026-11-03 用户工单）、机器人能力未开、
+im 权限未开通、机器人没拉群——诊断文案围绕这些死点组织。
 """
 import asyncio
 import logging
@@ -92,6 +95,109 @@ def _explain_chats_fail(code: Any, msg: str) -> tuple[str, str]:
             "开放平台 →「添加应用能力」勾选机器人；「权限管理」分别开通 im:message 与 im:chat 读写权限；然后创建版本并发布",
         )
     return f"飞书返回错误（code={code}）：{msg}", "确认已开通机器人能力、im 相关权限且应用已发布版本"
+
+
+# 写探针记录的标记前缀：残留时可凭此在表里人工识别清理
+_PROBE_TAG = "【连通性探针】"
+
+
+def _explain_write_fail(code: Any, msg: str) -> tuple[str, str]:
+    """把记录写入失败翻译成新手能懂的死因 + 修复动作（写探针专用）。
+
+    高级权限特征词判定前置：避免英文报错同时含 "advance" 与 "permission/denied"
+    时被 403 分支截获、给错修复指引。"""
+    s = str(code)
+    low = (msg or "").lower()
+    if "space" in low or "advance" in low or "高级权限" in (msg or ""):
+        return (
+            "多维表格开启了高级权限，应用账号没有该表的编辑角色",
+            "多维表格 → 高级权限 → 给应用对应的协作者授予「可编辑」角色",
+        )
+    if "403" in s or "forbidden" in low or "permission" in low or "denied" in low:
+        return (
+            "应用对该表没有编辑权限（最常见：文档协作者给的是「可阅读」而不是「可编辑」）",
+            "打开多维表格 → 右上角「分享」→ 把应用添加为协作者并选「可编辑」；同时确认权限管理里 bitable 是读写权限（不是 readonly）且已发布版本",
+        )
+    if "field" in low or "字段" in (msg or ""):
+        return (
+            f"写入被飞书拒绝（字段问题：{msg or code}）",
+            "探针写的是表内真实存在的字段，一般不会走到这里；真实保存写的字段与探针不同，可忽略本项继续使用，反复出现请反馈",
+        )
+    if "404" in s or "not found" in low or "notfound" in low or "invalid" in low:
+        return (
+            "找不到目标表或记录容器（Table ID 可能已失效）",
+            "重新复制：打开多维表格对应表，地址栏 table= 后的字符串即 Table ID",
+        )
+    return f"飞书返回错误（code={code}）：{msg}", "确认应用已发布版本、bitable 为读写权限、且文档协作者为「可编辑」"
+
+
+async def _probe_field_name(client: httpx.AsyncClient, token: str, app_token: str, table_id: str) -> str | None:
+    """读取表的真实字段清单，挑首个文本类字段作为探针写入字段。
+
+    探针字段必须真实存在（此前写死「标题」，表里没有该字段时飞书回
+    FieldNameNotFound 被误判成写入失败）。找不到文本字段时返回 None，
+    由调用方退化为空记录写入（仅验证记录级 create/delete 权限）。
+    """
+    try:
+        resp = await client.get(
+            f"{_BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/fields",
+            params={"page_size": 100},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        data = resp.json()
+    except Exception:
+        return None
+    if data.get("code") != 0:
+        return None
+    for it in (data.get("data") or {}).get("items") or []:
+        # ui_type==Text 是单行文本；类型 1 为多行文本，均接受纯字符串写入
+        if it.get("ui_type") == "Text" or it.get("type") == 1:
+            name = it.get("field_name") or ""
+            if name:
+                return name
+    return None
+
+
+async def _probe_table_write(
+    client: httpx.AsyncClient, token: str, app_token: str, table_id: str, table_label: str,
+) -> tuple[bool, str, str]:
+    """对指定表执行 create→delete 写探针。返回 (ok, detail, fix)。
+
+    成功判定以 create 返回 code==0 为准；delete 失败不推翻写入结论，但如实告知残留
+    （记录名带 _PROBE_TAG 标记，可人工识别清理）。任何网络异常都按失败收场并提示重试。
+    写入字段取表内首个真实存在的文本字段（无文本字段时写空记录），
+    避免 FieldNameNotFound 类误报——探针验证的是记录级写权限，不关心字段内容。
+    """
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    create_url = f"{_BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/records"
+    field_name = await _probe_field_name(client, token, app_token, table_id)
+    probe_fields: dict[str, Any] = {field_name: f"{_PROBE_TAG}JobHunter 连通性探针 {datetime.now().strftime('%m-%d %H:%M:%S')}"} if field_name else {}
+    try:
+        resp = await client.post(create_url, headers=headers, json={"fields": probe_fields})
+        data = resp.json()
+    except Exception as e:
+        return False, f"写入请求网络失败：{e}", "确认本机可访问 open.feishu.cn（代理/VPN 可能劫持）后重跑检测"
+
+    if data.get("code") != 0:
+        detail, fix = _explain_write_fail(data.get("code"), data.get("msg", ""))
+        return False, f"{table_label}写入被飞书拒绝：{detail}", fix
+
+    record_id = ((data.get("data") or {}).get("record") or {}).get("record_id") or ""
+    if not record_id:
+        # create 成功但响应里没带回 record_id：无法自清理，如实告知
+        return True, f"{table_label}写入成功（探针记录已写入，但飞书未返回记录 ID，请在表中按「{_PROBE_TAG}」标记手动清理）", ""
+
+    # 立即删除探针记录，验证 delete 权限并保证零残留
+    try:
+        del_resp = await client.delete(f"{create_url}/{record_id}", headers=headers)
+        del_data = del_resp.json()
+        if del_data.get("code") != 0:
+            return True, (f"{table_label}写入成功（探针记录删除被拒：{del_data.get('msg', '')}；"
+                          f"请在表中按「{_PROBE_TAG}」标记手动清理该条探针记录）"), ""
+    except Exception as del_e:
+        return True, (f"{table_label}写入成功（探针记录删除请求异常：{del_e}；"
+                      f"请在表中按「{_PROBE_TAG}」标记手动清理该条探针记录）"), ""
+    return True, f"{table_label}写入与删除均成功（记录级编辑权限正常）", ""
 
 
 async def diagnose_feishu() -> dict[str, Any]:
@@ -210,6 +316,28 @@ async def diagnose_feishu() -> dict[str, Any]:
                 else:
                     checks.append(_check("tables", "数据表 ID 已配置且可读", False, ok_msg,
                                          "标 ✗ 的表：重新到多维表格对应表，复制地址栏 table= 后的字符串"))
+
+        # ---- 4.5 写探针：真实写一次再删（简历库 + 岗位总表，保存简历/岗位回写的必经权限链）----
+        # 读接口全通 ≠ 记录可写：多维表格协作者权限分「可阅读/可编辑」两级，scope 也分
+        # readonly 与读写——此前只测读，用户会把文档权限给成「可阅读」导致全绿但保存 403。
+        # 用真实 create→delete 验证 create 与 delete 两段权限；记录带探针标记便于人工识别残留。
+        if token and app_token:
+            probe_specs = [
+                ("write_resumes", "简历库", "FEISHU_TABLE_ID_RESUMES"),
+                ("write_jobs", "岗位总表", "FEISHU_TABLE_ID_JOBS"),
+            ]
+            for probe_key, table_label, table_cfg_key in probe_specs:
+                table_id = _cfg_val(table_cfg_key)
+                if not table_id:
+                    checks.append(_check(
+                        probe_key, f"{table_label}可写（记录级编辑权限）", False,
+                        f"尚未配置 {table_label} 的 Table ID",
+                        f"在「飞书」分组填入 {table_label} 的 Table ID（多维表格地址栏 table= 后的字符串）"))
+                    continue
+                probe_ok, probe_detail, probe_fix = await _probe_table_write(
+                    client, token, app_token, table_id, table_label)
+                checks.append(_check(probe_key, f"{table_label}可写（记录级编辑权限）",
+                                     probe_ok, probe_detail, probe_fix))
 
         # ---- 5. 机器人所在群（机器人能力 + im 权限 + 拉群的综合体现）----
         if token:
@@ -402,8 +530,8 @@ async def diagnose_llm() -> dict[str, Any]:
         checks.append(_check(
             "vision", "视觉模型（选填：截图识别能力）", False,
             f"未配置：{'、'.join(missing_vision)}。受影响功能：极速录入截图识别、小红书图文清洗、飞书群里发截图录入岗位",
-            "在「LLM 大模型」组的「视觉模型」填入支持图片的模型名（如 mimo-v2.5、gpt-4o）；"
-            "仅当主通道不支持图片输入时，才需要单独配置「视觉通道」的 Key 与 Base URL",
+            "在「视觉通道」组的「视觉模型」填入支持图片的模型名（如 mimo-v2.5、gpt-4o）；"
+            "Key 与 Base URL 留空则复用主 LLM 通道，主通道不支持图片输入时再单独填写",
             optional=True,
         ))
     else:

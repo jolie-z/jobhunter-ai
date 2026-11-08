@@ -3,14 +3,16 @@ import json
 import logging
 import os
 import re
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph import END, StateGraph
 
 # 从现有模块复用核心评估逻辑
 from ai_agents.ai_evaluator import evaluate_single_job
+from ai_agents.ai_scorer import deep_evaluate_resume
 from ai_agents.engine_facade import process_greeting_generation, process_resume_rewrite
+from app.automation import platform_mutex
 from app.automation.db import get_autopilot_config
 
 # 引入我们刚才封装的 MCP / LangChain Tools
@@ -64,7 +66,9 @@ class JobApplicationState(TypedDict):
     ai_score: float
     score: float
     grade: str # A, B, C 等
-    diagnosis_dict: dict[str, Any] # 初评结果
+    diagnosis_dict: dict[str, Any] # 初评结果（8 维评分 + update_data）
+    deep_diagnosis: NotRequired[dict[str, Any]] # 深度画像（英文键，deep_eval_node 产出，供改写/话术消费）
+    deep_eval_completed: NotRequired[bool] # 深评节点是否已执行完（含失败兜底），供断点恢复判断阶段
 
     final_markdown: str # 改写后的简历
     greeting: str # 打招呼语
@@ -75,6 +79,9 @@ class JobApplicationState(TypedDict):
     error: str | None
     stop_at_review: bool # 定时链路置 True：一律停在人工审批断点，投递交给 T2 海投/T3 精投定时发射
     pipeline_task_id: str # 本轮链路 ID（评估节点用它广播 排队中/打分中 子状态）
+    # 手动单岗重试可覆盖投递预检的登录等待窗口（None 用默认 300s）；仅直投轨传入，
+    # 显式声明避免裸字符串 key 拼写漂移导致参数静默失效。
+    preflight_wait_s: NotRequired[int | None]
 
 
 # ==========================================
@@ -108,8 +115,11 @@ def reset_eval_semaphore():
 
 async def evaluate_node(state: JobApplicationState) -> dict[str, Any]:
     """
-    大脑：AI 初评节点。
-    复用原有的 evaluate_single_job。
+    大脑：AI 初评节点（只做 8 维初评）。
+    复用原有的 evaluate_single_job，但强制 task_mode="eval_only"：
+    深评（deep_eval_node）、简历改写与打招呼语（rewrite_node）各自是独立节点。
+    否则 auto 模式会在本节点内联跑完深评+改写+话术，随后 rewrite_node 又把改写+话术
+    重做一遍，同一岗位的这几段 LLM 成本翻倍。
 
     评估并发闸门：同时打到 LLM 的初评请求受 eval_concurrency 信号量约束——
     闸门忙时岗位广播「排队中」，拿到槽位后才广播「打分中」并真正发起请求。
@@ -131,17 +141,28 @@ async def evaluate_node(state: JobApplicationState) -> dict[str, Any]:
 
     sem = _get_eval_semaphore()
     pipeline_task_id = state.get("pipeline_task_id") or ""
+    loop = asyncio.get_running_loop()
 
-    async def _emit_sub(sub_status: str):
+    async def _emit_eval_job(sub_status: str, node: str = "evaluate_node",
+                             deep_eval_done: bool = False,
+                             grade: str | None = None,
+                             score: float | None = None):
         if not pipeline_task_id:
             return
         try:
             from app.automation import pipeline_broadcast as _pb
+            extra: dict[str, Any] = {}
+            if deep_eval_done:
+                extra["deep_eval_done"] = True
+            if grade:
+                extra["grade"] = grade
+            if score is not None:
+                extra["score"] = score
             await _pb.emit_job(
                 pipeline_task_id,
                 job_id=state.get("record_id") or state.get("job_id", ""),
                 job_name=state.get("job_name", ""),
-                node="evaluate_node",
+                node=node,
                 status="running",
                 sub_status=sub_status,
                 platform=state.get("platform", ""),
@@ -151,21 +172,65 @@ async def evaluate_node(state: JobApplicationState) -> dict[str, Any]:
                 city=state.get("city", ""),
                 education=state.get("education", ""),
                 experience=state.get("experience", ""),
+                raw_job_id=state.get("raw_job_id", ""),
+                **extra,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"⚠️ [evaluate_node] job 事件广播失败（不阻断评估）: {e}")
+
+    async def _emit_sub(sub_status: str):
+        await _emit_eval_job(sub_status, "evaluate_node")
+
+    def _progress_callback(info: dict):
+        """evaluate_single_job 在线程池里执行，进度回调必须跨线程调度回事件循环。
+
+        深评（以及其后的内联改写/话术预热）都发生在 evaluate_node 内部。若不广播
+        deep_eval_node 子阶段，前端整段时间只能显示「AI初步评估打分中」，深度评估
+        阶段永远不会点亮；这里只切节点，不切全局 stage，避免并发岗位互相覆盖。
+        """
+        if not pipeline_task_id:
+            return
+        phase = str((info or {}).get("phase") or "")
+        if phase == "deep_eval_start":
+            node, sub_status = "deep_eval_node", "deep_eval"
+        elif phase in ("rewrite_start", "greeting_start"):
+            # 内联改写/话术预热仍发生在 evaluate_node 内部，但它确实是「改写」工作。
+            # 用 rewrite_node 表达，深评运行数归零、改写运行数 +1；图随后进入真正的
+            # rewrite_node 时会有一次极短的 evaluate done 过渡，属可接受范围。
+            node, sub_status = "rewrite_node", "rewriting"
+        else:
+            node, sub_status = "evaluate_node", "ai_eval"
+        try:
+            # rewrite_start/greeting_start 说明深评已经结束：带上 deep_eval_done 标记，
+            # 前端跨事件保留，避免深评完成态被后续 rewrite running 事件抹掉。
+            # grade/score 让卡片在深评一开始就能显示评级与分数，AI 初评分子也同步 +1。
+            asyncio.run_coroutine_threadsafe(
+                _emit_eval_job(
+                    sub_status,
+                    node,
+                    deep_eval_done=phase in ("rewrite_start", "greeting_start"),
+                    grade=(info or {}).get("grade"),
+                    score=(info or {}).get("score"),
+                ),
+                loop,
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ [evaluate_node] progress_callback 跨线程调度失败（不阻断评估）: {e}")
 
     if sem.locked():
         await _emit_sub("ai_eval_queued")
     async with sem:
         await _emit_sub("ai_eval")
-        # 调用原有的评估逻辑（同步阻塞函数，丢到线程池避免卡死事件循环）
+        # 调用原有的评估逻辑（同步阻塞函数，丢到线程池避免卡死事件循环）。
+        # eval_only：只跑 8 维初评；高分轨的深评/改写/话术由后续独立节点各自执行一次。
         result = await asyncio.to_thread(
             evaluate_single_job,
             job_data,
             state["resume_text"],
             state["company_intel"],
             state["preferences_text"],
+            task_mode="eval_only",
+            progress_callback=_progress_callback,
         )
 
     if not result.get("success"):
@@ -282,25 +347,117 @@ async def _emit_node_running(state: JobApplicationState, node_name: str, sub_sta
         pass
 
 
+def _build_full_jd_info(state: JobApplicationState) -> str:
+    """组装深评/改写/话术共用的全景 JD 上下文（与 evaluate_single_job 内口径一致）。"""
+    return (
+        f"【岗位基本信息】\n"
+        f"薪资范围: {state.get('salary') or '未知'} | 工作城市: {state.get('city') or '未知'} | "
+        f"经验要求: {state.get('experience') or '未知'} | 学历要求: {state.get('education') or '未知'}\n\n"
+        f"【岗位详情】\n{state.get('jd_text', '')}"
+    )
+
+
+# 飞书列名 → 深度画像英文键（与 wave_pipeline / executor 的回写口径保持一致）
+_DEEP_EVAL_FIELD_MAP = {
+    "理想画像与能力信号": "dream_picture",
+    "核心能力词典": "ats_ability_analysis",
+    "简历逐行审计": "resume_audit",
+    "高杠杆匹配点": "strong_fit_assessment",
+    "致命硬伤与毒点": "risk_red_flags",
+    "破局行动计划": "deep_action_plan",
+}
+
+# deep_evaluate_resume 失败时返回的兜底文本；绝不能当真实诊断回写或传给改写
+_DEEP_EVAL_FAILURE_MARKER = "深度评估失败"
+
+
+def _sanitize_deep_result(deep_result: dict | None) -> dict[str, Any]:
+    """剔除空值与失败兜底标记，避免把「深度评估失败」当诊断消费，或反向清空飞书已有字段。"""
+    cleaned: dict[str, Any] = {}
+    for key, value in (deep_result or {}).items():
+        if isinstance(value, str):
+            text = value.strip()
+            if text and text != _DEEP_EVAL_FAILURE_MARKER:
+                cleaned[key] = text
+        elif value:
+            cleaned[key] = value
+    return cleaned
+
+
+async def deep_eval_node(state: JobApplicationState) -> dict[str, Any]:
+    """
+    深评：高分轨唯一一次深度画像调用。
+    初评节点已改为 eval_only，本节点产出英文键诊断（deep_diagnosis）并回写飞书，
+    后续 rewrite_node 只消费该结果，不再重复调用 deep_evaluate_resume。
+    """
+    logger.info(f"🔬 [LangGraph] 开始深度画像: {state['company_name']} - {state['job_name']}")
+    await _emit_node_running(state, "deep_eval_node", "deep_eval")
+
+    # 与初评共用同一并发闸门：保持旧链路「初评+深评」受 eval_concurrency 约束的上限，
+    # 拆节点后不会让高分轨岗位无界并发打深评。
+    sem = _get_eval_semaphore()
+    if sem.locked():
+        logger.info("🚦 [deep_eval_node] 评估闸门繁忙，深度画像排队等待...")
+    async with sem:
+        raw_deep_result, usage = await asyncio.to_thread(
+            deep_evaluate_resume,
+            state["resume_text"],
+            _build_full_jd_info(state),
+            state.get("diagnosis_dict") or {},
+        )
+
+    deep_result = _sanitize_deep_result(raw_deep_result)
+    updates = {
+        feishu_field: deep_result[deep_key].strip()
+        for feishu_field, deep_key in _DEEP_EVAL_FIELD_MAP.items()
+        if isinstance(deep_result.get(deep_key), str) and deep_result[deep_key].strip()
+    }
+    pt = int((usage or {}).get("prompt_tokens", 0) or 0)
+    ct = int((usage or {}).get("completion_tokens", 0) or 0)
+
+    if not updates:
+        # 失败兜底：不覆盖飞书已有深评字段，也不把无效诊断传给 rewrite_node；
+        # rewrite_node 检测到空 deep_diagnosis 会回退初评 diagnosis_dict。
+        logger.error(
+            f"❌ [deep_eval_node] 岗位 {state.get('record_id')} 深度画像未产出有效内容"
+            f"（LLM 失败或解析失败），保留飞书原字段并回退初评诊断继续改写（提示 {pt} / 补全 {ct}）"
+        )
+        return {"deep_diagnosis": {}, "deep_eval_completed": True}
+
+    await update_feishu_status.ainvoke({
+        "record_id": state["record_id"],
+        "updates": updates,
+    })
+
+    logger.info(f"🔬 [deep_eval_node] 岗位 {state.get('record_id')} 深度画像完成: 提示 {pt} / 补全 {ct}")
+    return {"deep_diagnosis": deep_result, "deep_eval_completed": True}
+
+
 async def rewrite_node(state: JobApplicationState) -> dict[str, Any]:
     """
     大脑：AI 深度改写节点 (针对 A/B 级)。
-    复用原有的 deep_evaluate_resume 和 process_resume_rewrite。
+    只消费 deep_eval_node 产出的诊断，执行「简历改写 + 打招呼语」两次调用；
+    不再自行深评（旧版 evaluate_node 内联深评+改写+话术，本节点又把改写+话术重做一遍，成本翻倍）。
     """
     logger.info("🧠 [LangGraph] 触发高潜简历深度改写 (rewrite_node)...")
     await _emit_node_running(state, "rewrite_node", "rewriting")
 
-    jd_text = state["jd_text"]
+    jd_text = _build_full_jd_info(state)
     resume_text = state["resume_text"]
     job_name = state["job_name"]
-    diagnosis_dict = state["diagnosis_dict"]
+    # 正常链路消费 deep_eval_node 的英文键诊断；旧 checkpoint / 直接调用没有该字段时
+    # 回退到初评 update_data（保持旧行为），但绝不在这里补跑一次深评。
+    deep_diagnosis = state.get("deep_diagnosis") or {}
+    if not deep_diagnosis:
+        logger.warning("⚠️ [rewrite_node] 未找到 deep_diagnosis，回退使用初评数据（旧 checkpoint 兼容路径）")
+        deep_diagnosis = state.get("diagnosis_dict") or {}
 
     # 1. 生成定制简历 (复用原有的 process_resume_rewrite，同步阻塞→线程池)
     print("   [Workflow] 开始改写简历...")
-    md_resume, _ = await asyncio.to_thread(
+    md_resume, rewrite_usage = await asyncio.to_thread(
         process_resume_rewrite,
         jd_text=jd_text,
-        diagnosis_dict=diagnosis_dict,
+        diagnosis_dict=deep_diagnosis,
         job_name=job_name,
         rewrite_mode="skill",
         original_resume_override=resume_text,
@@ -308,13 +465,17 @@ async def rewrite_node(state: JobApplicationState) -> dict[str, Any]:
 
     # 2. 生成打招呼语（同步阻塞→线程池）
     await _emit_node_running(state, "greeting_node", "greeting")
-    greeting, _ = await asyncio.to_thread(
-        process_greeting_generation, jd_text, diagnosis_dict, resume_text, job_name
+    greeting, greeting_usage = await asyncio.to_thread(
+        process_greeting_generation, jd_text, deep_diagnosis, resume_text, job_name
     )
     if not is_valid_greeting(greeting):
         # 🚫 生成失败时引擎会返回「❌ AI 服务未配置」这类错误文本，严禁当欢迎语写进飞书发给 HR
         logger.error(f"❌ [rewrite_node] 定制打招呼语生成失败（非法内容已置空拦截）: {str(greeting)[:80]}")
         greeting = ""
+
+    rw_pt = int((rewrite_usage or {}).get("prompt_tokens", 0) or 0) + int((greeting_usage or {}).get("prompt_tokens", 0) or 0)
+    rw_ct = int((rewrite_usage or {}).get("completion_tokens", 0) or 0) + int((greeting_usage or {}).get("completion_tokens", 0) or 0)
+    logger.info(f"✍️ [rewrite_node] 岗位 {state.get('record_id')} 简历改写+打招呼语完成: 提示 {rw_pt} / 补全 {rw_ct}")
 
     # 3. 智能物料处理：判定官方 Skill 还是自定义 Skill
     config = get_autopilot_config()
@@ -394,6 +555,16 @@ async def rewrite_node(state: JobApplicationState) -> dict[str, Any]:
                             if orig_json.get("personalInfo"):
                                 if "personalInfo" not in parsed_json:
                                     parsed_json["personalInfo"] = {}
+                                # 照片不随缝合继承：基准 personalInfo.avatar_url 是
+                                # 首次上传后烘焙的历史快照，先剔除再合并；parsed_json
+                                # 自身的烘焙值必须保留——它是照片读取失败（None）时
+                                # 唯一兜底，剔除时机由 _render_custom_resume_materials
+                                # 的 apply_resume_photo 在读取成功后统一处置
+                                from app.strategy.avatar_injection import (
+                                    strip_baked_avatar,
+                                )
+
+                                strip_baked_avatar(orig_json)
                                 parsed_json["personalInfo"].update(orig_json["personalInfo"])
                         except Exception:
                             pass
@@ -403,7 +574,12 @@ async def rewrite_node(state: JobApplicationState) -> dict[str, Any]:
             dynamic_raw = f"{company}_{job_title}".strip("_") if (company or job_title) else "专属定制简历"
             cleaned_name = sanitize_filename(dynamic_raw, "专属定制简历")
 
-            mats = await _render_custom_resume_materials(parsed_json, cleaned_name)
+            # 物料简历模板（改写规则面板配置）：classic 黑白 / color_v1 商务蓝 / color_v2 极客高密。
+            # 海投物料渲染在 materials 内部同源读取同一配置，双轨模板口径一致
+            from app.automation.materials import get_configured_material_skin
+            material_skin = get_configured_material_skin()
+
+            mats = await _render_custom_resume_materials(parsed_json, cleaned_name, skin=material_skin)
             if mats:
                 updates["PDF备份"] = [{"file_token": mats["pdf_token"], "name": f"{mats['name']}.pdf"}]
                 updates["图片保存"] = [{"file_token": mats["img_token"], "name": f"{mats['name']}-长图.jpg"}]
@@ -559,6 +735,10 @@ _delivery_serial_lock = asyncio.Lock()
 _delivery_inflight_lock = asyncio.Lock()
 _DELIVERY_INFLIGHT_RECORD_IDS: set[str] = set()
 
+# 防重复发射拦截的共享标记：调用方（如手动重试路由）据此判断「这不是一次真实投递尝试」，
+# 不得计入失败次数。文案单点定义，避免字符串漂移导致判据静默失效。
+DELIVERY_INFLIGHT_ERROR_MARKER = "正在另一条投递链路执行中"
+
 
 async def delivery_node(state: JobApplicationState) -> dict[str, Any]:
     """
@@ -566,19 +746,27 @@ async def delivery_node(state: JobApplicationState) -> dict[str, Any]:
     无论是因为 C 级自动流转过来的，还是因为 A 级人工审批后流转过来的，都在此执行投递。
     严格采用平台串行锁，杜绝多平台多浏览器并发抢占；同一岗位并发命中时拦截重复发射。
     """
-    record_id_raw = str(state.get("record_id") or "")
+    record_id_raw = str(state.get("record_id") or state.get("job_id") or "")
     rid = extract_record_id(record_id_raw) or record_id_raw
     if rid:
         async with _delivery_inflight_lock:
             if rid in _DELIVERY_INFLIGHT_RECORD_IDS:
-                logger.warning(f"⛔ [LangGraph] 岗位 {rid} 正在另一条投递链路执行中，拦截本次重复发射")
-                return {"error": f"岗位 {rid} 正在另一条投递链路执行中（防重复发射拦截），请稍后在失败台账确认投递结果"}
+                logger.warning(f"⛔ [LangGraph] 岗位 {rid} {DELIVERY_INFLIGHT_ERROR_MARKER}，拦截本次重复发射")
+                return {"error": f"岗位 {rid} {DELIVERY_INFLIGHT_ERROR_MARKER}（防重复发射拦截），请稍后在失败台账确认投递结果"}
             _DELIVERY_INFLIGHT_RECORD_IDS.add(rid)
     try:
         return await _delivery_node_inner(state)
     finally:
         if rid:
             _DELIVERY_INFLIGHT_RECORD_IDS.discard(rid)
+            # 2026-10-30 工单：单岗取消标记必须随「本次投递尝试」一起结束。此前清理只写在
+            # 取得串行锁之后的分支里，预检拦截/物料缺失等所有早退路径都会漏清，陈旧标记
+            # 会让下一次重试在节点入口被误判为「用户主动终止」而空转一次。
+            try:
+                from app.automation import abort as abort_mod
+                abort_mod.clear_job_delivery_cancelled(rid)
+            except Exception as e:
+                logger.warning(f"⚠️ [LangGraph] 清理岗位 {rid} 取消标记异常（不影响主流程）: {e}")
 
 
 async def _delivery_node_inner(state: JobApplicationState) -> dict[str, Any]:
@@ -605,7 +793,19 @@ async def _delivery_node_inner(state: JobApplicationState) -> dict[str, Any]:
     if _plat_key and not os.environ.get("PYTEST_CURRENT_TEST"):
         try:
             from app.session.preflight import ensure_delivery_platforms_ready
-            ready = await ensure_delivery_platforms_ready([_plat_key])
+            # 2026-10-30 工单：预检等待窗口接入单岗终止判定——用户点「终止投递」后
+            # 1 秒内结束等待，不再干等满 PIPELINE_LOGIN_WAIT_S。手动重试可带更短窗口。
+            ready = await ensure_delivery_platforms_ready(
+                [_plat_key],
+                cancel_check=(
+                    lambda: abort_mod.is_job_delivery_cancelled(fresh_record_id)
+                ) if fresh_record_id else None,
+                wait_s=state.get("preflight_wait_s"),
+            )
+            # 预检期间被终止：必须先于环境归因判定，否则用户主动终止会被写成 [环境] 失败
+            if fresh_record_id and abort_mod.is_job_delivery_cancelled(fresh_record_id):
+                logger.warning(f"🛑 [LangGraph] 岗位 {fresh_record_id} 在预检期间被用户终止，按主动终止收尾")
+                return {"error": "[用户主动终止] 在指挥中心手动终止投递流程"}
             if not ready.get(_plat_key, False):
                 logger.warning(f"⛔ [LangGraph] {_plat_key} 浏览器/登录态预检未通过，投递拦截（保留待投递下轮自愈重试）")
                 return {"error": f"[环境] {_plat_key} 浏览器/登录态预检未通过，本轮投递拦截"}
@@ -788,16 +988,28 @@ async def _delivery_node_inner(state: JobApplicationState) -> dict[str, Any]:
             return {"error": "[用户主动终止] 在指挥中心手动终止投递流程"}
 
         try:
-            if "boss" in platform:
-                res = await deliver_boss_job.ainvoke({"job_data": job_data})
-            elif "猎聘" in platform or "liepin" in platform:
-                res = await deliver_liepin_job.ainvoke({"job_data": job_data})
-            elif "51job" in platform or "前程无忧" in platform:
-                res = await deliver_51job_job.ainvoke({"job_data": job_data})
-            elif "智联" in platform or "zhilian" in platform:
-                res = await deliver_zhilian_job.ainvoke({"job_data": job_data})
-            else:
-                res = f"⚠️ 未知平台 {platform}，无法自动投递"
+            # 🌟 平台级抓取↔投递互斥（2026-10-29 沙箱事故根治）：同平台抓取在飞时投递限时
+            # 等待，超时按 [环境] 暂时性失败出列（保留待投递门牌自愈重试），绝不与抓取抢浏览器
+            async with platform_mutex.delivery_gate(
+                platform, owner=str(fresh_record_id or platform),
+                timeout_s=platform_mutex.DELIVERY_WAIT_SCRAPE_TIMEOUT_S,
+            ) as gate_ok:
+                if not gate_ok:
+                    logger.warning(
+                        f"🚧 [LangGraph] [{platform}] 同平台抓取任务占用浏览器超 "
+                        f"{platform_mutex.DELIVERY_WAIT_SCRAPE_TIMEOUT_S:.0f}s，投递本轮延后自愈重试")
+                    res = platform_mutex.delivery_gate_timeout_error(
+                        platform_mutex.DELIVERY_WAIT_SCRAPE_TIMEOUT_S)
+                elif "boss" in platform:
+                    res = await deliver_boss_job.ainvoke({"job_data": job_data})
+                elif "猎聘" in platform or "liepin" in platform:
+                    res = await deliver_liepin_job.ainvoke({"job_data": job_data})
+                elif "51job" in platform or "前程无忧" in platform:
+                    res = await deliver_51job_job.ainvoke({"job_data": job_data})
+                elif "智联" in platform or "zhilian" in platform:
+                    res = await deliver_zhilian_job.ainvoke({"job_data": job_data})
+                else:
+                    res = f"⚠️ 未知平台 {platform}，无法自动投递"
         except Exception as e:
             res = f"❌ 投递异常中断: {str(e)[:100]}"
         finally:
@@ -866,9 +1078,10 @@ def route_after_evaluate(state: JobApplicationState) -> str:
     """
     条件路由：初评后动态分流
     动态读取用户在「AI 初评」抽屉里配置的流转阀门/自动化阈值（A / B / C 级），
-    🌟 判定式与批量初评漏斗（wave_pipeline）完全同阈值：等级达标 **或** 分数达标均进精投定制轨，
+    🌟 判定式与批量初评漏斗（wave_pipeline）完全同阈值：只看评级是否达到精投阀门；
+    分数不参与路由（高分 C 级仍走海投轨，低分 B 级仍走精投轨），
     杜绝「初评漏斗放行的 70 分 C 级岗在自动链路里被降级进海投轨」的双标。
-    - 达到阈值 -> 进入 rewrite_node 进行深度画像、简历重构与专属话术；
+    - 达到阈值 -> 进入 deep_eval_node 做深度画像，再交给 rewrite_node 做简历重构与专属话术；
     - 未达阈值 -> 统一进入 quick_greeting_node 装配海投通用 PDF 简历与打招呼语。
     """
     if state.get("error"):
@@ -882,8 +1095,8 @@ def route_after_evaluate(state: JobApplicationState) -> str:
     is_custom_track = grade_meets_threshold(grade, threshold)
 
     if is_custom_track:
-        logger.info(f"🎯 [LangGraph] 岗位评级 {grade} 达到精投阀门 {threshold}，流转至精投定制轨 (rewrite_node)")
-        return "rewrite_node"
+        logger.info(f"🎯 [LangGraph] 岗位评级 {grade} 达到精投阀门 {threshold}，流转至精投定制轨 (deep_eval_node -> rewrite_node)")
+        return "deep_eval_node"
     else:
         logger.info(f"⚡ [LangGraph] 岗位评级 {grade} 未达精投阀门 {threshold}，流转至海投物料轨 (quick_greeting_node)")
         return "quick_greeting_node"
@@ -981,6 +1194,7 @@ def build_pipeline_graph() -> StateGraph:
 
     # 注册节点
     workflow.add_node("evaluate_node", evaluate_node)
+    workflow.add_node("deep_eval_node", deep_eval_node)
     workflow.add_node("rewrite_node", rewrite_node)
     workflow.add_node("quick_greeting_node", quick_greeting_node)
     workflow.add_node("manual_review_node", manual_review_node)
@@ -994,11 +1208,14 @@ def build_pipeline_graph() -> StateGraph:
         "evaluate_node",
         route_after_evaluate,
         {
-            "rewrite_node": "rewrite_node",
+            "deep_eval_node": "deep_eval_node",
             "quick_greeting_node": "quick_greeting_node",
             END: END
         }
     )
+
+    # 高分轨：深评节点只做一次深度画像，改写节点消费其结果（不再重复深评）
+    workflow.add_edge("deep_eval_node", "rewrite_node")
 
     # 生成话术/精修简历后，都进入发车前的安检路由
     workflow.add_conditional_edges(

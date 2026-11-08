@@ -30,6 +30,7 @@ interface FailedJobCardProps {
   selected?: boolean
   onToggleSelect?: (jobId: string) => void
   onRetry?: (job: PipelineJob) => void
+  delivering?: boolean  // 父级 in-flight 守卫（审计 P1-11）：重试/投递请求在途时禁用按钮
   onDismiss?: (job: PipelineJob) => void
 }
 
@@ -58,6 +59,7 @@ export const FailedJobCard = React.memo(function FailedJobCard({
   selected = false,
   onToggleSelect,
   onRetry,
+  delivering,
   onDismiss,
 }: FailedJobCardProps) {
   const [retrying, setRetrying] = useState(false)
@@ -110,6 +112,7 @@ export const FailedJobCard = React.memo(function FailedJobCard({
 
   // 重启/重试此岗位
   const handleRetry = async () => {
+    if (delivering) return  // 在途拦截（审计 P1-11）：双击不再产生并发后台任务
     if (onRetry) {
       onRetry(job)
       return
@@ -444,12 +447,12 @@ export const FailedJobCard = React.memo(function FailedJobCard({
 
           <button
             onClick={handleRetry}
-            disabled={retrying || !canRetry}
+            disabled={retrying || delivering || !canRetry}
             title={canRetry ? "重新拉起该岗位全链路流转" : "该失败类型暂不支持自动重试"}
             className="flex h-7 items-center gap-1 rounded-md bg-rose-600 hover:bg-rose-500 px-2.5 text-[11px] font-medium text-white shadow-xs transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
           >
-            <RotateCcw className={cn("h-3 w-3", retrying && "animate-spin")} />
-            {retrying ? "重试中…" : "重试"}
+            <RotateCcw className={cn("h-3 w-3", (retrying || delivering) && "animate-spin")} />
+            {(retrying || delivering) ? "处理中…" : "重试"}
           </button>
         </div>
       </div>

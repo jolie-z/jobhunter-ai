@@ -128,7 +128,12 @@ def test_governed_stream_gc_releases_slot_with_warning(caplog):
 
 
 def test_scout_and_agent_map_integration_batch_quota_protects_interactive():
-    """【规范集成】scout(5)+映射并发：全局并发上限与批量配额同时生效，交互调用不被饿死。"""
+    """【规范集成】scout(5)+映射并发：全局上限与弹性批处理上限同时生效，交互调用不被饿死。
+
+    2026-11-03 弹性改造：空闲期批处理上限可到全局 4 槽（不再硬顶 2），前台到来
+    即时收缩——本测试锁定端到端不饿死（map 全部成功）与两个天花板（全局 4、
+    批处理 ≤ elastic 上限 4）；精细的上限伸缩语义见 test_llm_gate_elastic.py。
+    """
     with patch.dict(os.environ, {"LLM_MAX_CONCURRENCY": "4", "LLM_BATCH_MAX_CONCURRENCY": "2"}):
         reset_llm_gate()
         gate = get_llm_gate()
@@ -173,7 +178,7 @@ def test_scout_and_agent_map_integration_batch_quota_protects_interactive():
         assert len(results["map"]) == 2 and all(r == "ok" for r in results["map"]), results["map"]
         assert len(results["scout"]) == 5 and all(r == "ok" for r in results["scout"]), results["scout"]
         assert peak["global"] <= 4, f"全局并发越界: {peak}"
-        assert peak["batch"] <= 2, f"批量配额越界: {peak}"
+        assert peak["batch"] <= gate.batch_elastic_max, f"批处理弹性上限越界: {peak}"
         assert gate.stats()["active_slots"] == 0
 
 
