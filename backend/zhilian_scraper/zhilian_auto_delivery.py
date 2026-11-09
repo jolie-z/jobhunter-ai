@@ -341,6 +341,48 @@ def _dismiss_sync_dialog(tab) -> int:
         return 0
 
 
+def _accept_update_consent(tab) -> int:
+    """自动同意智联「更新公告」隐私政策弹窗。
+
+    智联会在简历管理页弹出只有「同意 / 不同意并退出」的更新公告，没有右上角
+    关闭按钮。该弹窗会遮住「上传新附件」，使 input[type=file] 永远无法渲染。
+
+    安全边界：只在弹窗同时包含「更新公告」和「隐私政策/隐私保护/个人信息」
+    时，点击文本严格等于「同意」的按钮；不会点击其他登录授权、删除或业务弹窗。
+    """
+    try:
+        return int(tab.run_js('''
+            var accepted = 0;
+            var seen = new Set();
+            var boxes = document.querySelectorAll(
+                '.ivu-modal-wrap, .ivu-modal, .el-dialog__wrapper, .el-dialog'
+            );
+            boxes.forEach(function(m) {
+                var s = window.getComputedStyle(m);
+                if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return;
+                var text = m.innerText || '';
+                if (text.indexOf('更新公告') < 0) return;
+                if (
+                    text.indexOf('隐私政策') < 0 &&
+                    text.indexOf('隐私保护') < 0 &&
+                    text.indexOf('个人信息') < 0
+                ) return;
+                m.querySelectorAll('button').forEach(function(b) {
+                    var bt = (b.innerText || '').trim();
+                    var visible = b.getBoundingClientRect().width > 0;
+                    if (bt === '同意' && visible && !seen.has(b)) {
+                        seen.add(b);
+                        b.click();
+                        accepted++;
+                    }
+                });
+            });
+            return accepted;
+        ''') or 0)
+    except Exception:
+        return 0
+
+
 def _kill_popups(tab, max_rounds=5, protect_upload_dialog=False):
     """关闭所有干扰弹窗（纯 JS 方式点击可见关闭/取消按钮，零 CDP performSearch 依赖，杜绝 searchId 崩溃）
 
@@ -349,8 +391,15 @@ def _kill_popups(tab, max_rounds=5, protect_upload_dialog=False):
     """
     close_selector = _UPLOAD_DIALOG_CLOSE_SEL + ', .ivu-modal-close, .el-dialog__headerbtn, [aria-label="Close"]' \
         if not protect_upload_dialog else '.ivu-modal-close, .el-dialog__headerbtn, [aria-label="Close"]'
+    accepted_total = 0
+    consent_attempted = False
     for _ in range(max_rounds):
-        closed = False
+        accepted = 0
+        if not consent_attempted:
+            accepted = _accept_update_consent(tab)
+            accepted_total += accepted
+            consent_attempted = accepted > 0
+        closed = accepted > 0
         try:
             closed = bool(tab.run_js('''
                 var n = 0;
@@ -396,13 +445,16 @@ def _kill_popups(tab, max_rounds=5, protect_upload_dialog=False):
                     }
                 });
                 return n > 0;
-            ''', protect_upload_dialog, close_selector))
+            ''', protect_upload_dialog, close_selector)) or closed
         except Exception:
-            closed = False
+            pass
         if closed:
             time.sleep(0.5)
         else:
             break
+    if accepted_total:
+        print("   [弹窗] 已自动同意智联「更新公告」隐私政策弹窗")
+    return accepted_total
 
 
 def _delete_resume_item(tab, item_ele):
