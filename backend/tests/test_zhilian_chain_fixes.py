@@ -162,6 +162,20 @@ def test_is_custom_record_grade_ab():
     assert is_custom_record({"综合评级 (A-F)": "a"}) is True
 
 
+def test_is_custom_record_mass_review_overrides_grade():
+    """B级进入海投人工复核且无改写产物时，必须按海投处理，不能触发精投JSON渲染。"""
+    assert is_custom_record({
+        "综合评级 (A-F)": "B",
+        "跟进状态": "海投人工复核",
+        "AI改写JSON": "",
+    }) is False
+    assert is_custom_record({
+        "综合评级 (A-F)": "B",
+        "跟进状态": "海投人工复核",
+        "AI改写JSON": '{"v":2}',
+    }) is True
+
+
 def test_is_custom_record_mass_by_default():
     assert is_custom_record({}) is False
     assert is_custom_record({"综合评级 (A-F)": "C"}) is False
