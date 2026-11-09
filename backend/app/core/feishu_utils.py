@@ -211,10 +211,16 @@ def is_custom_record(fields: dict[str, Any]) -> bool:
     判定依据（满足其一即精投）：
     1. 「AI改写JSON」非空（结构化定制改写产物）；
     2. 综合评级为 A/B。
+    例外：明确处于「海投人工复核」的岗位只认真实改写产物。B 级岗位低于精投阈值时
+    会进入海投轨，不能仅凭评级把没有 AI改写JSON 的海投岗位误判成精投。
     三处消费方必须共用本函数，此前各写一套判定曾导致岗位进海投队列却被按精投投递的口径漂移。
     """
-    if extract_feishu_text(fields.get("AI改写JSON", "")).strip():
+    has_rewrite = bool(extract_feishu_text(fields.get("AI改写JSON", "")).strip())
+    if has_rewrite:
         return True
+    follow_status = extract_feishu_text(fields.get("跟进状态", "")).strip()
+    if follow_status == "海投人工复核":
+        return False
     return (extract_job_grade(fields) or "").upper() in ("A", "B")
 
 
