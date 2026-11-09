@@ -79,6 +79,39 @@ def test_kill_popups_pure_js_executes_safely():
     zhilian_auto_delivery._kill_popups(fake_tab, max_rounds=2)
 
 
+def test_update_consent_accepts_only_privacy_update_modal():
+    """更新公告弹窗只接受隐私政策范围内的精确「同意」按钮。"""
+    import inspect
+
+    src = inspect.getsource(zhilian_auto_delivery._accept_update_consent)
+    assert "更新公告" in src
+    assert "隐私政策" in src
+    assert "隐私保护" in src
+    assert "个人信息" in src
+    assert "bt === '同意'" in src
+    assert "bt === '不同意" not in src
+
+    fake_tab = MagicMock()
+    fake_tab.run_js.return_value = 1
+    assert zhilian_auto_delivery._accept_update_consent(fake_tab) == 1
+
+
+def test_kill_popups_invokes_update_consent_once(monkeypatch):
+    """新版隐私公告最多只点一次同意，避免点击后弹窗延迟关闭导致重复触发。"""
+    calls = []
+
+    def fake_accept(tab):
+        calls.append(tab)
+        return 1
+
+    monkeypatch.setattr(zhilian_auto_delivery, "_accept_update_consent", fake_accept)
+    fake_tab = MagicMock()
+    fake_tab.run_js.return_value = False
+
+    zhilian_auto_delivery._kill_popups(fake_tab, max_rounds=3)
+    assert calls == [fake_tab]
+
+
 def test_chat_session_owner_probe_matching():
     """测试微聊会话归属验证：公司名去后缀核心字号、全称或岗位名匹配"""
     import re
